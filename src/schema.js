@@ -1,193 +1,90 @@
-// JSON Schema for worship aid input validation
+// JSON Schema for worship aid input — matches PRD Section 6.1
 'use strict';
+
+const musicBlockSchema = {
+  type: 'object',
+  properties: {
+    organPrelude: { type: 'string' },
+    organPreludeComposer: { type: 'string' },
+    processionalOrEntrance: { type: 'string' },
+    processionalOrEntranceComposer: { type: 'string' },
+    kyrieSetting: { type: 'string' },
+    kyrieComposer: { type: 'string' },
+    offertoryAnthem: { type: 'string' },
+    offertoryAnthemComposer: { type: 'string' },
+    communionHymn: { type: 'string' },
+    communionHymnComposer: { type: 'string' },
+    hymnOfThanksgiving: { type: 'string' },
+    hymnOfThanksgivingComposer: { type: 'string' },
+    organPostlude: { type: 'string' },
+    organPostludeComposer: { type: 'string' },
+    choralAnthemConcluding: { type: 'string' },
+    choralAnthemConcludingComposer: { type: 'string' }
+  }
+};
 
 const inputSchema = {
   type: 'object',
-  required: ['occasionName', 'occasionDate', 'massTimes', 'firstReading', 'responsorialPsalm', 'gospel'],
+  required: ['feastName', 'liturgicalDate', 'liturgicalSeason'],
   properties: {
-    occasionName: { type: 'string', minLength: 1 },
-    occasionDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
-    massTimes: { type: 'array', items: { type: 'string' }, minItems: 1 },
+    // Metadata
+    id: { type: 'string' },
+    status: { type: 'string', enum: ['draft', 'finalized', 'exported'] },
+    feastName: { type: 'string', minLength: 1 },
+    liturgicalDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+    liturgicalSeason: { type: 'string', enum: ['ordinary', 'advent', 'christmas', 'lent', 'easter'] },
 
-    // Introductory Rites
-    organPrelude: {
+    // Readings — PRD Section 4.1
+    readings: {
       type: 'object',
       properties: {
-        title: { type: 'string' },
-        composer: { type: 'string' }
+        firstReadingCitation: { type: 'string' },
+        firstReadingText: { type: 'string' },
+        psalmCitation: { type: 'string' },
+        psalmRefrain: { type: 'string' },
+        psalmVerses: { type: 'string' },
+        secondReadingCitation: { type: 'string' },
+        secondReadingText: { type: 'string' },
+        noSecondReading: { type: 'boolean' },
+        gospelAcclamationVerse: { type: 'string' },
+        gospelAcclamationReference: { type: 'string' },
+        gospelCitation: { type: 'string' },
+        gospelText: { type: 'string' }
       }
     },
-    entranceAntiphon: {
-      type: 'object',
-      properties: {
-        imagePath: { type: 'string' },
-        citation: { type: 'string' },
-        composerCredit: { type: 'string' }
-      }
-    },
-    penitentialAct: { type: 'string', default: 'default' },
-    kyrieSettings: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          massTime: { type: 'string' },
-          settingName: { type: 'string' },
-          imagePath: { type: 'string' }
-        }
-      }
-    },
-    gloria: { type: 'boolean', default: true },
-    collect: { type: 'string' },
 
-    // Liturgy of the Word
-    firstReading: {
-      type: 'object',
-      required: ['citation', 'text'],
-      properties: {
-        citation: { type: 'string' },
-        text: { type: 'string' }
-      }
-    },
-    responsorialPsalm: {
-      type: 'object',
-      required: ['citation'],
-      properties: {
-        citation: { type: 'string' },
-        imagePath: { type: 'string' },
-        response: { type: 'string' },
-        verses: { type: 'array', items: { type: 'string' } }
-      }
-    },
-    secondReading: {
+    // Seasonal Settings — PRD Section 4.1, 5.1
+    seasonalSettings: {
       type: 'object',
       properties: {
-        citation: { type: 'string' },
-        text: { type: 'string' }
+        gloria: { type: 'boolean' },
+        creedType: { type: 'string', enum: ['nicene', 'apostles'] },
+        entranceType: { type: 'string', enum: ['processional', 'antiphon'] },
+        holyHolySetting: { type: 'string' },
+        mysteryOfFaithSetting: { type: 'string' },
+        lambOfGodSetting: { type: 'string' },
+        penitentialAct: { type: 'string', enum: ['confiteor', 'kyrie_only'] }
       }
     },
-    gospelAcclamation: {
-      type: 'object',
-      properties: {
-        citation: { type: 'string' },
-        imagePath: { type: 'string' },
-        verse: { type: 'string' },
-        lenten: { type: 'boolean', default: false }
-      }
-    },
-    gospel: {
-      type: 'object',
-      required: ['citation', 'text'],
-      properties: {
-        citation: { type: 'string' },
-        text: { type: 'string' }
-      }
-    },
-    creedType: { type: 'string', enum: ['apostles', 'nicene'], default: 'nicene' },
-    prayerOfTheFaithful: { type: 'string' },
+
+    // Three per-mass-time music blocks — PRD Section 4.1, 6.1
+    musicSat5pm: musicBlockSchema,
+    musicSun9am: musicBlockSchema,
+    musicSun11am: musicBlockSchema,
+
+    // Children's Liturgy — PRD Section 4.1
+    childrenLiturgyEnabled: { type: 'boolean' },
+    childrenLiturgyMassTime: { type: 'string' },
+    childrenLiturgyMusic: { type: 'string' },
+    childrenLiturgyMusicComposer: { type: 'string' },
+
+    // Optional content
     announcements: { type: 'string' },
+    specialNotes: { type: 'string' },
 
-    // Liturgy of the Eucharist
-    offertoryAnthems: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          massTime: { type: 'string' },
-          title: { type: 'string' },
-          composer: { type: 'string' }
-        }
-      }
-    },
-    holySanctus: {
-      type: 'object',
-      properties: {
-        settingName: { type: 'string' },
-        imagePath: { type: 'string' }
-      }
-    },
-    mysteryOfFaith: {
-      type: 'object',
-      properties: {
-        settingName: { type: 'string' },
-        option: { type: 'string', enum: ['A', 'B', 'C'] },
-        imagePath: { type: 'string' }
-      }
-    },
-
-    // Communion Rite
-    agnus: {
-      type: 'object',
-      properties: {
-        settingName: { type: 'string' },
-        imagePath: { type: 'string' }
-      }
-    },
-    communionAntiphon: {
-      type: 'object',
-      properties: {
-        imagePath: { type: 'string' },
-        composerCredit: { type: 'string' }
-      }
-    },
-    communionHymns: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          massTime: { type: 'string' },
-          title: { type: 'string' },
-          composer: { type: 'string' }
-        }
-      }
-    },
-
-    // Concluding Rites
-    hymnThanksgiving: {
-      type: 'object',
-      properties: {
-        title: { type: 'string' },
-        imagePath: { type: 'string' },
-        yearAStanza: { type: 'string' }
-      }
-    },
-    choralAnthems: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          massTime: { type: 'string' },
-          title: { type: 'string' },
-          composer: { type: 'string' }
-        }
-      }
-    },
-    prayerAfterCommunion: { type: 'string' },
-
-    // Back Cover / Branding
-    logoImagePath: { type: 'string' },
-    qrCodes: {
-      type: 'object',
-      properties: {
-        give: { type: 'string' },
-        join: { type: 'string' },
-        bulletin: { type: 'string' }
-      }
-    },
-    socialHandles: {
-      type: 'object',
-      properties: {
-        instagram: { type: 'string' },
-        facebook: { type: 'string' },
-        youtube: { type: 'string' }
-      }
-    },
-    copyrightBlock: { type: 'string' },
-
-    // Options
-    compact: { type: 'boolean', default: false }
-  },
-  additionalProperties: false
+    // Cover image (optional)
+    coverImagePath: { type: 'string' }
+  }
 };
 
-module.exports = { inputSchema };
+module.exports = { inputSchema, musicBlockSchema };

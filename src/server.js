@@ -1,65 +1,57 @@
-// Express web server for Worship Aid Generator
+// Express web server — Worship Aid Generator
+// PRD: Web application with form, live preview, draft save, admin settings
 'use strict';
 
 const express = require('express');
-const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { validateInput } = require('./validator');
-const { generatePdf } = require('./pdf-generator');
+const { validateInput, detectOverflows } = require('./validator');
+const { generatePdf, buildFilename } = require('./pdf-generator');
 const { renderBookletHtml } = require('./template-renderer');
+const { getSeasonDefaults, SEASONS } = require('./config/seasons');
+const store = require('./store/file-store');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
-app.use('/output', express.static(path.join(__dirname, '..', 'output')));
-app.use('/assets', express.static(path.join(__dirname, 'assets')));
+app.use('/exports', express.static(store.getExportsDir()));
 
-// File upload for images
-const upload = multer({ dest: path.join(__dirname, '..', 'uploads') });
+// --- API ROUTES ---
 
-// Serve the main web UI
-app.get('/', (req, res) => {
-  res.send(getMainPageHtml());
+// Season defaults
+app.get('/api/season-defaults/:season', (req, res) => {
+  const defaults = getSeasonDefaults(req.params.season);
+  res.json(defaults);
 });
 
-// API: Validate input JSON
+// Validate
 app.post('/api/validate', (req, res) => {
   const result = validateInput(req.body);
-  res.json(result);
+  const overflows = detectOverflows(req.body);
+  res.json({ ...result, overflows });
 });
 
-// API: Generate HTML preview
+// Preview HTML
 app.post('/api/preview', (req, res) => {
-  const validation = validateInput(req.body);
-  if (!validation.valid) {
-    return res.status(400).json({ error: 'Validation failed', errors: validation.errors });
-  }
-  const { html, warnings } = renderBookletHtml(req.body);
-  res.json({ html, warnings });
+  const settings = store.loadSettings();
+  const { html, warnings } = renderBookletHtml(req.body, { parishSettings: settings });
+  const overflows = detectOverflows(req.body);
+  res.json({ html, warnings, overflows });
 });
 
-// API: Generate PDF and return download link
+// Generate PDF
 app.post('/api/generate-pdf', async (req, res) => {
   try {
-    const validation = validateInput(req.body);
-    if (!validation.valid) {
-      return res.status(400).json({ error: 'Validation failed', errors: validation.errors });
-    }
-
-    const outputDir = path.join(__dirname, '..', 'output');
-    fs.mkdirSync(outputDir, { recursive: true });
-
-    const dateSlug = req.body.occasionDate || 'undated';
-    const pdfPath = path.join(outputDir, `worship-aid-${dateSlug}.pdf`);
-    const result = await generatePdf(req.body, pdfPath, { compact: req.body.compact });
-
+    const settings = store.loadSettings();
+    const filename = buildFilename(req.body);
+    const outputPath = path.join(store.getExportsDir(), filename);
+    const result = await generatePdf(req.body, outputPath, { parishSettings: settings });
     res.json({
       success: true,
-      downloadUrl: `/output/worship-aid-${dateSlug}.pdf`,
+      filename,
+      downloadUrl: `/exports/${filename}`,
       warnings: result.warnings
     });
   } catch (err) {
@@ -67,908 +59,662 @@ app.post('/api/generate-pdf', async (req, res) => {
   }
 });
 
-// API: Download PDF directly
-app.post('/api/download-pdf', async (req, res) => {
-  try {
-    const validation = validateInput(req.body);
-    if (!validation.valid) {
-      return res.status(400).json({ error: 'Validation failed', errors: validation.errors });
-    }
-
-    const outputDir = path.join(__dirname, '..', 'output');
-    fs.mkdirSync(outputDir, { recursive: true });
-
-    const dateSlug = req.body.occasionDate || 'undated';
-    const pdfPath = path.join(outputDir, `worship-aid-${dateSlug}.pdf`);
-    await generatePdf(req.body, pdfPath, { compact: req.body.compact });
-
-    res.download(pdfPath);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// --- DRAFTS ---
+app.post('/api/drafts', (req, res) => {
+  const draft = store.saveDraft(req.body);
+  res.json(draft);
 });
 
-// API: Load sample data
+app.get('/api/drafts', (req, res) => {
+  res.json(store.listDrafts());
+});
+
+app.get('/api/drafts/:id', (req, res) => {
+  const draft = store.loadDraft(req.params.id);
+  if (!draft) return res.status(404).json({ error: 'Draft not found' });
+  res.json(draft);
+});
+
+app.delete('/api/drafts/:id', (req, res) => {
+  store.deleteDraft(req.params.id);
+  res.json({ success: true });
+});
+
+app.post('/api/drafts/:id/duplicate', (req, res) => {
+  const copy = store.duplicateDraft(req.params.id);
+  if (!copy) return res.status(404).json({ error: 'Draft not found' });
+  res.json(copy);
+});
+
+// --- SETTINGS ---
+app.get('/api/settings', (req, res) => {
+  res.json(store.loadSettings());
+});
+
+app.put('/api/settings', (req, res) => {
+  const settings = store.saveSettings(req.body);
+  res.json(settings);
+});
+
+// --- SAMPLE ---
 app.get('/api/sample', (req, res) => {
   const samplePath = path.join(__dirname, '..', 'sample', 'second-sunday-lent.json');
-  const data = JSON.parse(fs.readFileSync(samplePath, 'utf8'));
-  res.json(data);
+  if (fs.existsSync(samplePath)) {
+    const data = JSON.parse(fs.readFileSync(samplePath, 'utf8'));
+    return res.json(data);
+  }
+  res.status(404).json({ error: 'Sample not found' });
 });
+
+// --- MAIN UI ---
+app.get('/', (req, res) => res.send(getAppHtml()));
+app.get('/admin', (req, res) => res.send(getAppHtml()));
+app.get('/history', (req, res) => res.send(getAppHtml()));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n  Worship Aid Generator`);
-  console.log(`  Web UI running at: http://localhost:${PORT}`);
+  console.log(`  http://localhost:${PORT}`);
   console.log(`  Press Ctrl+C to stop.\n`);
 });
 
-function getMainPageHtml() {
+// =====================================================================
+// FULL SPA HTML — Form Editor + Live Preview + History + Admin
+// =====================================================================
+function getAppHtml() {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Worship Aid Generator</title>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;1,400&family=Cinzel:wght@400;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --primary: #8B0000;
-    --primary-light: #a52a2a;
-    --bg: #f5f5f0;
-    --card-bg: #ffffff;
-    --text: #1a1a1a;
-    --muted: #666;
-    --border: #ddd;
-    --success: #2d7d46;
-    --error: #c0392b;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.5;
-  }
-  header {
-    background: var(--primary);
-    color: white;
-    padding: 16px 24px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-  }
-  header h1 { font-size: 20px; font-weight: 600; letter-spacing: 0.5px; }
-  header .actions { display: flex; gap: 8px; }
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 16px;
-    border: none;
-    border-radius: 6px;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.15s;
-  }
-  .btn:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
-  .btn-primary { background: white; color: var(--primary); }
-  .btn-success { background: var(--success); color: white; }
-  .btn-outline { background: transparent; color: white; border: 1px solid rgba(255,255,255,0.5); }
-  .btn-outline:hover { background: rgba(255,255,255,0.1); }
-  .btn-secondary { background: #e0e0e0; color: var(--text); }
-  .btn-danger { background: var(--error); color: white; }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+:root {
+  --navy: #1A2E4A; --burgundy: #6B1A1A; --gold: #B8922A; --gold-light: #D4AF5A;
+  --cream: #FAF7F2; --parchment: #F2EBD9; --dark: #1C1C1C; --gray: #5A5A5A;
+  --border: #E0D5C0; --success: #2d7d46; --error: #c0392b; --white: #fff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Inter', -apple-system, sans-serif; background: var(--cream); color: var(--dark); font-size: 13px; }
 
-  .layout {
-    display: grid;
-    grid-template-columns: 420px 1fr;
-    height: calc(100vh - 56px);
-    overflow: hidden;
-  }
+/* NAV */
+nav { background: var(--navy); padding: 0 20px; display: flex; align-items: center; height: 50px; gap: 24px; }
+nav .brand { font-family: 'Cinzel', serif; font-size: 15px; color: var(--gold-light); letter-spacing: 1px; font-weight: 600; }
+nav a { color: rgba(255,255,255,0.7); text-decoration: none; font-size: 12px; font-weight: 500; letter-spacing: 0.5px; padding: 4px 0; border-bottom: 2px solid transparent; transition: all 0.15s; }
+nav a:hover, nav a.active { color: #fff; border-bottom-color: var(--gold); }
+nav .spacer { flex: 1; }
+.btn { padding: 6px 14px; border: none; border-radius: 4px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 5px; }
+.btn:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
+.btn-gold { background: var(--gold); color: var(--white); }
+.btn-navy { background: var(--navy); color: var(--white); }
+.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--gray); }
+.btn-sm { padding: 4px 10px; font-size: 11px; }
+.btn-danger { background: var(--error); color: var(--white); }
 
-  .editor-panel {
-    background: var(--card-bg);
-    border-right: 1px solid var(--border);
-    overflow-y: auto;
-    padding: 16px;
-  }
-  .preview-panel {
-    overflow-y: auto;
-    padding: 20px;
-    background: #e8e8e0;
-  }
+/* LAYOUT */
+.app { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 50px); }
+.editor { background: var(--white); border-right: 1px solid var(--border); overflow-y: auto; padding: 14px; }
+.preview-area { overflow-y: auto; padding: 16px; background: #e8e4da; }
 
-  .form-section {
-    margin-bottom: 16px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    overflow: hidden;
-  }
-  .form-section-header {
-    background: var(--primary);
-    color: white;
-    padding: 8px 12px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    user-select: none;
-  }
-  .form-section-header:hover { background: var(--primary-light); }
-  .form-section-body { padding: 12px; }
-  .form-section-body.collapsed { display: none; }
+/* FORM */
+.form-section { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; overflow: hidden; }
+.form-section-hdr { background: var(--navy); color: var(--gold-light); padding: 7px 10px; font-family: 'Cinzel', serif; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+.form-section-hdr:hover { background: #243a5a; }
+.form-section-body { padding: 10px; }
+.form-section-body.collapsed { display: none; }
+.fg { margin-bottom: 8px; }
+.fg label { display: block; font-size: 10px; font-weight: 600; color: var(--gray); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+.fg input, .fg textarea, .fg select { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 3px; font-size: 12px; font-family: inherit; }
+.fg input:focus, .fg textarea:focus, .fg select:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 2px rgba(184,146,42,0.15); }
+.fg textarea { min-height: 50px; resize: vertical; }
+.fg-check { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.fg-check input { width: auto; }
+.fg-check label { margin: 0; text-transform: none; font-size: 12px; }
+.fg-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 
-  .form-group { margin-bottom: 10px; }
-  .form-group label {
-    display: block;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--muted);
-    margin-bottom: 3px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .form-group input, .form-group textarea, .form-group select {
-    width: 100%;
-    padding: 7px 10px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    font-size: 13px;
-    font-family: inherit;
-    transition: border-color 0.15s;
-  }
-  .form-group input:focus, .form-group textarea:focus, .form-group select:focus {
-    outline: none;
-    border-color: var(--primary);
-    box-shadow: 0 0 0 2px rgba(139,0,0,0.1);
-  }
-  .form-group textarea { min-height: 60px; resize: vertical; }
+/* Music block per mass time */
+.mass-time-block { background: var(--parchment); border: 1px solid var(--border); border-radius: 4px; padding: 8px; margin-bottom: 8px; }
+.mass-time-block h4 { font-family: 'Cinzel', serif; font-size: 9px; color: var(--burgundy); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
 
-  .per-mass-group {
-    background: #f9f9f6;
-    border: 1px solid #eee;
-    border-radius: 4px;
-    padding: 8px;
-    margin-bottom: 6px;
-  }
-  .per-mass-group .form-group { margin-bottom: 6px; }
-  .per-mass-group .form-group:last-child { margin-bottom: 0; }
+/* Preview */
+.preview-frame { background: white; width: 5.5in; margin: 0 auto 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); border-radius: 2px; }
+.preview-frame iframe { width: 100%; border: none; min-height: 68in; }
 
-  .add-btn {
-    font-size: 12px;
-    color: var(--primary);
-    background: none;
-    border: 1px dashed var(--primary);
-    border-radius: 4px;
-    padding: 4px 10px;
-    cursor: pointer;
-    width: 100%;
-  }
-  .add-btn:hover { background: rgba(139,0,0,0.05); }
-  .remove-btn {
-    float: right;
-    font-size: 11px;
-    color: var(--error);
-    background: none;
-    border: none;
-    cursor: pointer;
-  }
+/* Status */
+.status { position: fixed; bottom: 0; left: 0; right: 0; background: var(--white); border-top: 1px solid var(--border); padding: 6px 16px; display: flex; justify-content: space-between; font-size: 11px; color: var(--gray); z-index: 100; }
+.status .warn { color: #e67e22; } .status .err { color: var(--error); }
 
-  .preview-page {
-    background: white;
-    width: 8.5in;
-    min-height: 11in;
-    margin: 0 auto 20px;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.12);
-    border-radius: 2px;
-  }
-  .preview-page iframe {
-    width: 100%;
-    border: none;
-    min-height: 88in;
-  }
+/* Toast */
+.toast { position: fixed; top: 60px; right: 16px; padding: 10px 18px; border-radius: 6px; color: white; font-size: 12px; z-index: 200; animation: slideIn 0.25s ease; box-shadow: 0 3px 10px rgba(0,0,0,0.2); }
+.toast.success { background: var(--success); } .toast.error { background: var(--error); }
+@keyframes slideIn { from { transform: translateX(80px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
-  .status-bar {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: var(--card-bg);
-    border-top: 1px solid var(--border);
-    padding: 8px 16px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 12px;
-    z-index: 100;
-  }
-  .status-bar .warnings { color: #e67e22; }
-  .status-bar .errors { color: var(--error); }
+/* History page */
+.history-view { max-width: 800px; margin: 30px auto; padding: 0 20px; }
+.history-view h2 { font-family: 'Cinzel', serif; color: var(--navy); margin-bottom: 16px; }
+.draft-card { background: white; border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
+.draft-card .info { flex: 1; }
+.draft-card .info h3 { font-size: 14px; margin-bottom: 2px; } .draft-card .info p { font-size: 11px; color: var(--gray); }
+.draft-card .actions { display: flex; gap: 6px; }
+.status-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 500; }
+.status-badge.draft { background: #fef3cd; color: #856404; }
+.status-badge.exported { background: #d4edda; color: #155724; }
 
-  .toast {
-    position: fixed;
-    top: 70px;
-    right: 20px;
-    padding: 12px 20px;
-    border-radius: 8px;
-    color: white;
-    font-size: 13px;
-    z-index: 200;
-    animation: slideIn 0.3s ease;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-  }
-  .toast.success { background: var(--success); }
-  .toast.error { background: var(--error); }
-  @keyframes slideIn { from { transform: translateX(100px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+/* Admin page */
+.admin-view { max-width: 600px; margin: 30px auto; padding: 0 20px; }
+.admin-view h2 { font-family: 'Cinzel', serif; color: var(--navy); margin-bottom: 16px; }
 
-  .json-mode {
-    width: 100%;
-    min-height: 400px;
-    font-family: 'Menlo', 'Consolas', monospace;
-    font-size: 12px;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    resize: vertical;
-  }
-  .tabs { display: flex; border-bottom: 2px solid var(--border); margin-bottom: 12px; }
-  .tab {
-    padding: 6px 14px;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    border: none;
-    background: none;
-    color: var(--muted);
-    border-bottom: 2px solid transparent;
-    margin-bottom: -2px;
-  }
-  .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
-  .checkbox-group { display: flex; align-items: center; gap: 6px; }
-  .checkbox-group input { width: auto; }
+/* Overflow indicator */
+.overflow-indicator { background: #fdeaea; border: 1px solid var(--error); border-radius: 4px; padding: 6px 10px; margin-bottom: 8px; font-size: 11px; color: var(--error); }
+.page-placeholder { text-align: center; padding: 60px 20px; color: var(--gray); }
+.page-placeholder h2 { color: var(--navy); font-family: 'Cinzel', serif; margin-bottom: 8px; }
 </style>
 </head>
 <body>
 
-<header>
-  <h1>&#x271E; Worship Aid Generator</h1>
-  <div class="actions">
-    <button class="btn btn-outline" onclick="loadSample()">Load Sample</button>
-    <button class="btn btn-outline" onclick="importJson()">Import JSON</button>
-    <button class="btn btn-outline" onclick="exportJson()">Export JSON</button>
-    <button class="btn btn-primary" onclick="generatePreview()">Preview</button>
-    <button class="btn btn-success" onclick="generatePdf()">Generate PDF</button>
-  </div>
-</header>
+<nav>
+  <span class="brand">&#x271E; Worship Aid Generator</span>
+  <a href="/" class="nav-link active" data-page="editor">Editor</a>
+  <a href="/history" class="nav-link" data-page="history">History</a>
+  <a href="/admin" class="nav-link" data-page="admin">Settings</a>
+  <span class="spacer"></span>
+  <button class="btn btn-outline btn-sm" onclick="loadSample()">Load Sample</button>
+  <button class="btn btn-outline btn-sm" onclick="saveDraft()">Save Draft</button>
+  <button class="btn btn-gold btn-sm" onclick="generatePreview()">Preview</button>
+  <button class="btn btn-navy btn-sm" onclick="generatePdfExport()">Export PDF</button>
+</nav>
 
-<div class="layout">
-  <!-- EDITOR PANEL -->
-  <div class="editor-panel" id="editor-panel">
-    <div class="tabs">
-      <button class="tab active" onclick="switchTab('form')">Form Editor</button>
-      <button class="tab" onclick="switchTab('json')">JSON Editor</button>
-    </div>
+<!-- EDITOR PAGE -->
+<div class="app" id="page-editor">
+  <div class="editor" id="editor">
 
-    <div id="form-view">
-      <!-- Metadata -->
-      <div class="form-section">
-        <div class="form-section-header" onclick="toggleSection(this)">
-          Metadata & Schedule <span>&#9660;</span>
-        </div>
-        <div class="form-section-body">
-          <div class="form-group">
-            <label>Occasion Name</label>
-            <input type="text" id="occasionName" placeholder="e.g., Second Sunday of Lent">
-          </div>
-          <div class="form-group">
-            <label>Date</label>
-            <input type="date" id="occasionDate">
-          </div>
-          <div class="form-group">
-            <label>Mass Times (comma-separated)</label>
-            <input type="text" id="massTimes" placeholder="Sat 5:00 PM, Sun 9:00 AM, Sun 11:00 AM">
-          </div>
-          <div class="form-group checkbox-group">
-            <input type="checkbox" id="compact">
-            <label style="margin:0;text-transform:none;font-size:13px;">Compact mode (9pt font)</label>
-          </div>
-          <div class="form-group checkbox-group">
-            <input type="checkbox" id="gloriaCheck" checked>
-            <label style="margin:0;text-transform:none;font-size:13px;">Include Gloria</label>
-          </div>
-        </div>
-      </div>
-
-      <!-- Introductory Rites -->
-      <div class="form-section">
-        <div class="form-section-header" onclick="toggleSection(this)">
-          Introductory Rites <span>&#9660;</span>
-        </div>
-        <div class="form-section-body">
-          <div class="form-group">
-            <label>Organ Prelude — Title</label>
-            <input type="text" id="preludeTitle" placeholder="e.g., O Sacred Head, Now Wounded">
-          </div>
-          <div class="form-group">
-            <label>Organ Prelude — Composer</label>
-            <input type="text" id="preludeComposer" placeholder="e.g., J.S. Bach">
-          </div>
-          <div class="form-group">
-            <label>Entrance Antiphon — Citation</label>
-            <input type="text" id="entranceCitation" placeholder="e.g., Cf. Ps 27 (26):8-9">
-          </div>
-          <div class="form-group">
-            <label>Entrance Antiphon — Composer Credit</label>
-            <input type="text" id="entranceCredit" placeholder="e.g., Setting by Richard Rice">
-          </div>
-          <div class="form-group">
-            <label>Penitential Act</label>
-            <select id="penitentialAct">
-              <option value="default">Default Confiteor</option>
-              <option value="custom">Custom Text</option>
+    <!-- LITURGICAL DATE -->
+    <div class="form-section">
+      <div class="form-section-hdr" onclick="toggle(this)">Liturgical Date &amp; Season <span>&#9660;</span></div>
+      <div class="form-section-body">
+        <div class="fg"><label>Feast / Sunday Name</label><input type="text" id="feastName" placeholder="e.g., Second Sunday of Lent"></div>
+        <div class="fg-row">
+          <div class="fg"><label>Date</label><input type="date" id="liturgicalDate"></div>
+          <div class="fg"><label>Liturgical Season</label>
+            <select id="liturgicalSeason" onchange="onSeasonChange()">
+              <option value="ordinary">Ordinary Time</option>
+              <option value="advent">Advent</option>
+              <option value="christmas">Christmas</option>
+              <option value="lent">Lent</option>
+              <option value="easter">Easter</option>
             </select>
-          </div>
-          <div class="form-group">
-            <label>Collect</label>
-            <textarea id="collect" rows="3" placeholder="Opening prayer text..."></textarea>
-          </div>
-          <div id="kyrieContainer">
-            <label style="font-size:12px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:0.5px;">Kyrie Settings (per Mass)</label>
-            <div id="kyrieList"></div>
-            <button class="add-btn" onclick="addKyrie()">+ Add Kyrie Setting</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Liturgy of the Word -->
-      <div class="form-section">
-        <div class="form-section-header" onclick="toggleSection(this)">
-          Liturgy of the Word <span>&#9660;</span>
-        </div>
-        <div class="form-section-body">
-          <div class="form-group">
-            <label>First Reading — Citation</label>
-            <input type="text" id="firstReadingCitation" placeholder="e.g., Genesis 15:5-12, 17-18">
-          </div>
-          <div class="form-group">
-            <label>First Reading — Text</label>
-            <textarea id="firstReadingText" rows="6" placeholder="Full reading text..."></textarea>
-          </div>
-          <div class="form-group">
-            <label>Responsorial Psalm — Citation</label>
-            <input type="text" id="psalmCitation" placeholder="e.g., Psalm 27:1, 7-8, 8-9, 13-14">
-          </div>
-          <div class="form-group">
-            <label>Responsorial Psalm — Response</label>
-            <input type="text" id="psalmResponse" placeholder="e.g., The Lord is my light and my salvation.">
-          </div>
-          <div class="form-group">
-            <label>Second Reading — Citation</label>
-            <input type="text" id="secondReadingCitation" placeholder="e.g., Philippians 3:17—4:1">
-          </div>
-          <div class="form-group">
-            <label>Second Reading — Text</label>
-            <textarea id="secondReadingText" rows="6" placeholder="Full reading text..."></textarea>
-          </div>
-          <div class="form-group checkbox-group">
-            <input type="checkbox" id="lentenCheck">
-            <label style="margin:0;text-transform:none;font-size:13px;">Lenten Gospel Acclamation (suppress Alleluia)</label>
-          </div>
-          <div class="form-group">
-            <label>Gospel Acclamation — Citation</label>
-            <input type="text" id="acclamationCitation" placeholder="e.g., Cf. Mt 17:5">
-          </div>
-          <div class="form-group">
-            <label>Gospel Acclamation — Verse</label>
-            <input type="text" id="acclamationVerse">
-          </div>
-          <div class="form-group">
-            <label>Gospel — Citation</label>
-            <input type="text" id="gospelCitation" placeholder="e.g., Luke 9:28b-36">
-          </div>
-          <div class="form-group">
-            <label>Gospel — Text</label>
-            <textarea id="gospelText" rows="6" placeholder="Full Gospel text..."></textarea>
-          </div>
-          <div class="form-group">
-            <label>Creed Type</label>
-            <select id="creedType">
-              <option value="nicene">Nicene Creed</option>
-              <option value="apostles">Apostles' Creed</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Announcements</label>
-            <textarea id="announcements" rows="3" placeholder="Parish announcements..."></textarea>
-          </div>
-        </div>
-      </div>
-
-      <!-- Liturgy of the Eucharist -->
-      <div class="form-section">
-        <div class="form-section-header" onclick="toggleSection(this)">
-          Liturgy of the Eucharist <span>&#9660;</span>
-        </div>
-        <div class="form-section-body">
-          <div id="offertoryContainer">
-            <label style="font-size:12px;font-weight:600;color:#666;text-transform:uppercase;">Offertory Anthems</label>
-            <div id="offertoryList"></div>
-            <button class="add-btn" onclick="addPerMassItem('offertory')">+ Add Offertory Anthem</button>
-          </div>
-          <div class="form-group" style="margin-top:10px;">
-            <label>Holy, Holy, Holy — Setting Name</label>
-            <input type="text" id="sanctusName" placeholder="e.g., Mass of Creation (Haugen)">
-          </div>
-          <div class="form-group">
-            <label>Mystery of Faith — Setting Name</label>
-            <input type="text" id="mysteryName" placeholder="e.g., Mass of Creation (Haugen)">
-          </div>
-          <div class="form-group">
-            <label>Mystery of Faith — Option</label>
-            <select id="mysteryOption">
-              <option value="A">A — We proclaim your Death...</option>
-              <option value="B">B — When we eat this Bread...</option>
-              <option value="C">C — Save us, Savior of the world...</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      <!-- Communion Rite -->
-      <div class="form-section">
-        <div class="form-section-header" onclick="toggleSection(this)">
-          Communion Rite <span>&#9660;</span>
-        </div>
-        <div class="form-section-body">
-          <div class="form-group">
-            <label>Agnus Dei — Setting Name</label>
-            <input type="text" id="agnusName" placeholder="e.g., Mass of Creation (Haugen)">
-          </div>
-          <div id="communionContainer">
-            <label style="font-size:12px;font-weight:600;color:#666;text-transform:uppercase;">Communion Hymns</label>
-            <div id="communionList"></div>
-            <button class="add-btn" onclick="addPerMassItem('communion')">+ Add Communion Hymn</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Concluding Rites -->
-      <div class="form-section">
-        <div class="form-section-header" onclick="toggleSection(this)">
-          Concluding Rites <span>&#9660;</span>
-        </div>
-        <div class="form-section-body">
-          <div class="form-group">
-            <label>Hymn of Thanksgiving — Title</label>
-            <input type="text" id="thanksgivingTitle">
-          </div>
-          <div class="form-group">
-            <label>Year A Stanza (optional)</label>
-            <textarea id="yearAStanza" rows="2"></textarea>
-          </div>
-          <div id="choralContainer">
-            <label style="font-size:12px;font-weight:600;color:#666;text-transform:uppercase;">Choral Anthems</label>
-            <div id="choralList"></div>
-            <button class="add-btn" onclick="addPerMassItem('choral')">+ Add Choral Anthem</button>
-          </div>
-          <div class="form-group" style="margin-top:10px;">
-            <label>Prayer after Communion</label>
-            <textarea id="prayerAfterCommunion" rows="3"></textarea>
-          </div>
-        </div>
-      </div>
-
-      <!-- Back Cover -->
-      <div class="form-section">
-        <div class="form-section-header" onclick="toggleSection(this)">
-          Back Cover & Branding <span>&#9660;</span>
-        </div>
-        <div class="form-section-body">
-          <div class="form-group">
-            <label>Instagram Handle</label>
-            <input type="text" id="instagram" placeholder="@yourparish">
-          </div>
-          <div class="form-group">
-            <label>Facebook</label>
-            <input type="text" id="facebook">
-          </div>
-          <div class="form-group">
-            <label>YouTube</label>
-            <input type="text" id="youtube">
-          </div>
-          <div class="form-group">
-            <label>QR Code — Give URL</label>
-            <input type="text" id="qrGive" placeholder="https://...">
-          </div>
-          <div class="form-group">
-            <label>QR Code — Join URL</label>
-            <input type="text" id="qrJoin" placeholder="https://...">
-          </div>
-          <div class="form-group">
-            <label>QR Code — Bulletin URL</label>
-            <input type="text" id="qrBulletin" placeholder="https://...">
-          </div>
-          <div class="form-group">
-            <label>Copyright Block (optional override)</label>
-            <textarea id="copyrightBlock" rows="3" placeholder="Leave blank for default..."></textarea>
           </div>
         </div>
       </div>
     </div>
 
-    <div id="json-view" style="display:none;">
-      <textarea class="json-mode" id="jsonEditor" spellcheck="false"></textarea>
-      <div style="margin-top:8px;display:flex;gap:8px;">
-        <button class="btn btn-secondary" onclick="syncJsonToForm()">Apply JSON to Form</button>
-        <button class="btn btn-secondary" onclick="syncFormToJson()">Refresh from Form</button>
+    <!-- SEASONAL OVERRIDES -->
+    <div class="form-section">
+      <div class="form-section-hdr" onclick="toggle(this)">Seasonal Settings <span>&#9660;</span></div>
+      <div class="form-section-body">
+        <div class="fg-check"><input type="checkbox" id="gloria"><label for="gloria">Include Gloria</label></div>
+        <div class="fg-row">
+          <div class="fg"><label>Creed</label><select id="creedType"><option value="nicene">Nicene Creed</option><option value="apostles">Apostles' Creed</option></select></div>
+          <div class="fg"><label>Entrance Type</label><select id="entranceType"><option value="processional">Processional Hymn</option><option value="antiphon">Entrance Antiphon</option></select></div>
+        </div>
+        <div class="fg"><label>Holy Holy Setting</label><input type="text" id="holyHolySetting" placeholder="e.g., Mass of St. Theresa"></div>
+        <div class="fg"><label>Mystery of Faith Setting</label><input type="text" id="mysteryOfFaithSetting"></div>
+        <div class="fg"><label>Lamb of God Setting</label><input type="text" id="lambOfGodSetting"></div>
+        <div class="fg"><label>Penitential Act</label><select id="penitentialAct"><option value="confiteor">Confiteor (I confess)</option><option value="kyrie_only">Kyrie Only</option></select></div>
       </div>
     </div>
 
-    <div style="height:60px;"></div>
+    <!-- READINGS -->
+    <div class="form-section">
+      <div class="form-section-hdr" onclick="toggle(this)">Readings <span>&#9660;</span></div>
+      <div class="form-section-body">
+        <div class="fg"><label>First Reading — Citation</label><input type="text" id="firstReadingCitation" placeholder="e.g., Genesis 15:5-12, 17-18"></div>
+        <div class="fg"><label>First Reading — Text</label><textarea id="firstReadingText" rows="5"></textarea></div>
+        <div class="fg"><label>Responsorial Psalm — Citation</label><input type="text" id="psalmCitation"></div>
+        <div class="fg"><label>Psalm Refrain</label><input type="text" id="psalmRefrain" placeholder="e.g., The Lord is my light and my salvation."></div>
+        <div class="fg"><label>Psalm Verses (separate stanzas with blank lines)</label><textarea id="psalmVerses" rows="4"></textarea></div>
+        <div class="fg-check"><input type="checkbox" id="noSecondReading"><label for="noSecondReading">No Second Reading (some feasts)</label></div>
+        <div class="fg"><label>Second Reading — Citation</label><input type="text" id="secondReadingCitation"></div>
+        <div class="fg"><label>Second Reading — Text</label><textarea id="secondReadingText" rows="5"></textarea></div>
+        <div class="fg"><label>Gospel Acclamation — Reference</label><input type="text" id="gospelAcclamationReference" placeholder="e.g., Cf. Mt 17:5"></div>
+        <div class="fg"><label>Gospel Acclamation — Verse</label><input type="text" id="gospelAcclamationVerse"></div>
+        <div class="fg"><label>Gospel — Citation</label><input type="text" id="gospelCitation" placeholder="e.g., Luke 9:28b-36"></div>
+        <div class="fg"><label>Gospel — Text</label><textarea id="gospelText" rows="6"></textarea></div>
+      </div>
+    </div>
+
+    <!-- MUSIC: SAT 5PM -->
+    <div class="form-section">
+      <div class="form-section-hdr" onclick="toggle(this)">Music — Sat 5:00 PM <span>&#9660;</span></div>
+      <div class="form-section-body" id="music-sat5pm-body">
+        ${musicBlockFields('sat5pm')}
+      </div>
+    </div>
+
+    <!-- MUSIC: SUN 9AM -->
+    <div class="form-section">
+      <div class="form-section-hdr" onclick="toggle(this)">Music — Sun 9:00 AM <span>&#9660;</span></div>
+      <div class="form-section-body" id="music-sun9am-body">
+        ${musicBlockFields('sun9am')}
+      </div>
+    </div>
+
+    <!-- MUSIC: SUN 11AM -->
+    <div class="form-section">
+      <div class="form-section-hdr" onclick="toggle(this)">Music — Sun 11:00 AM <span>&#9660;</span></div>
+      <div class="form-section-body" id="music-sun11am-body">
+        ${musicBlockFields('sun11am')}
+      </div>
+    </div>
+
+    <!-- CHILDREN'S LITURGY -->
+    <div class="form-section">
+      <div class="form-section-hdr" onclick="toggle(this)">Children's Liturgy <span>&#9660;</span></div>
+      <div class="form-section-body">
+        <div class="fg-check"><input type="checkbox" id="childrenLiturgyEnabled"><label for="childrenLiturgyEnabled">Enable Children's Liturgy of the Word</label></div>
+        <div class="fg"><label>Mass Time</label><input type="text" id="childrenLiturgyMassTime" placeholder="Sun 9:00 AM" value="Sun 9:00 AM"></div>
+        <div class="fg-row">
+          <div class="fg"><label>Music Title</label><input type="text" id="childrenLiturgyMusic"></div>
+          <div class="fg"><label>Composer</label><input type="text" id="childrenLiturgyMusicComposer"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ANNOUNCEMENTS & NOTES -->
+    <div class="form-section">
+      <div class="form-section-hdr" onclick="toggle(this)">Announcements &amp; Notes <span>&#9660;</span></div>
+      <div class="form-section-body">
+        <div class="fg"><label>Announcements</label><textarea id="announcements" rows="3"></textarea></div>
+        <div class="fg"><label>Special Notes (optional)</label><textarea id="specialNotes" rows="2" placeholder="Any one-off variations..."></textarea></div>
+      </div>
+    </div>
+
+    <div style="height:50px;"></div>
   </div>
 
-  <!-- PREVIEW PANEL -->
-  <div class="preview-panel" id="preview-panel">
-    <div id="preview-placeholder" style="text-align:center;padding:80px 20px;color:#999;">
-      <div style="font-size:48px;margin-bottom:16px;">&#x271E;</div>
-      <h2 style="color:#666;margin-bottom:8px;">Worship Aid Preview</h2>
-      <p>Fill in the form on the left, then click <strong>Preview</strong> to see the booklet.</p>
-      <p style="margin-top:12px;">Or click <strong>Load Sample</strong> to start with example data.</p>
+  <div class="preview-area" id="preview-area">
+    <div id="overflow-warnings"></div>
+    <div id="preview-placeholder" class="page-placeholder">
+      <div style="font-size:36px;margin-bottom:12px;">&#x271E;</div>
+      <h2>Worship Aid Preview</h2>
+      <p>Fill in the form, then click <strong>Preview</strong>.</p>
+      <p style="margin-top:8px;">Or <strong>Load Sample</strong> to start with example data.</p>
     </div>
     <div id="preview-content" style="display:none;">
-      <div class="preview-page">
-        <iframe id="preview-iframe" sandbox="allow-same-origin"></iframe>
-      </div>
+      <div class="preview-frame"><iframe id="preview-iframe" sandbox="allow-same-origin"></iframe></div>
     </div>
   </div>
 </div>
 
-<div class="status-bar" id="status-bar">
-  <span id="status-text">Ready</span>
-  <span id="status-warnings"></span>
+<!-- HISTORY PAGE -->
+<div id="page-history" style="display:none;">
+  <div class="history-view">
+    <h2>Worship Aid History</h2>
+    <div id="history-list"></div>
+  </div>
 </div>
 
-<script>
-// Per-mass item management
-const perMassItems = { offertory: [], communion: [], choral: [] };
-let kyrieItems = [];
+<!-- ADMIN/SETTINGS PAGE -->
+<div id="page-admin" style="display:none;">
+  <div class="admin-view">
+    <h2>Parish Settings</h2>
+    <div class="form-section"><div class="form-section-hdr">Parish Information</div>
+      <div class="form-section-body">
+        <div class="fg"><label>Parish Name</label><input type="text" id="s_parishName"></div>
+        <div class="fg"><label>Address</label><input type="text" id="s_parishAddress"></div>
+        <div class="fg-row">
+          <div class="fg"><label>Phone</label><input type="text" id="s_parishPhone"></div>
+          <div class="fg"><label>Website URL</label><input type="text" id="s_parishUrl"></div>
+        </div>
+      </div>
+    </div>
+    <div class="form-section"><div class="form-section-hdr">Cover Page Info Blocks</div>
+      <div class="form-section-body">
+        <div class="fg"><label>Connect Blurb</label><textarea id="s_connectBlurb" rows="2"></textarea></div>
+        <div class="fg"><label>Nursery Blurb</label><textarea id="s_nurseryBlurb" rows="2"></textarea></div>
+        <div class="fg"><label>Restrooms Blurb</label><textarea id="s_restroomsBlurb" rows="2"></textarea></div>
+        <div class="fg"><label>Prayer Blurb</label><textarea id="s_prayerBlurb" rows="2"></textarea></div>
+      </div>
+    </div>
+    <div class="form-section"><div class="form-section-hdr">Copyright &amp; Licensing</div>
+      <div class="form-section-body">
+        <div class="fg"><label>OneLicense Number</label><input type="text" id="s_onelicenseNumber"></div>
+        <div class="fg"><label>Short Copyright (Page 7)</label><textarea id="s_copyrightShort" rows="2"></textarea></div>
+        <div class="fg"><label>Full Copyright (Page 8)</label><textarea id="s_copyrightFull" rows="4"></textarea></div>
+      </div>
+    </div>
+    <button class="btn btn-gold" onclick="saveAdminSettings()" style="margin-top:12px;">Save Settings</button>
+  </div>
+</div>
 
-function toggleSection(header) {
-  const body = header.nextElementSibling;
-  const arrow = header.querySelector('span');
+<div class="status"><span id="status-text">Ready</span><span id="status-extra"></span></div>
+
+<script>
+// --- Navigation ---
+document.querySelectorAll('.nav-link').forEach(link => {
+  link.addEventListener('click', e => {
+    e.preventDefault();
+    const page = link.dataset.page;
+    showPage(page);
+    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+    link.classList.add('active');
+  });
+});
+function showPage(page) {
+  ['editor','history','admin'].forEach(p => {
+    document.getElementById('page-' + p).style.display = (p === page) ? '' : 'none';
+  });
+  if (page === 'history') loadHistory();
+  if (page === 'admin') loadAdminSettings();
+}
+
+// --- Form helpers ---
+function toggle(hdr) {
+  const body = hdr.nextElementSibling;
+  const arrow = hdr.querySelector('span');
   body.classList.toggle('collapsed');
   arrow.textContent = body.classList.contains('collapsed') ? '\\u25B6' : '\\u25BC';
 }
 
-function switchTab(tab) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  if (tab === 'json') {
-    document.getElementById('form-view').style.display = 'none';
-    document.getElementById('json-view').style.display = 'block';
-    document.querySelectorAll('.tab')[1].classList.add('active');
-    syncFormToJson();
-  } else {
-    document.getElementById('form-view').style.display = 'block';
-    document.getElementById('json-view').style.display = 'none';
-    document.querySelectorAll('.tab')[0].classList.add('active');
-  }
+function v(id) { const el = document.getElementById(id); return el ? el.value.trim() : ''; }
+function ch(id) { const el = document.getElementById(id); return el ? el.checked : false; }
+function sv(id, val) { const el = document.getElementById(id); if (el) el.value = val || ''; }
+function sc(id, val) { const el = document.getElementById(id); if (el) el.checked = !!val; }
+
+function buildMusicBlock(prefix) {
+  return {
+    organPrelude: v(prefix + '_organPrelude'),
+    organPreludeComposer: v(prefix + '_organPreludeComposer'),
+    processionalOrEntrance: v(prefix + '_processional'),
+    processionalOrEntranceComposer: v(prefix + '_processionalComposer'),
+    kyrieSetting: v(prefix + '_kyrie'),
+    kyrieComposer: v(prefix + '_kyrieComposer'),
+    offertoryAnthem: v(prefix + '_offertory'),
+    offertoryAnthemComposer: v(prefix + '_offertoryComposer'),
+    communionHymn: v(prefix + '_communion'),
+    communionHymnComposer: v(prefix + '_communionComposer'),
+    hymnOfThanksgiving: v(prefix + '_thanksgiving'),
+    hymnOfThanksgivingComposer: v(prefix + '_thanksgivingComposer'),
+    organPostlude: v(prefix + '_postlude'),
+    organPostludeComposer: v(prefix + '_postludeComposer'),
+    choralAnthemConcluding: v(prefix + '_choral'),
+    choralAnthemConcludingComposer: v(prefix + '_choralComposer')
+  };
 }
 
-function val(id) { return document.getElementById(id)?.value?.trim() || ''; }
-function checked(id) { return document.getElementById(id)?.checked || false; }
+function populateMusicBlock(prefix, block) {
+  if (!block) return;
+  sv(prefix + '_organPrelude', block.organPrelude);
+  sv(prefix + '_organPreludeComposer', block.organPreludeComposer);
+  sv(prefix + '_processional', block.processionalOrEntrance);
+  sv(prefix + '_processionalComposer', block.processionalOrEntranceComposer);
+  sv(prefix + '_kyrie', block.kyrieSetting);
+  sv(prefix + '_kyrieComposer', block.kyrieComposer);
+  sv(prefix + '_offertory', block.offertoryAnthem);
+  sv(prefix + '_offertoryComposer', block.offertoryAnthemComposer);
+  sv(prefix + '_communion', block.communionHymn);
+  sv(prefix + '_communionComposer', block.communionHymnComposer);
+  sv(prefix + '_thanksgiving', block.hymnOfThanksgiving);
+  sv(prefix + '_thanksgivingComposer', block.hymnOfThanksgivingComposer);
+  sv(prefix + '_postlude', block.organPostlude);
+  sv(prefix + '_postludeComposer', block.organPostludeComposer);
+  sv(prefix + '_choral', block.choralAnthemConcluding);
+  sv(prefix + '_choralComposer', block.choralAnthemConcludingComposer);
+}
 
 function buildData() {
-  const data = {
-    occasionName: val('occasionName'),
-    occasionDate: val('occasionDate'),
-    massTimes: val('massTimes').split(',').map(s => s.trim()).filter(Boolean),
-    compact: checked('compact'),
-    gloria: checked('gloriaCheck'),
-    creedType: val('creedType'),
+  return {
+    id: window._currentDraftId || undefined,
+    feastName: v('feastName'),
+    liturgicalDate: v('liturgicalDate'),
+    liturgicalSeason: v('liturgicalSeason'),
+    seasonalSettings: {
+      gloria: ch('gloria'),
+      creedType: v('creedType'),
+      entranceType: v('entranceType'),
+      holyHolySetting: v('holyHolySetting'),
+      mysteryOfFaithSetting: v('mysteryOfFaithSetting'),
+      lambOfGodSetting: v('lambOfGodSetting'),
+      penitentialAct: v('penitentialAct')
+    },
+    readings: {
+      firstReadingCitation: v('firstReadingCitation'),
+      firstReadingText: v('firstReadingText'),
+      psalmCitation: v('psalmCitation'),
+      psalmRefrain: v('psalmRefrain'),
+      psalmVerses: v('psalmVerses'),
+      noSecondReading: ch('noSecondReading'),
+      secondReadingCitation: v('secondReadingCitation'),
+      secondReadingText: v('secondReadingText'),
+      gospelAcclamationReference: v('gospelAcclamationReference'),
+      gospelAcclamationVerse: v('gospelAcclamationVerse'),
+      gospelCitation: v('gospelCitation'),
+      gospelText: v('gospelText')
+    },
+    musicSat5pm: buildMusicBlock('sat5pm'),
+    musicSun9am: buildMusicBlock('sun9am'),
+    musicSun11am: buildMusicBlock('sun11am'),
+    childrenLiturgyEnabled: ch('childrenLiturgyEnabled'),
+    childrenLiturgyMassTime: v('childrenLiturgyMassTime'),
+    childrenLiturgyMusic: v('childrenLiturgyMusic'),
+    childrenLiturgyMusicComposer: v('childrenLiturgyMusicComposer'),
+    announcements: v('announcements'),
+    specialNotes: v('specialNotes')
   };
-
-  if (val('preludeTitle')) data.organPrelude = { title: val('preludeTitle'), composer: val('preludeComposer') };
-  if (val('entranceCitation') || val('entranceCredit')) {
-    data.entranceAntiphon = { citation: val('entranceCitation'), composerCredit: val('entranceCredit') };
-  }
-  data.penitentialAct = val('penitentialAct');
-  if (val('collect')) data.collect = val('collect');
-
-  if (kyrieItems.length > 0) data.kyrieSettings = [...kyrieItems];
-
-  data.firstReading = { citation: val('firstReadingCitation'), text: val('firstReadingText') };
-  data.responsorialPsalm = { citation: val('psalmCitation'), response: val('psalmResponse') };
-
-  if (val('secondReadingCitation') || val('secondReadingText')) {
-    data.secondReading = { citation: val('secondReadingCitation'), text: val('secondReadingText') };
-  }
-
-  data.gospelAcclamation = {
-    citation: val('acclamationCitation'),
-    verse: val('acclamationVerse'),
-    lenten: checked('lentenCheck')
-  };
-
-  data.gospel = { citation: val('gospelCitation'), text: val('gospelText') };
-  if (val('announcements')) data.announcements = val('announcements');
-
-  if (perMassItems.offertory.length) data.offertoryAnthems = [...perMassItems.offertory];
-  if (val('sanctusName')) data.holySanctus = { settingName: val('sanctusName') };
-  if (val('mysteryName')) data.mysteryOfFaith = { settingName: val('mysteryName'), option: val('mysteryOption') };
-  if (val('agnusName')) data.agnus = { settingName: val('agnusName') };
-  if (perMassItems.communion.length) data.communionHymns = [...perMassItems.communion];
-
-  if (val('thanksgivingTitle')) {
-    data.hymnThanksgiving = { title: val('thanksgivingTitle') };
-    if (val('yearAStanza')) data.hymnThanksgiving.yearAStanza = val('yearAStanza');
-  }
-  if (perMassItems.choral.length) data.choralAnthems = [...perMassItems.choral];
-  if (val('prayerAfterCommunion')) data.prayerAfterCommunion = val('prayerAfterCommunion');
-
-  const social = {};
-  if (val('instagram')) social.instagram = val('instagram');
-  if (val('facebook')) social.facebook = val('facebook');
-  if (val('youtube')) social.youtube = val('youtube');
-  if (Object.keys(social).length) data.socialHandles = social;
-
-  const qr = {};
-  if (val('qrGive')) qr.give = val('qrGive');
-  if (val('qrJoin')) qr.join = val('qrJoin');
-  if (val('qrBulletin')) qr.bulletin = val('qrBulletin');
-  if (Object.keys(qr).length) data.qrCodes = qr;
-
-  if (val('copyrightBlock')) data.copyrightBlock = val('copyrightBlock');
-
-  return data;
 }
 
 function populateForm(data) {
-  document.getElementById('occasionName').value = data.occasionName || '';
-  document.getElementById('occasionDate').value = data.occasionDate || '';
-  document.getElementById('massTimes').value = (data.massTimes || []).join(', ');
-  document.getElementById('compact').checked = data.compact || false;
-  document.getElementById('gloriaCheck').checked = data.gloria !== false;
-  document.getElementById('creedType').value = data.creedType || 'nicene';
-
-  document.getElementById('preludeTitle').value = data.organPrelude?.title || '';
-  document.getElementById('preludeComposer').value = data.organPrelude?.composer || '';
-  document.getElementById('entranceCitation').value = data.entranceAntiphon?.citation || '';
-  document.getElementById('entranceCredit').value = data.entranceAntiphon?.composerCredit || '';
-  document.getElementById('penitentialAct').value = data.penitentialAct || 'default';
-  document.getElementById('collect').value = data.collect || '';
-
-  kyrieItems = data.kyrieSettings || [];
-  renderKyrieList();
-
-  document.getElementById('firstReadingCitation').value = data.firstReading?.citation || '';
-  document.getElementById('firstReadingText').value = data.firstReading?.text || '';
-  document.getElementById('psalmCitation').value = data.responsorialPsalm?.citation || '';
-  document.getElementById('psalmResponse').value = data.responsorialPsalm?.response || '';
-  document.getElementById('secondReadingCitation').value = data.secondReading?.citation || '';
-  document.getElementById('secondReadingText').value = data.secondReading?.text || '';
-  document.getElementById('lentenCheck').checked = data.gospelAcclamation?.lenten || false;
-  document.getElementById('acclamationCitation').value = data.gospelAcclamation?.citation || '';
-  document.getElementById('acclamationVerse').value = data.gospelAcclamation?.verse || '';
-  document.getElementById('gospelCitation').value = data.gospel?.citation || '';
-  document.getElementById('gospelText').value = data.gospel?.text || '';
-  document.getElementById('announcements').value = data.announcements || '';
-
-  perMassItems.offertory = data.offertoryAnthems || [];
-  perMassItems.communion = data.communionHymns || [];
-  perMassItems.choral = data.choralAnthems || [];
-  renderPerMassList('offertory');
-  renderPerMassList('communion');
-  renderPerMassList('choral');
-
-  document.getElementById('sanctusName').value = data.holySanctus?.settingName || '';
-  document.getElementById('mysteryName').value = data.mysteryOfFaith?.settingName || '';
-  document.getElementById('mysteryOption').value = data.mysteryOfFaith?.option || 'A';
-  document.getElementById('agnusName').value = data.agnus?.settingName || '';
-
-  document.getElementById('thanksgivingTitle').value = data.hymnThanksgiving?.title || '';
-  document.getElementById('yearAStanza').value = data.hymnThanksgiving?.yearAStanza || '';
-  document.getElementById('prayerAfterCommunion').value = data.prayerAfterCommunion || '';
-
-  document.getElementById('instagram').value = data.socialHandles?.instagram || '';
-  document.getElementById('facebook').value = data.socialHandles?.facebook || '';
-  document.getElementById('youtube').value = data.socialHandles?.youtube || '';
-  document.getElementById('qrGive').value = data.qrCodes?.give || '';
-  document.getElementById('qrJoin').value = data.qrCodes?.join || '';
-  document.getElementById('qrBulletin').value = data.qrCodes?.bulletin || '';
-  document.getElementById('copyrightBlock').value = data.copyrightBlock || '';
+  window._currentDraftId = data.id || undefined;
+  sv('feastName', data.feastName);
+  sv('liturgicalDate', data.liturgicalDate);
+  sv('liturgicalSeason', data.liturgicalSeason);
+  const ss = data.seasonalSettings || {};
+  sc('gloria', ss.gloria);
+  sv('creedType', ss.creedType);
+  sv('entranceType', ss.entranceType);
+  sv('holyHolySetting', ss.holyHolySetting);
+  sv('mysteryOfFaithSetting', ss.mysteryOfFaithSetting);
+  sv('lambOfGodSetting', ss.lambOfGodSetting);
+  sv('penitentialAct', ss.penitentialAct);
+  const r = data.readings || {};
+  sv('firstReadingCitation', r.firstReadingCitation);
+  sv('firstReadingText', r.firstReadingText);
+  sv('psalmCitation', r.psalmCitation);
+  sv('psalmRefrain', r.psalmRefrain);
+  sv('psalmVerses', r.psalmVerses);
+  sc('noSecondReading', r.noSecondReading);
+  sv('secondReadingCitation', r.secondReadingCitation);
+  sv('secondReadingText', r.secondReadingText);
+  sv('gospelAcclamationReference', r.gospelAcclamationReference);
+  sv('gospelAcclamationVerse', r.gospelAcclamationVerse);
+  sv('gospelCitation', r.gospelCitation);
+  sv('gospelText', r.gospelText);
+  populateMusicBlock('sat5pm', data.musicSat5pm);
+  populateMusicBlock('sun9am', data.musicSun9am);
+  populateMusicBlock('sun11am', data.musicSun11am);
+  sc('childrenLiturgyEnabled', data.childrenLiturgyEnabled);
+  sv('childrenLiturgyMassTime', data.childrenLiturgyMassTime);
+  sv('childrenLiturgyMusic', data.childrenLiturgyMusic);
+  sv('childrenLiturgyMusicComposer', data.childrenLiturgyMusicComposer);
+  sv('announcements', data.announcements);
+  sv('specialNotes', data.specialNotes);
 }
 
-function addKyrie() {
-  kyrieItems.push({ massTime: '', settingName: '' });
-  renderKyrieList();
-}
-function removeKyrie(i) {
-  kyrieItems.splice(i, 1);
-  renderKyrieList();
-}
-function renderKyrieList() {
-  const container = document.getElementById('kyrieList');
-  container.innerHTML = kyrieItems.map((k, i) => \`
-    <div class="per-mass-group">
-      <button class="remove-btn" onclick="removeKyrie(\${i})">Remove</button>
-      <div class="form-group">
-        <label>Mass Time</label>
-        <input type="text" value="\${k.massTime || ''}" onchange="kyrieItems[\${i}].massTime=this.value">
-      </div>
-      <div class="form-group">
-        <label>Setting Name</label>
-        <input type="text" value="\${k.settingName || ''}" onchange="kyrieItems[\${i}].settingName=this.value">
-      </div>
-    </div>
-  \`).join('');
-}
-
-function addPerMassItem(type) {
-  perMassItems[type].push({ massTime: '', title: '', composer: '' });
-  renderPerMassList(type);
-}
-function removePerMassItem(type, i) {
-  perMassItems[type].splice(i, 1);
-  renderPerMassList(type);
-}
-function renderPerMassList(type) {
-  const container = document.getElementById(type + 'List');
-  container.innerHTML = perMassItems[type].map((item, i) => \`
-    <div class="per-mass-group">
-      <button class="remove-btn" onclick="removePerMassItem('\${type}',\${i})">Remove</button>
-      <div class="form-group">
-        <label>Mass Time</label>
-        <input type="text" value="\${item.massTime || ''}" onchange="perMassItems['\${type}'][\${i}].massTime=this.value">
-      </div>
-      <div class="form-group">
-        <label>Title</label>
-        <input type="text" value="\${item.title || ''}" onchange="perMassItems['\${type}'][\${i}].title=this.value">
-      </div>
-      <div class="form-group">
-        <label>Composer</label>
-        <input type="text" value="\${item.composer || ''}" onchange="perMassItems['\${type}'][\${i}].composer=this.value">
-      </div>
-    </div>
-  \`).join('');
-}
-
-function syncFormToJson() {
-  document.getElementById('jsonEditor').value = JSON.stringify(buildData(), null, 2);
-}
-function syncJsonToForm() {
+// --- Season auto-rules ---
+async function onSeasonChange() {
+  const season = v('liturgicalSeason');
   try {
-    const data = JSON.parse(document.getElementById('jsonEditor').value);
-    populateForm(data);
-    showToast('JSON applied to form', 'success');
-  } catch (e) {
-    showToast('Invalid JSON: ' + e.message, 'error');
-  }
+    const res = await fetch('/api/season-defaults/' + season);
+    const defaults = await res.json();
+    sc('gloria', defaults.gloria);
+    sv('creedType', defaults.creedType);
+    sv('entranceType', defaults.entranceType);
+    sv('holyHolySetting', defaults.holyHolySetting);
+    sv('mysteryOfFaithSetting', defaults.mysteryOfFaithSetting);
+    sv('lambOfGodSetting', defaults.lambOfGodSetting);
+    sv('penitentialAct', defaults.penitentialAct);
+    toast('Season defaults applied: ' + season, 'success');
+  } catch(e) { console.error(e); }
 }
 
+// --- Actions ---
 async function loadSample() {
   try {
     const res = await fetch('/api/sample');
     const data = await res.json();
     populateForm(data);
-    showToast('Sample data loaded', 'success');
-    setStatus('Sample data loaded — click Preview to see the booklet');
-  } catch (e) {
-    showToast('Failed to load sample: ' + e.message, 'error');
-  }
+    toast('Sample loaded', 'success');
+    setStatus('Sample data loaded');
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
 }
 
-function importJson() {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.json';
-  input.onchange = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const text = await file.text();
-    try {
-      const data = JSON.parse(text);
-      populateForm(data);
-      showToast('JSON imported', 'success');
-    } catch (err) {
-      showToast('Invalid JSON file: ' + err.message, 'error');
-    }
-  };
-  input.click();
-}
-
-function exportJson() {
+async function saveDraft() {
   const data = buildData();
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = \`worship-aid-\${data.occasionDate || 'draft'}.json\`;
-  a.click();
-  URL.revokeObjectURL(url);
+  data.status = 'draft';
+  try {
+    const res = await fetch('/api/drafts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    const result = await res.json();
+    window._currentDraftId = result.id;
+    toast('Draft saved', 'success');
+    setStatus('Draft saved at ' + new Date().toLocaleTimeString());
+  } catch(e) { toast('Save error: ' + e.message, 'error'); }
 }
 
 async function generatePreview() {
   setStatus('Generating preview...');
-  const data = buildData();
   try {
-    const res = await fetch('/api/preview', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
+    const res = await fetch('/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildData()) });
     const result = await res.json();
-    if (!res.ok) {
-      showToast('Validation error: ' + (result.errors || []).join(', '), 'error');
-      setStatus('Preview failed — check validation errors');
-      return;
-    }
     document.getElementById('preview-placeholder').style.display = 'none';
     document.getElementById('preview-content').style.display = 'block';
     const iframe = document.getElementById('preview-iframe');
     iframe.srcdoc = result.html;
-    iframe.onload = () => {
-      iframe.style.height = iframe.contentDocument.body.scrollHeight + 'px';
-    };
-    const warnText = result.warnings.length > 0 ? result.warnings.length + ' warning(s)' : '';
-    setStatus('Preview generated', warnText);
-    if (result.warnings.length) {
-      showToast(result.warnings.length + ' warning(s) — check status bar', 'error');
-    }
-  } catch (e) {
-    showToast('Preview error: ' + e.message, 'error');
-    setStatus('Preview failed');
-  }
+    iframe.onload = () => { iframe.style.height = iframe.contentDocument.body.scrollHeight + 'px'; };
+
+    // Show overflow warnings
+    const warnEl = document.getElementById('overflow-warnings');
+    warnEl.innerHTML = (result.overflows || []).map(o =>
+      '<div class="overflow-indicator">' + o.message + '</div>'
+    ).join('');
+
+    setStatus('Preview generated', result.warnings.length ? result.warnings.length + ' warning(s)' : '');
+  } catch(e) { toast('Preview error: ' + e.message, 'error'); }
 }
 
-async function generatePdf() {
+async function generatePdfExport() {
   setStatus('Generating PDF...');
-  const data = buildData();
   try {
-    const res = await fetch('/api/generate-pdf', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
+    const data = buildData();
+    const res = await fetch('/api/generate-pdf', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
     const result = await res.json();
-    if (!res.ok) {
-      showToast('Error: ' + (result.error || result.errors?.join(', ')), 'error');
-      setStatus('PDF generation failed');
-      return;
-    }
-    // Trigger download
-    const a = document.createElement('a');
-    a.href = result.downloadUrl;
-    a.download = '';
-    a.click();
-    const warnText = result.warnings.length > 0 ? result.warnings.length + ' warning(s)' : '';
-    setStatus('PDF generated — downloading', warnText);
-    showToast('PDF generated successfully!', 'success');
-  } catch (e) {
-    showToast('PDF error: ' + e.message, 'error');
-    setStatus('PDF generation failed');
-  }
+    if (!res.ok) { toast('Error: ' + (result.error || ''), 'error'); return; }
+    const a = document.createElement('a'); a.href = result.downloadUrl; a.download = result.filename; a.click();
+    toast('PDF exported: ' + result.filename, 'success');
+    setStatus('PDF exported');
+  } catch(e) { toast('PDF error: ' + e.message, 'error'); }
 }
 
-function setStatus(text, warnings) {
+// --- History ---
+async function loadHistory() {
+  try {
+    const res = await fetch('/api/drafts');
+    const drafts = await res.json();
+    document.getElementById('history-list').innerHTML = drafts.length === 0
+      ? '<p style="color:var(--gray);font-style:italic;">No saved worship aids yet.</p>'
+      : drafts.map(d => \`
+        <div class="draft-card">
+          <div class="info">
+            <h3>\${d.feastName || 'Untitled'} <span class="status-badge \${d.status}">\${d.status}</span></h3>
+            <p>\${d.liturgicalDate || ''} &bull; \${d.liturgicalSeason || ''} &bull; Updated \${new Date(d.updatedAt).toLocaleDateString()}</p>
+          </div>
+          <div class="actions">
+            <button class="btn btn-outline btn-sm" onclick="openDraft('\${d.id}')">Open</button>
+            <button class="btn btn-outline btn-sm" onclick="dupDraft('\${d.id}')">Duplicate</button>
+            <button class="btn btn-danger btn-sm" onclick="delDraft('\${d.id}')">Delete</button>
+          </div>
+        </div>
+      \`).join('');
+  } catch(e) { console.error(e); }
+}
+
+async function openDraft(id) {
+  const res = await fetch('/api/drafts/' + id);
+  const data = await res.json();
+  populateForm(data);
+  showPage('editor');
+  document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+  document.querySelector('[data-page="editor"]').classList.add('active');
+  toast('Draft loaded', 'success');
+}
+
+async function dupDraft(id) {
+  await fetch('/api/drafts/' + id + '/duplicate', { method: 'POST' });
+  loadHistory();
+  toast('Draft duplicated', 'success');
+}
+
+async function delDraft(id) {
+  if (!confirm('Delete this draft?')) return;
+  await fetch('/api/drafts/' + id, { method: 'DELETE' });
+  loadHistory();
+}
+
+// --- Admin Settings ---
+const settingsFields = ['parishName','parishAddress','parishPhone','parishUrl','connectBlurb','nurseryBlurb','restroomsBlurb','prayerBlurb','onelicenseNumber','copyrightShort','copyrightFull'];
+async function loadAdminSettings() {
+  const res = await fetch('/api/settings');
+  const s = await res.json();
+  settingsFields.forEach(f => sv('s_' + f, s[f]));
+}
+async function saveAdminSettings() {
+  const s = {};
+  settingsFields.forEach(f => s[f] = v('s_' + f));
+  await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(s) });
+  toast('Settings saved', 'success');
+}
+
+// --- Auto-save ---
+let _autoSaveTimer;
+document.getElementById('editor').addEventListener('input', () => {
+  clearTimeout(_autoSaveTimer);
+  _autoSaveTimer = setTimeout(() => {
+    if (v('feastName') || v('liturgicalDate')) saveDraft();
+  }, 30000);
+});
+
+// --- Utils ---
+function setStatus(text, extra) {
   document.getElementById('status-text').textContent = text;
-  document.getElementById('status-warnings').innerHTML = warnings ? '<span class="warnings">' + warnings + '</span>' : '';
+  document.getElementById('status-extra').innerHTML = extra ? '<span class="warn">' + extra + '</span>' : '';
 }
-
-function showToast(msg, type) {
-  const existing = document.querySelector('.toast');
-  if (existing) existing.remove();
-  const toast = document.createElement('div');
-  toast.className = 'toast ' + type;
-  toast.textContent = msg;
-  document.body.appendChild(toast);
-  setTimeout(() => toast.remove(), 4000);
+function toast(msg, type) {
+  const old = document.querySelector('.toast'); if (old) old.remove();
+  const t = document.createElement('div'); t.className = 'toast ' + type; t.textContent = msg;
+  document.body.appendChild(t); setTimeout(() => t.remove(), 3500);
 }
 </script>
-
 </body>
 </html>`;
+}
+
+// Helper: generates the per-mass-time music fields HTML
+function musicBlockFields(prefix) {
+  const fields = [
+    ['organPrelude', 'organPreludeComposer', 'Organ Prelude'],
+    ['processional', 'processionalComposer', 'Processional / Entrance'],
+    ['kyrie', 'kyrieComposer', 'Lord, Have Mercy (Kyrie)'],
+    ['offertory', 'offertoryComposer', 'Offertory Anthem'],
+    ['communion', 'communionComposer', 'Communion Hymn'],
+    ['thanksgiving', 'thanksgivingComposer', 'Hymn of Thanksgiving'],
+    ['postlude', 'postludeComposer', 'Organ Postlude'],
+    ['choral', 'choralComposer', 'Choral Anthem (Concluding)']
+  ];
+  return fields.map(([titleId, compId, label]) => `
+    <div class="fg-row">
+      <div class="fg"><label>${label}</label><input type="text" id="${prefix}_${titleId}" placeholder="Title"></div>
+      <div class="fg"><label>&nbsp;</label><input type="text" id="${prefix}_${compId}" placeholder="Composer"></div>
+    </div>
+  `).join('');
 }
 
 module.exports = app;
