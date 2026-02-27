@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Worship Aid Generator &mdash; Production Research Questionnaire</title>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&family=Cinzel:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --navy: #1A2E4A;
+    --burgundy: #6B1A1A;
+    --gold: #B8922A;
+    --gold-light: #D4AF5A;
+    --cream: #FAF7F2;
+    --parchment: #F2EBD9;
+    --mid: #E0D5C0;
+    --dark: #1C1C1C;
+    --gray: #5A5A5A;
+    --light-gray: #8A8A8A;
+    --rule: #C8A84B;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--cream);
+    color: var(--dark);
+    font-family: 'EB Garamond', Georgia, serif;
+    font-size: 15px;
+    line-height: 1.7;
+    padding: 0;
+  }
+
+  /* ── COVER ──────────────────────────────────────────── */
+  .cover {
+    background: var(--navy);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 40px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .cover::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background:
+      radial-gradient(ellipse at 20% 20%, rgba(184,146,42,0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 80%, rgba(107,26,26,0.15) 0%, transparent 50%);
+    pointer-events: none;
+  }
+
+  .cover-ornament {
+    color: var(--gold);
+    font-size: 42px;
+    margin-bottom: 32px;
+    opacity: 0.85;
+    letter-spacing: 12px;
+  }
+
+  .cover-eyebrow {
+    font-family: 'Cinzel', serif;
+    font-size: 11px;
+    letter-spacing: 4px;
+    color: var(--gold-light);
+    text-transform: uppercase;
+    margin-bottom: 20px;
+    opacity: 0.8;
+  }
+
+  .cover-title {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: clamp(36px, 5vw, 56px);
+    font-weight: 300;
+    color: #FFFFFF;
+    text-align: center;
+    line-height: 1.15;
+    margin-bottom: 16px;
+    letter-spacing: -0.5px;
+  }
+
+  .cover-title strong {
+    font-weight: 600;
+    color: var(--gold-light);
+    display: block;
+  }
+
+  .cover-rule {
+    width: 80px;
+    height: 1px;
+    background: var(--gold);
+    margin: 28px auto;
+    opacity: 0.6;
+  }
+
+  .cover-subtitle {
+    font-family: 'EB Garamond', serif;
+    font-size: 17px;
+    font-style: italic;
+    color: rgba(255,255,255,0.65);
+    text-align: center;
+    max-width: 480px;
+    line-height: 1.6;
+    margin-bottom: 40px;
+  }
+
+  .cover-meta {
+    display: flex;
+    gap: 40px;
+    margin-top: 40px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .cover-meta-item {
+    text-align: center;
+  }
+
+  .cover-meta-label {
+    font-family: 'Cinzel', serif;
+    font-size: 9px;
+    letter-spacing: 3px;
+    color: var(--gold);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  .cover-meta-value {
+    font-size: 13px;
+    color: rgba(255,255,255,0.6);
+    font-style: italic;
+  }
+
+  .cover-meta-blank {
+    border-bottom: 1px solid rgba(255,255,255,0.25);
+    min-width: 160px;
+    display: inline-block;
+    margin-top: 4px;
+    height: 1px;
+  }
+
+  /* ── INTRO ──────────────────────────────────────────── */
+  .intro {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 72px 40px 48px;
+    border-bottom: 1px solid var(--mid);
+  }
+
+  .intro-label {
+    font-family: 'Cinzel', serif;
+    font-size: 10px;
+    letter-spacing: 3.5px;
+    color: var(--gold);
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+
+  .intro p {
+    font-size: 16px;
+    color: var(--gray);
+    line-height: 1.8;
+    margin-bottom: 14px;
+    max-width: 680px;
+  }
+
+  .intro p strong {
+    color: var(--navy);
+  }
+
+  /* ── SECTIONS ───────────────────────────────────────── */
+  .sections {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 0 40px 80px;
+  }
+
+  .section {
+    margin-top: 64px;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 28px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--mid);
+  }
+
+  .section-number {
+    font-family: 'Cinzel', serif;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--gold);
+    min-width: 28px;
+    padding-top: 2px;
+  }
+
+  .section-title {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--navy);
+    line-height: 1.1;
+  }
+
+  .section-subtitle {
+    font-size: 13px;
+    font-style: italic;
+    color: var(--light-gray);
+    margin-top: 2px;
+  }
+
+  /* ── QUESTIONS ──────────────────────────────────────── */
+  .question {
+    margin-bottom: 36px;
+    padding-left: 18px;
+    border-left: 2px solid var(--parchment);
+    transition: border-color 0.2s;
+  }
+
+  .question:hover {
+    border-left-color: var(--gold-light);
+  }
+
+  .question-label {
+    font-family: 'EB Garamond', serif;
+    font-size: 15.5px;
+    font-weight: 500;
+    color: var(--dark);
+    line-height: 1.5;
+    margin-bottom: 6px;
+  }
+
+  .question-label .q-num {
+    font-family: 'Cinzel', serif;
+    font-size: 10px;
+    color: var(--gold);
+    letter-spacing: 1px;
+    margin-right: 6px;
+    vertical-align: middle;
+    font-style: normal;
+  }
+
+  .question-hint {
+    font-size: 13px;
+    font-style: italic;
+    color: var(--light-gray);
+    margin-bottom: 10px;
+    line-height: 1.5;
+  }
+
+  /* Answer lines */
+  .answer-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 8px;
+  }
+
+  .answer-line {
+    border-bottom: 1px solid var(--mid);
+    min-height: 28px;
+    width: 100%;
+  }
+
+  /* Multiple choice */
+  .choices {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .choice {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 14px;
+    background: var(--parchment);
+    border-radius: 4px;
+    font-size: 14.5px;
+    color: var(--dark);
+    cursor: default;
+  }
+
+  .choice-box {
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid var(--mid);
+    border-radius: 3px;
+    flex-shrink: 0;
+    margin-top: 1px;
+    background: white;
+  }
+
+  .choice-circle {
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid var(--mid);
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 1px;
+    background: white;
+  }
+
+  .choice-text {
+    line-height: 1.4;
+  }
+
+  .choice-other {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: var(--parchment);
+    border-radius: 4px;
+    font-size: 14.5px;
+    color: var(--dark);
+  }
+
+  .choice-other-line {
+    flex: 1;
+    border-bottom: 1px solid var(--mid);
+    min-height: 22px;
+  }
+
+  /* Grid (for time estimates etc.) */
+  .grid-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+    font-size: 14px;
+  }
+
+  .grid-table th {
+    font-family: 'Cinzel', serif;
+    font-size: 9.5px;
+    letter-spacing: 2px;
+    color: var(--gold);
+    text-transform: uppercase;
+    text-align: left;
+    padding: 6px 12px 8px;
+    border-bottom: 1px solid var(--mid);
+    font-weight: 400;
+  }
+
+  .grid-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--parchment);
+    vertical-align: top;
+    color: var(--dark);
+  }
+
+  .grid-table td:last-child {
+    border-bottom-color: var(--mid);
+  }
+
+  .grid-table .fill-cell {
+    border-bottom: 1px solid var(--mid) !important;
+    min-width: 120px;
+  }
+
+  /* ── CALLOUT ────────────────────────────────────────── */
+  .callout {
+    background: var(--parchment);
+    border-left: 3px solid var(--burgundy);
+    border-radius: 0 6px 6px 0;
+    padding: 16px 20px;
+    margin: 24px 0;
+    font-size: 14px;
+    font-style: italic;
+    color: var(--gray);
+    line-height: 1.6;
+  }
+
+  .callout strong {
+    font-style: normal;
+    color: var(--burgundy);
+  }
+
+  /* ── DIVIDERS ───────────────────────────────────────── */
+  .ornamental-divider {
+    text-align: center;
+    color: var(--gold);
+    font-size: 18px;
+    letter-spacing: 10px;
+    margin: 48px 0;
+    opacity: 0.5;
+  }
+
+  /* ── FOOTER ─────────────────────────────────────────── */
+  .doc-footer {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 32px 40px 60px;
+    border-top: 1px solid var(--mid);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  .footer-left {
+    font-family: 'Cinzel', serif;
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--light-gray);
+    text-transform: uppercase;
+  }
+
+  .footer-right {
+    font-size: 13px;
+    font-style: italic;
+    color: var(--light-gray);
+  }
+
+  /* ── PRINT ──────────────────────────────────────────── */
+  @media print {
+    body { background: white; font-size: 12pt; }
+    .cover { min-height: auto; padding: 60px 40px; page-break-after: always; }
+    .cover-title { font-size: 36pt; }
+    .intro { padding-top: 40px; }
+    .section { page-break-inside: avoid; }
+    .question { page-break-inside: avoid; }
+    .choice { background: white; border: 1px solid #ccc; }
+    .choice-other { background: white; border: 1px solid #ccc; }
+    .callout { background: #f9f6f0; }
+  }
+
+  @media (max-width: 640px) {
+    .intro, .sections { padding-left: 24px; padding-right: 24px; }
+    .cover { padding: 48px 24px; }
+    .cover-meta { gap: 24px; }
+    .grid-table { font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- COVER                                               -->
+<!-- ═══════════════════════════════════════════════════ -->
+<div class="cover">
+  <div class="cover-ornament">✦ ✦ ✦</div>
+  <div class="cover-eyebrow">[Parish Name] &bull; Worship Aid Generator</div>
+  <h1 class="cover-title">
+    Production Research
+    <strong>Questionnaire</strong>
+  </h1>
+  <div class="cover-rule"></div>
+  <p class="cover-subtitle">
+    Helping us understand how the weekly worship aid is built &mdash; so we can automate the right things and protect what matters.
+  </p>
+
+  <div class="cover-meta">
+    <div class="cover-meta-item">
+      <div class="cover-meta-label">Your Name</div>
+      <div class="cover-meta-blank"></div>
+    </div>
+    <div class="cover-meta-item">
+      <div class="cover-meta-label">Your Role</div>
+      <div class="cover-meta-blank"></div>
+    </div>
+    <div class="cover-meta-item">
+      <div class="cover-meta-label">Date Completed</div>
+      <div class="cover-meta-blank"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- INTRO                                               -->
+<!-- ═══════════════════════════════════════════════════ -->
+<div class="intro">
+  <div class="intro-label">About This Questionnaire</div>
+  <p>
+    We&rsquo;re building a tool to automatically generate the weekly Sunday worship aid&mdash;the booklet parishioners hold at Mass. 
+    Before we write a line of code, we need to understand exactly how the current document gets made, 
+    what decisions are yours to make, and what&rsquo;s dictated by the Church.
+  </p>
+  <p>
+    <strong>There are no wrong answers.</strong> If you&rsquo;re not sure about something, say so&mdash;that&rsquo;s useful data. 
+    If a question doesn&rsquo;t apply to your role, skip it. Write in the margins if you need more space.
+  </p>
+  <p>
+    This takes most people <strong>20&ndash;30 minutes</strong>. It will save months of rebuilding things the wrong way.
+  </p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- SECTIONS                                            -->
+<!-- ═══════════════════════════════════════════════════ -->
+<div class="sections">
+
+  <!-- ── SECTION 1: ROLES & OWNERSHIP ──────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-number">01</span>
+      <div>
+        <div class="section-title">Roles &amp; Ownership</div>
+        <div class="section-subtitle">Who does what, and who has final say</div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">1.1</span> What is your official role, and how long have you been in it?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">1.2</span> Who is primarily responsible for producing the worship aid each week?</div>
+      <div class="question-hint">If it&rsquo;s shared, describe how responsibilities are divided.</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">1.3</span> Who reviews or approves the document before it goes to print?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Music Director</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Liturgy Coordinator</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Pastor / Associate Pastor</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Parish Administrator</span></div>
+        <div class="choice-other"><div class="choice-box"></div><span>Other:&nbsp;</span><div class="choice-other-line"></div></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">No formal review &mdash; producer sends directly to print</span></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">1.4</span> What happens when the primary person is unavailable? Is there a backup? Has it ever broken down?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+  </div>
+
+  <!-- ── SECTION 2: PRODUCTION PROCESS ─────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-number">02</span>
+      <div>
+        <div class="section-title">The Production Process</div>
+        <div class="section-subtitle">Current workflow, tools, timeline, and pain points</div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">2.1</span> What software do you currently use to build the worship aid?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Microsoft Publisher</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Adobe InDesign</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Microsoft Word</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Google Docs</span></div>
+        <div class="choice-other"><div class="choice-circle"></div><span>Other:&nbsp;</span><div class="choice-other-line"></div></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">2.2</span> Walk us through the production workflow, step by step, as you actually do it.</div>
+      <div class="question-hint">Don&rsquo;t describe the ideal process&mdash;describe what really happens on a typical week. Include where you get each piece of content.</div>
+      <div class="answer-lines">
+        <div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div>
+        <div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div>
+        <div class="answer-line"></div><div class="answer-line"></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">2.3</span> How much time does it typically take, start to finish?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Under 1 hour</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">1&ndash;2 hours</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">2&ndash;3 hours</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">3&ndash;5 hours</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">5+ hours</span></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">2.4</span> What day of the week is it typically completed? What&rsquo;s the hard deadline for sending to print?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">2.5</span> Do you start from a blank template each week, or do you copy last week&rsquo;s file and update it?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Start from a template</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Copy last week&rsquo;s file and update</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Copy from a prior year&rsquo;s matching Sunday (same liturgical week)</span></div>
+        <div class="choice-other"><div class="choice-circle"></div><span>Other:&nbsp;</span><div class="choice-other-line"></div></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">2.6</span> What are the most painful or error-prone parts of the current process?</div>
+      <div class="question-hint">What do you dread each week? What has gone wrong and made it to print?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+  </div>
+
+  <div class="ornamental-divider">&#10022; &#10022; &#10022;</div>
+
+  <!-- ── SECTION 3: READINGS ───────────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-number">03</span>
+      <div>
+        <div class="section-title">Scripture Readings</div>
+        <div class="section-subtitle">What&rsquo;s fixed, where it comes from, and what can vary</div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <strong>Why this matters:</strong> Sunday readings are assigned by the USCCB Lectionary&mdash;three-year cycle (A/B/C). 
+      We may be able to auto-pull these from a public API or hard-code the cycle. 
+      We need to know how you currently get them and whether any variation ever happens.
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">3.1</span> Where do you currently get the Scripture text for the readings?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">USCCB website (usccb.org)</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Planning Center Online</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Workbook for Lectors / printed missalette</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Liturgical Publications (LPi) or similar service</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Physical Lectionary / Sacramentary</span></div>
+        <div class="choice-other"><div class="choice-box"></div><span>Other:&nbsp;</span><div class="choice-other-line"></div></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">3.2</span> Are the readings always the assigned Sunday readings, or does the pastor ever choose an alternate (e.g., a votive Mass reading or a feast day)?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Always the assigned Sunday readings&mdash;no variation</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Occasionally alternate readings (feast days, special occasions)</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Frequently varies</span></div>
+      </div>
+      <div class="question-hint" style="margin-top:10px;">If alternate readings are used, who decides? How much notice do you get?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">3.3</span> Which Bible translation do you use for the printed readings?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">New American Bible Revised Edition (NABRE) &mdash; standard for US Catholic liturgy</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Revised Standard Version Catholic Edition (RSVCE)</span></div>
+        <div class="choice-other"><div class="choice-circle"></div><span>Other:&nbsp;</span><div class="choice-other-line"></div></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">3.4</span> The Responsorial Psalm is sung, not spoken. How is it handled in the worship aid?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Music notation image is printed (congregation sings the refrain)</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Refrain text only (no notation)</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Full verse text is printed for the cantor</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Congregation follows along but does not sing</span></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">3.5</span> Is the Gospel Acclamation (Alleluia or Lenten verse) always tied to the assigned psalm/acclamation, or does the music director select it?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+  </div>
+
+  <!-- ── SECTION 4: MUSIC SELECTION ────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-number">04</span>
+      <div>
+        <div class="section-title">Music Selection</div>
+        <div class="section-subtitle">Hymns, Mass settings, notation images &mdash; who chooses and when</div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <strong>Why this matters:</strong> We need to know which music elements are predictable enough to pre-populate 
+      and which require a human decision every week. The more we can pre-fill, the less staff has to enter manually.
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">4.1</span> Who selects the hymns and anthems for each Mass?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Music Director, independently</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Music Director in consultation with Pastor</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Pastor selects; Music Director implements</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Liturgy Committee decision</span></div>
+        <div class="choice-other"><div class="choice-circle"></div><span>Other:&nbsp;</span><div class="choice-other-line"></div></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">4.2</span> How far in advance are hymns and Mass music selected?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Day before (or day of)</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Same week (2&ndash;3 days out)</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Previous weekend or earlier</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Planned a full liturgical season in advance</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Annual planning calendar exists</span></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">4.3</span> Do you reuse the same hymns across different Sundays in the same liturgical season?</div>
+      <div class="question-hint">e.g., the same &ldquo;Hymn of Thanksgiving&rdquo; for all of Lent, or rotating through a set list</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Yes &mdash; we have a consistent seasonal repertoire (same songs repeat each Lent, Advent, etc.)</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Somewhat &mdash; some staples repeat, some vary week to week</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">No &mdash; entirely fresh selection each week</span></div>
+      </div>
+      <div class="question-hint" style="margin-top:10px;">If there are seasonal staples, please list them:</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">4.4</span> The Mass setting (Holy Holy Holy, Mystery of Faith, Great Amen, Agnus Dei) &mdash; does it change week to week, seasonally, or is it fixed?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Fixed &mdash; same setting every week all year</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Changes by liturgical season (e.g., different setting for Lent vs. Ordinary Time)</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Changes by Mass time (e.g., different setting at the 9 AM vs. 11 AM)</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Changes week to week based on Music Director discretion</span></div>
+      </div>
+      <div class="question-hint" style="margin-top:10px;">Please name the setting(s) currently in use:</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">4.5</span> Do different Mass times use different hymns or anthems?</div>
+      <div class="question-hint">Check all that apply and describe the pattern.</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Entrance Antiphon / Hymn varies by Mass time</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Kyrie setting varies by Mass time</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Offertory Anthem varies by Mass time</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Communion Hymn varies by Mass time</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Choral Anthem varies by Mass time</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Hymn of Thanksgiving varies by Mass time</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">All Mass times use identical music</span></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">4.6</span> Where do the music notation images come from, and what software generates them?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Exported from Finale</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Exported from Sibelius</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Exported from MuseScore</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Scanned from a physical score</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Screenshots from a digital score / PDF</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Provided by a publisher or licensing service</span></div>
+        <div class="choice-other"><div class="choice-box"></div><span>Other:&nbsp;</span><div class="choice-other-line"></div></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">4.7</span> Are notation images stored somewhere reusable (a shared folder, a library), or re-exported fresh each week?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">4.8</span> Do you use Planning Center Online (or similar software) to plan liturgical music? If so, how far does it currently integrate with worship aid production?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+  </div>
+
+  <div class="ornamental-divider">&#10022; &#10022; &#10022;</div>
+
+  <!-- ── SECTION 5: LITURGICAL CALENDAR LOGIC ──────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-number">05</span>
+      <div>
+        <div class="section-title">Liturgical Calendar Logic</div>
+        <div class="section-subtitle">What changes by season, and what&rsquo;s fixed by Church law</div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <strong>Why this matters:</strong> Many elements of the Mass change based on the liturgical season (Advent, Christmas, Lent, Easter, Ordinary Time) or the specific Sunday in the cycle. 
+      We want to automate as much of this logic as possible so staff doesn&rsquo;t have to remember it.
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">5.1</span> The Gloria (Glory to God) &mdash; confirm: it is suppressed during Lent and Advent, and included all other Sundays?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Yes &mdash; suppressed in Lent and Advent only</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Different rule applies at this parish</span></div>
+      </div>
+      <div class="question-hint" style="margin-top:10px;">If different, explain:</div>
+      <div class="answer-lines"><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">5.2</span> The Apostles&rsquo; Creed vs. Nicene Creed &mdash; when is each used at this parish?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Apostles&rsquo; Creed always (permitted for Sunday Mass in the US)</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Nicene Creed always</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Apostles&rsquo; Creed during Lent; Nicene Creed other Sundays</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Pastor&rsquo;s choice each week</span></div>
+        <div class="choice-other"><div class="choice-circle"></div><span>Other pattern:&nbsp;</span><div class="choice-other-line"></div></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">5.3</span> The Penitential Act (Confiteor / &ldquo;I confess&rdquo;) &mdash; is the same form used every week, or does it rotate between Form I, II, and III?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Always Form I (Confiteor: &ldquo;I confess to almighty God&hellip;&rdquo;)</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Always Form II (&ldquo;Lord, we have sinned against you&hellip;&rdquo;)</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Form III (Kyrie-based tropes) on certain occasions</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Rotates &mdash; pastor&rsquo;s discretion</span></div>
+        <div class="choice-other"><div class="choice-circle"></div><span>Other:&nbsp;</span><div class="choice-other-line"></div></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">5.4</span> What other elements change based on the liturgical season? Please describe each one.</div>
+      <div class="question-hint">Examples: specific Entrance Antiphon text, Communion Antiphon, special Lenten or Advent texts, special feasts (Ash Wednesday, Palm Sunday, etc.)</div>
+      <table class="grid-table">
+        <tr>
+          <th style="width:35%">Element</th>
+          <th style="width:30%">Season / Occasion</th>
+          <th>How It Changes</th>
+        </tr>
+        <tr><td class="fill-cell">&nbsp;</td><td class="fill-cell">&nbsp;</td><td class="fill-cell">&nbsp;</td></tr>
+        <tr><td class="fill-cell">&nbsp;</td><td class="fill-cell">&nbsp;</td><td class="fill-cell">&nbsp;</td></tr>
+        <tr><td class="fill-cell">&nbsp;</td><td class="fill-cell">&nbsp;</td><td class="fill-cell">&nbsp;</td></tr>
+        <tr><td class="fill-cell">&nbsp;</td><td class="fill-cell">&nbsp;</td><td class="fill-cell">&nbsp;</td></tr>
+        <tr><td class="fill-cell">&nbsp;</td><td class="fill-cell">&nbsp;</td><td class="fill-cell">&nbsp;</td></tr>
+      </table>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">5.5</span> Are there Sundays or solemnities where the worship aid format changes significantly?</div>
+      <div class="question-hint">e.g., Palm Sunday (procession rite), Easter Vigil, Corpus Christi, Feast of the Assumption</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">5.6</span> Does the Lectionary year (A / B / C) affect anything in the worship aid beyond the Scripture readings themselves?</div>
+      <div class="question-hint">e.g., specific hymns or antiphons tied to the Year A Scrutinies, or Year-specific psalm settings</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+  </div>
+
+  <!-- ── SECTION 6: LAYOUT & TEXT ───────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-number">06</span>
+      <div>
+        <div class="section-title">Layout &amp; Text Management</div>
+        <div class="section-subtitle">How you handle length, overflow, and edge cases</div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">6.1</span> The worship aid is always 8 pages. What do you do when a reading is too long to fit on the assigned page?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Reduce the font size for that section</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Tighten line spacing</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Shorten the reading (use the short form if a short form exists in the Lectionary)</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Move content to a different page or section</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Expand to 10 pages on those weeks</span></div>
+        <div class="choice-other"><div class="choice-box"></div><span>Other:&nbsp;</span><div class="choice-other-line"></div></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">6.2</span> Many Lectionary readings have a &ldquo;short form&rdquo; option. Does the pastor or Music Director decide which form to use, or is it always the full reading?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">6.3</span> Are the notation images always the same physical size in the layout, or do you resize them based on available space?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Always the same standard size</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Resized based on available space each week</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Different standard sizes for different elements (e.g., psalm refrain vs. full hymn)</span></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">6.4</span> Are there any rules about not breaking certain text across pages?</div>
+      <div class="question-hint">e.g., &ldquo;the Gospel text must never be split&rdquo; or &ldquo;a prayer must always appear as one block&rdquo;</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">6.5</span> Do you have a printed style guide, checklist, or previous year&rsquo;s files that a developer could reference as the design standard?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Yes &mdash; written style guide exists</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">No written guide &mdash; but prior year files are the de facto standard</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">No &mdash; it&rsquo;s all in the producer&rsquo;s head</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ornamental-divider">&#10022; &#10022; &#10022;</div>
+
+  <!-- ── SECTION 7: SPECIAL SITUATIONS ────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-number">07</span>
+      <div>
+        <div class="section-title">Special Situations</div>
+        <div class="section-subtitle">Edge cases, special formats, and exceptions</div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">7.1</span> Are there Masses where the standard 8-page format doesn&rsquo;t apply? Please list them.</div>
+      <div class="question-hint">e.g., Holy Week liturgies, All Souls Day, Feast of the Immaculate Conception, parish anniversary, baptism at Mass, RCIA rites</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">7.2</span> Are there Sundays when an additional insert is included?</div>
+      <div class="question-hint">e.g., special announcements page, printed prayers for a parish feast, mission appeal materials</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Never &mdash; the 8-page booklet is always the complete document</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Occasionally &mdash; rare special situations</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Regularly &mdash; inserts are common</span></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">7.3</span> Do you produce a separate Spanish-language worship aid, or any other language?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">No &mdash; English only</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Yes &mdash; Spanish version also produced</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Yes &mdash; bilingual English/Spanish in one document</span></div>
+        <div class="choice-other"><div class="choice-circle"></div><span>Other:&nbsp;</span><div class="choice-other-line"></div></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">7.4</span> How is the Children&rsquo;s Liturgy of the Word handled in the worship aid?</div>
+      <div class="question-hint">We noticed a reference to it in the existing worship aids. Does it appear in the booklet, and does it vary by Mass time?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+  </div>
+
+  <!-- ── SECTION 8: LICENSING & COMPLIANCE ─────────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-number">08</span>
+      <div>
+        <div class="section-title">Licensing &amp; Compliance</div>
+        <div class="section-subtitle">Copyright, OneLicense, and approval obligations</div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">8.1</span> Does the parish hold an active OneLicense, CCLI, or other reprint license?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">OneLicense (A-XXXXXX)</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">CCLI</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">LicenSing</span></div>
+        <div class="choice-other"><div class="choice-box"></div><span>Other:&nbsp;</span><div class="choice-other-line"></div></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">8.2</span> Is there currently a process to verify that each hymn or notation image included in the worship aid is covered under the active license?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Yes &mdash; we check every item against our license before including it</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">We rely on the Music Director&rsquo;s knowledge but don&rsquo;t formally check</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">No formal process &mdash; we assume our license covers everything we use</span></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">8.3</span> Where does the license number appear in the current worship aid? Is there a standard copyright credit line format?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+  </div>
+
+  <!-- ── SECTION 9: TECHNOLOGY & ACCESS ────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-number">09</span>
+      <div>
+        <div class="section-title">Technology &amp; Access</div>
+        <div class="section-subtitle">What the staff actually uses and is comfortable with</div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">9.1</span> What computer does the primary producer use?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Mac</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Windows PC</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Both are in use across the team</span></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">9.2</span> Is the staff comfortable using a command-line tool (Terminal), or would a web-based form be required for adoption?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Command line is fine &mdash; we&rsquo;re reasonably tech-comfortable</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">A web form would be strongly preferred</span></div>
+        <div class="choice"><div class="choice-circle"></div><span class="choice-text">Honestly uncertain &mdash; depends on how simple it is</span></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">9.3</span> Where are the current Publisher files and notation images stored?</div>
+      <div class="choices">
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Local hard drive (one person&rsquo;s computer)</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Google Drive (shared folder)</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Dropbox or similar</span></div>
+        <div class="choice"><div class="choice-box"></div><span class="choice-text">Parish network/server</span></div>
+        <div class="choice-other"><div class="choice-box"></div><span>Other:&nbsp;</span><div class="choice-other-line"></div></div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">9.4</span> How is the final PDF sent to the printer or print operator?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+  </div>
+
+  <!-- ── SECTION 10: PAIN & WISH LIST ──────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-number">10</span>
+      <div>
+        <div class="section-title">Pain Points &amp; Wish List</div>
+        <div class="section-subtitle">What you&rsquo;d change if you could change anything</div>
+      </div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">10.1</span> What would you eliminate from the current process if you could?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">10.2</span> Has anything ever gone wrong with the worship aid that you never want to happen again?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">10.3</span> What is the one thing the new tool absolutely must do well for you to trust it?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">10.4</span> Is there anything about the current layout or design that you would change if you were starting from scratch?</div>
+      <div class="answer-lines"><div class="answer-line"></div><div class="answer-line"></div><div class="answer-line"></div></div>
+    </div>
+
+    <div class="question">
+      <div class="question-label"><span class="q-num">10.5</span> Anything else we should know that we didn&rsquo;t ask?</div>
+      <div class="answer-lines">
+        <div class="answer-line"></div><div class="answer-line"></div>
+        <div class="answer-line"></div><div class="answer-line"></div>
+        <div class="answer-line"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- FOOTER                                              -->
+<!-- ═══════════════════════════════════════════════════ -->
+<div class="doc-footer">
+  <div class="footer-left">[Parish Name] &bull; Worship Aid Generator &bull; 2026</div>
+  <div class="footer-right">Return completed form to [Staff Name] &mdash; thank you for your time.</div>
+</div>
+
+</body>
+</html>
