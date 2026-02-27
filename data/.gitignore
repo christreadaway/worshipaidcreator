@@ -1,0 +1,6 @@
+# Ignore runtime data (drafts, exports, settings files)
+drafts/*.json
+exports/*.pdf
+exports/*.html
+exports/*.log
+settings/*.json
