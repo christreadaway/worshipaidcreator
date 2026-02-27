@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <style>
+    .cross { fill: #8B0000; }
+  </style>
+  <!-- Central large cross -->
+  <rect class="cross" x="85" y="30" width="30" height="140"/>
+  <rect class="cross" x="30" y="85" width="140" height="30"/>
+  <!-- Top-left small cross -->
+  <rect class="cross" x="50" y="45" width="8" height="30"/>
+  <rect class="cross" x="38" y="55" width="32" height="8"/>
+  <!-- Top-right small cross -->
+  <rect class="cross" x="142" y="45" width="8" height="30"/>
+  <rect class="cross" x="130" y="55" width="32" height="8"/>
+  <!-- Bottom-left small cross -->
+  <rect class="cross" x="50" y="125" width="8" height="30"/>
+  <rect class="cross" x="38" y="135" width="32" height="8"/>
+  <!-- Bottom-right small cross -->
+  <rect class="cross" x="142" y="125" width="8" height="30"/>
+  <rect class="cross" x="130" y="135" width="32" height="8"/>
+</svg>
