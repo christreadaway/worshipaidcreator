@@ -11,8 +11,8 @@ const userStore = require('../store/user-store');
 const testUserIds = [];
 
 describe('User Store', () => {
-  it('should create a user', () => {
-    const user = userStore.createUser({
+  it('should create a user', async () => {
+    const user = await userStore.createUser({
       username: 'testuser_' + Date.now(),
       displayName: 'Test User',
       role: 'staff',
@@ -25,77 +25,79 @@ describe('User Store', () => {
     assert.ok(!user.passwordHash, 'Password hash should not be exposed');
   });
 
-  it('should reject invalid role', () => {
-    assert.throws(() => {
-      userStore.createUser({ username: 'bad_' + Date.now(), displayName: 'Bad', role: 'invalid', password: 'x' });
-    }, /Invalid role/);
+  it('should reject invalid role', async () => {
+    await assert.rejects(
+      () => userStore.createUser({ username: 'bad_' + Date.now(), displayName: 'Bad', role: 'invalid', password: 'x' }),
+      /Invalid role/
+    );
   });
 
-  it('should reject duplicate username', () => {
+  it('should reject duplicate username', async () => {
     const unique = 'dup_' + Date.now();
-    userStore.createUser({ username: unique, displayName: 'First', role: 'staff', password: 'x' });
-    assert.throws(() => {
-      userStore.createUser({ username: unique, displayName: 'Second', role: 'staff', password: 'y' });
-    }, /already exists/);
+    await userStore.createUser({ username: unique, displayName: 'First', role: 'staff', password: 'x' });
+    await assert.rejects(
+      () => userStore.createUser({ username: unique, displayName: 'Second', role: 'staff', password: 'y' }),
+      /already exists/
+    );
   });
 
-  it('should list users', () => {
-    const users = userStore.listUsers();
+  it('should list users', async () => {
+    const users = await userStore.listUsers();
     assert.ok(Array.isArray(users));
     assert.ok(users.length > 0);
     // Ensure no password hashes exposed
     users.forEach(u => assert.ok(!u.passwordHash));
   });
 
-  it('should authenticate with correct credentials', () => {
+  it('should authenticate with correct credentials', async () => {
     const uname = 'authtest_' + Date.now();
-    userStore.createUser({ username: uname, displayName: 'Auth Test', role: 'staff', password: 'secret' });
-    const user = userStore.authenticateUser(uname, 'secret');
+    await userStore.createUser({ username: uname, displayName: 'Auth Test', role: 'staff', password: 'secret' });
+    const user = await userStore.authenticateUser(uname, 'secret');
     assert.ok(user);
     assert.equal(user.username, uname);
   });
 
-  it('should reject incorrect password', () => {
+  it('should reject incorrect password', async () => {
     const uname = 'authfail_' + Date.now();
-    userStore.createUser({ username: uname, displayName: 'Fail', role: 'staff', password: 'correct' });
-    const user = userStore.authenticateUser(uname, 'wrong');
+    await userStore.createUser({ username: uname, displayName: 'Fail', role: 'staff', password: 'correct' });
+    const user = await userStore.authenticateUser(uname, 'wrong');
     assert.equal(user, null);
   });
 
-  it('should create and validate sessions', () => {
+  it('should create and validate sessions', async () => {
     const uname = 'session_' + Date.now();
-    const created = userStore.createUser({ username: uname, displayName: 'Session', role: 'admin', password: 'pass' });
-    const token = userStore.createSession(created.id);
+    const created = await userStore.createUser({ username: uname, displayName: 'Session', role: 'admin', password: 'pass' });
+    const token = await userStore.createSession(created.id);
     assert.ok(token);
     assert.ok(token.length > 20);
 
-    const user = userStore.getSessionUser(token);
+    const user = await userStore.getSessionUser(token);
     assert.ok(user);
     assert.equal(user.id, created.id);
   });
 
-  it('should destroy sessions', () => {
+  it('should destroy sessions', async () => {
     const uname = 'destroy_' + Date.now();
-    const created = userStore.createUser({ username: uname, displayName: 'Destroy', role: 'staff', password: 'pass' });
-    const token = userStore.createSession(created.id);
-    userStore.destroySession(token);
-    const user = userStore.getSessionUser(token);
+    const created = await userStore.createUser({ username: uname, displayName: 'Destroy', role: 'staff', password: 'pass' });
+    const token = await userStore.createSession(created.id);
+    await userStore.destroySession(token);
+    const user = await userStore.getSessionUser(token);
     assert.equal(user, null);
   });
 
-  it('should enforce exclusive login per role (same role kicks previous session)', () => {
+  it('should enforce exclusive login per role (same role kicks previous session)', async () => {
     const ts = Date.now();
-    const user1 = userStore.createUser({ username: 'excl1_' + ts, displayName: 'Excl1', role: 'music_director', password: 'pass' });
-    const user2 = userStore.createUser({ username: 'excl2_' + ts, displayName: 'Excl2', role: 'music_director', password: 'pass' });
+    const user1 = await userStore.createUser({ username: 'excl1_' + ts, displayName: 'Excl1', role: 'music_director', password: 'pass' });
+    const user2 = await userStore.createUser({ username: 'excl2_' + ts, displayName: 'Excl2', role: 'music_director', password: 'pass' });
 
     // user1 logs in
-    const token1 = userStore.createSession(user1.id);
-    assert.ok(userStore.getSessionUser(token1), 'user1 should be logged in');
+    const token1 = await userStore.createSession(user1.id);
+    assert.ok(await userStore.getSessionUser(token1), 'user1 should be logged in');
 
     // user2 logs in — should invalidate user1 session
-    const token2 = userStore.createSession(user2.id);
-    assert.ok(userStore.getSessionUser(token2), 'user2 should be logged in');
-    assert.equal(userStore.getSessionUser(token1), null, 'user1 session should be invalidated when user2 of same role logs in');
+    const token2 = await userStore.createSession(user2.id);
+    assert.ok(await userStore.getSessionUser(token2), 'user2 should be logged in');
+    assert.equal(await userStore.getSessionUser(token1), null, 'user1 session should be invalidated when user2 of same role logs in');
   });
 });
 

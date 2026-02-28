@@ -19,59 +19,67 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 
-// Ensure upload directories exist
+// Upload directories (local dev) or Blobs (Netlify)
+const kv = require('./store/kv');
 const UPLOADS_DIR = path.join(__dirname, '..', 'data', 'uploads');
 const NOTATION_DIR = path.join(UPLOADS_DIR, 'notation');
 const COVERS_DIR = path.join(UPLOADS_DIR, 'covers');
-[NOTATION_DIR, COVERS_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
+if (!kv.IS_NETLIFY) {
+  [NOTATION_DIR, COVERS_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
+}
 
-// Multer config for image uploads
-const notationUpload = multer({
-  storage: multer.diskStorage({
-    destination: NOTATION_DIR,
-    filename: (req, file, cb) => {
-      const ext = path.extname(file.originalname);
-      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
-    }
-  }),
-  fileFilter: (req, file, cb) => {
-    const allowed = ['.png', '.jpg', '.jpeg', '.gif', '.svg'];
-    cb(null, allowed.includes(path.extname(file.originalname).toLowerCase()));
-  },
-  limits: { fileSize: 5 * 1024 * 1024 } // 5MB
-});
+// Multer config — memory storage on Netlify, disk storage locally
+function makeUploadConfig(destDir, prefixFn, allowedExts, maxSize) {
+  const storage = kv.IS_NETLIFY
+    ? multer.memoryStorage()
+    : multer.diskStorage({
+        destination: destDir,
+        filename: (req, file, cb) => {
+          const ext = path.extname(file.originalname);
+          cb(null, prefixFn(ext));
+        }
+      });
+  return multer({
+    storage,
+    fileFilter: (req, file, cb) => {
+      cb(null, allowedExts.includes(path.extname(file.originalname).toLowerCase()));
+    },
+    limits: { fileSize: maxSize }
+  });
+}
 
-const coverUpload = multer({
-  storage: multer.diskStorage({
-    destination: COVERS_DIR,
-    filename: (req, file, cb) => {
-      const ext = path.extname(file.originalname);
-      cb(null, `cover-${Date.now()}${ext}`);
-    }
-  }),
-  fileFilter: (req, file, cb) => {
-    const allowed = ['.png', '.jpg', '.jpeg'];
-    cb(null, allowed.includes(path.extname(file.originalname).toLowerCase()));
-  },
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB
-});
+const notationUpload = makeUploadConfig(
+  NOTATION_DIR,
+  ext => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`,
+  ['.png', '.jpg', '.jpeg', '.gif', '.svg'],
+  5 * 1024 * 1024
+);
+
+const coverUpload = makeUploadConfig(
+  COVERS_DIR,
+  ext => `cover-${Date.now()}${ext}`,
+  ['.png', '.jpg', '.jpeg'],
+  10 * 1024 * 1024
+);
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
-app.use('/exports', express.static(store.getExportsDir()));
-app.use('/uploads', express.static(UPLOADS_DIR));
+if (!kv.IS_NETLIFY) {
+  app.use('/exports', express.static(store.getExportsDir()));
+  app.use('/uploads', express.static(UPLOADS_DIR));
+}
 
 // Seed default users on first run
-userStore.seedDefaultUsers();
+const _seedReady = userStore.seedDefaultUsers().catch(e => console.error('Failed to seed users:', e.message));
 
 // --- AUTH MIDDLEWARE ---
 function getSessionToken(req) {
   return req.headers['x-session-token'] || req.query.token || null;
 }
 
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const token = getSessionToken(req);
-  const user = userStore.getSessionUser(token);
+  const user = await userStore.getSessionUser(token);
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
   req.user = user;
   next();
@@ -87,17 +95,17 @@ function requirePermission(permission) {
 }
 
 // --- AUTH ROUTES ---
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;
-  const user = userStore.authenticateUser(username, password);
+  const user = await userStore.authenticateUser(username, password);
   if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-  const token = userStore.createSession(user.id);
+  const token = await userStore.createSession(user.id);
   res.json({ token, user });
 });
 
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', async (req, res) => {
   const token = getSessionToken(req);
-  if (token) userStore.destroySession(token);
+  if (token) await userStore.destroySession(token);
   res.json({ success: true });
 });
 
@@ -127,7 +135,7 @@ app.post('/api/auth/google', async (req, res) => {
     if (!email) return res.status(400).json({ error: 'No email in Google token' });
 
     // Find user by Google email
-    const rawUser = userStore.getUserByGoogleEmail(email);
+    const rawUser = await userStore.getUserByGoogleEmail(email);
     if (!rawUser) {
       return res.status(403).json({ error: 'No account linked to ' + email + '. Ask your admin to add your Google email to your user account.' });
     }
@@ -136,7 +144,7 @@ app.post('/api/auth/google', async (req, res) => {
     }
 
     const user = { id: rawUser.id, username: rawUser.username, displayName: rawUser.displayName, role: rawUser.role, active: rawUser.active, createdAt: rawUser.createdAt, googleEmail: rawUser.googleEmail };
-    const token = userStore.createSession(user.id);
+    const token = await userStore.createSession(user.id);
     res.json({ token, user });
   } catch (e) {
     res.status(401).json({ error: e.message || 'Google authentication failed' });
@@ -148,35 +156,35 @@ app.get('/api/auth/google-client-id', (req, res) => {
   res.json({ clientId: GOOGLE_CLIENT_ID || null });
 });
 
-app.get('/api/auth/me', (req, res) => {
+app.get('/api/auth/me', async (req, res) => {
   const token = getSessionToken(req);
-  const user = userStore.getSessionUser(token);
+  const user = await userStore.getSessionUser(token);
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
   res.json(user);
 });
 
 // --- USER MANAGEMENT (admin only) ---
-app.get('/api/users', requireAuth, requirePermission('manage_users'), (req, res) => {
-  res.json(userStore.listUsers());
+app.get('/api/users', requireAuth, requirePermission('manage_users'), async (req, res) => {
+  res.json(await userStore.listUsers());
 });
 
-app.post('/api/users', requireAuth, requirePermission('manage_users'), (req, res) => {
+app.post('/api/users', requireAuth, requirePermission('manage_users'), async (req, res) => {
   try {
-    const user = userStore.createUser(req.body);
+    const user = await userStore.createUser(req.body);
     res.json(user);
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
 });
 
-app.put('/api/users/:id', requireAuth, requirePermission('manage_users'), (req, res) => {
-  const user = userStore.updateUser(req.params.id, req.body);
+app.put('/api/users/:id', requireAuth, requirePermission('manage_users'), async (req, res) => {
+  const user = await userStore.updateUser(req.params.id, req.body);
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json(user);
 });
 
-app.delete('/api/users/:id', requireAuth, requirePermission('manage_users'), (req, res) => {
-  userStore.deleteUser(req.params.id);
+app.delete('/api/users/:id', requireAuth, requirePermission('manage_users'), async (req, res) => {
+  await userStore.deleteUser(req.params.id);
   res.json({ success: true });
 });
 
@@ -201,8 +209,8 @@ app.post('/api/validate', (req, res) => {
 });
 
 // Preview HTML
-app.post('/api/preview', (req, res) => {
-  const settings = store.loadSettings();
+app.post('/api/preview', async (req, res) => {
+  const settings = await store.loadSettings();
   const { html, warnings } = renderBookletHtml(req.body, { parishSettings: settings });
   const overflows = detectOverflows(req.body);
   res.json({ html, warnings, overflows });
@@ -211,61 +219,85 @@ app.post('/api/preview', (req, res) => {
 // Generate PDF
 app.post('/api/generate-pdf', async (req, res) => {
   try {
-    const settings = store.loadSettings();
+    const settings = await store.loadSettings();
 
     // Enforce pastor approval if enabled in settings
     if (settings.requirePastorApproval && req.body.id) {
-      const draft = store.loadDraft(req.body.id);
+      const draft = await store.loadDraft(req.body.id);
       if (draft && draft.status !== 'approved') {
         return res.status(403).json({ error: 'Pastor approval required before export. Current status: ' + (draft.status || 'draft') });
       }
     }
 
     const filename = buildFilename(req.body);
-    const outputPath = path.join(store.getExportsDir(), filename);
+    const outputDir = kv.IS_NETLIFY ? '/tmp' : store.getExportsDir();
+    const outputPath = path.join(outputDir, filename);
     const result = await generatePdf(req.body, outputPath, { parishSettings: settings });
 
     // Mark draft as exported if it has an id
     if (req.body.id) {
-      const draft = store.loadDraft(req.body.id);
+      const draft = await store.loadDraft(req.body.id);
       if (draft) {
         draft.status = 'exported';
         draft.exportedAt = new Date().toISOString();
-        store.saveDraft(draft);
+        await store.saveDraft(draft);
       }
     }
 
-    res.json({
-      success: true,
-      filename,
-      downloadUrl: `/exports/${filename}`,
-      warnings: result.warnings
-    });
+    // On Netlify, send the file directly; locally, return a download URL
+    if (kv.IS_NETLIFY) {
+      const pdfBuffer = fs.readFileSync(outputPath);
+      fs.unlinkSync(outputPath);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(pdfBuffer);
+    } else {
+      res.json({
+        success: true,
+        filename,
+        downloadUrl: `/exports/${filename}`,
+        warnings: result.warnings
+      });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // --- IMAGE UPLOADS ---
-app.post('/api/upload/notation', requireAuth, requirePermission('upload_images'), notationUpload.single('image'), (req, res) => {
+app.post('/api/upload/notation', requireAuth, requirePermission('upload_images'), notationUpload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const ext = path.extname(req.file.originalname);
+  const filename = req.file.filename || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+  if (kv.IS_NETLIFY) {
+    await kv.set('uploads-notation', filename, { data: req.file.buffer.toString('base64'), mime: req.file.mimetype });
+  }
   res.json({
-    filename: req.file.filename,
-    url: `/uploads/notation/${req.file.filename}`,
+    filename,
+    url: kv.IS_NETLIFY ? `/api/uploads/notation/${filename}` : `/uploads/notation/${filename}`,
     originalName: req.file.originalname
   });
 });
 
-app.post('/api/upload/cover', requireAuth, requirePermission('edit_cover'), coverUpload.single('image'), (req, res) => {
+app.post('/api/upload/cover', requireAuth, requirePermission('edit_cover'), coverUpload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const ext = path.extname(req.file.originalname);
+  const filename = req.file.filename || `cover-${Date.now()}${ext}`;
+  if (kv.IS_NETLIFY) {
+    await kv.set('uploads-covers', filename, { data: req.file.buffer.toString('base64'), mime: req.file.mimetype });
+  }
   res.json({
-    filename: req.file.filename,
-    url: `/uploads/covers/${req.file.filename}`,
+    filename,
+    url: kv.IS_NETLIFY ? `/api/uploads/covers/${filename}` : `/uploads/covers/${filename}`,
     originalName: req.file.originalname
   });
 });
 
-app.get('/api/uploads/notation', (req, res) => {
+app.get('/api/uploads/notation', async (req, res) => {
+  if (kv.IS_NETLIFY) {
+    const items = await kv.list('uploads-notation');
+    return res.json(items.map(i => ({ filename: i.key || 'unknown', url: `/api/uploads/notation/${i.key || 'unknown'}` })));
+  }
   const files = fs.readdirSync(NOTATION_DIR).filter(f => !f.startsWith('.')).map(f => ({
     filename: f,
     url: `/uploads/notation/${f}`
@@ -273,7 +305,20 @@ app.get('/api/uploads/notation', (req, res) => {
   res.json(files);
 });
 
-app.get('/api/uploads/covers', (req, res) => {
+// Serve uploaded images from Blobs on Netlify
+app.get('/api/uploads/notation/:filename', async (req, res) => {
+  const item = await kv.get('uploads-notation', req.params.filename);
+  if (!item) return res.status(404).json({ error: 'Not found' });
+  const buf = Buffer.from(item.data, 'base64');
+  res.setHeader('Content-Type', item.mime);
+  res.send(buf);
+});
+
+app.get('/api/uploads/covers', async (req, res) => {
+  if (kv.IS_NETLIFY) {
+    const items = await kv.list('uploads-covers');
+    return res.json(items.map(i => ({ filename: i.key || 'unknown', url: `/api/uploads/covers/${i.key || 'unknown'}` })));
+  }
   const files = fs.readdirSync(COVERS_DIR).filter(f => !f.startsWith('.')).map(f => ({
     filename: f,
     url: `/uploads/covers/${f}`
@@ -281,56 +326,64 @@ app.get('/api/uploads/covers', (req, res) => {
   res.json(files);
 });
 
+app.get('/api/uploads/covers/:filename', async (req, res) => {
+  const item = await kv.get('uploads-covers', req.params.filename);
+  if (!item) return res.status(404).json({ error: 'Not found' });
+  const buf = Buffer.from(item.data, 'base64');
+  res.setHeader('Content-Type', item.mime);
+  res.send(buf);
+});
+
 // --- DRAFTS ---
-app.post('/api/drafts', (req, res) => {
-  const draft = store.saveDraft(req.body);
+app.post('/api/drafts', async (req, res) => {
+  const draft = await store.saveDraft(req.body);
   res.json(draft);
 });
 
-app.get('/api/drafts', (req, res) => {
-  res.json(store.listDrafts());
+app.get('/api/drafts', async (req, res) => {
+  res.json(await store.listDrafts());
 });
 
-app.get('/api/drafts/:id', (req, res) => {
-  const draft = store.loadDraft(req.params.id);
+app.get('/api/drafts/:id', async (req, res) => {
+  const draft = await store.loadDraft(req.params.id);
   if (!draft) return res.status(404).json({ error: 'Draft not found' });
   res.json(draft);
 });
 
-app.delete('/api/drafts/:id', (req, res) => {
-  store.deleteDraft(req.params.id);
+app.delete('/api/drafts/:id', async (req, res) => {
+  await store.deleteDraft(req.params.id);
   res.json({ success: true });
 });
 
-app.post('/api/drafts/:id/duplicate', (req, res) => {
-  const copy = store.duplicateDraft(req.params.id);
+app.post('/api/drafts/:id/duplicate', async (req, res) => {
+  const copy = await store.duplicateDraft(req.params.id);
   if (!copy) return res.status(404).json({ error: 'Draft not found' });
   res.json(copy);
 });
 
 // --- APPROVAL WORKFLOW ---
-app.post('/api/drafts/:id/submit-for-review', requireAuth, (req, res) => {
-  const draft = store.loadDraft(req.params.id);
+app.post('/api/drafts/:id/submit-for-review', requireAuth, async (req, res) => {
+  const draft = await store.loadDraft(req.params.id);
   if (!draft) return res.status(404).json({ error: 'Draft not found' });
   draft.status = 'review';
   draft.submittedBy = req.user.displayName;
   draft.submittedAt = new Date().toISOString();
-  store.saveDraft(draft);
+  await store.saveDraft(draft);
   res.json(draft);
 });
 
-app.post('/api/drafts/:id/approve', requireAuth, requirePermission('approve'), (req, res) => {
-  const draft = store.loadDraft(req.params.id);
+app.post('/api/drafts/:id/approve', requireAuth, requirePermission('approve'), async (req, res) => {
+  const draft = await store.loadDraft(req.params.id);
   if (!draft) return res.status(404).json({ error: 'Draft not found' });
   draft.status = 'approved';
   draft.approvedBy = req.user.displayName;
   draft.approvedAt = new Date().toISOString();
-  store.saveDraft(draft);
+  await store.saveDraft(draft);
   res.json(draft);
 });
 
-app.post('/api/drafts/:id/request-changes', requireAuth, requirePermission('approve'), (req, res) => {
-  const draft = store.loadDraft(req.params.id);
+app.post('/api/drafts/:id/request-changes', requireAuth, requirePermission('approve'), async (req, res) => {
+  const draft = await store.loadDraft(req.params.id);
   if (!draft) return res.status(404).json({ error: 'Draft not found' });
   draft.status = 'draft';
   draft.changeRequestedBy = req.user.displayName;
@@ -338,17 +391,17 @@ app.post('/api/drafts/:id/request-changes', requireAuth, requirePermission('appr
   draft.changeNote = (req.body && req.body.note) || '';
   delete draft.approvedBy;
   delete draft.approvedAt;
-  store.saveDraft(draft);
+  await store.saveDraft(draft);
   res.json(draft);
 });
 
 // --- SETTINGS ---
-app.get('/api/settings', (req, res) => {
-  res.json(store.loadSettings());
+app.get('/api/settings', async (req, res) => {
+  res.json(await store.loadSettings());
 });
 
-app.put('/api/settings', (req, res) => {
-  const settings = store.saveSettings(req.body);
+app.put('/api/settings', async (req, res) => {
+  const settings = await store.saveSettings(req.body);
   res.json(settings);
 });
 
@@ -1187,10 +1240,27 @@ async function generatePdfExport() {
   try {
     const data = buildData();
     const res = await fetch('/api/generate-pdf', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken }, body: JSON.stringify(data) });
-    const result = await res.json();
-    if (!res.ok) { toast('Error: ' + (result.error || ''), 'error'); setStatus('Export blocked'); return; }
-    const a = document.createElement('a'); a.href = result.downloadUrl; a.download = result.filename; a.click();
-    toast('PDF exported: ' + result.filename, 'success');
+    if (!res.ok) {
+      const result = await res.json();
+      toast('Error: ' + (result.error || ''), 'error'); setStatus('Export blocked'); return;
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/pdf')) {
+      // Direct PDF download (Netlify)
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const cd = res.headers.get('content-disposition') || '';
+      const fnMatch = cd.match(/filename="?([^"]+)"?/);
+      const filename = fnMatch ? fnMatch[1] : 'worship-aid.pdf';
+      const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+      toast('PDF exported: ' + filename, 'success');
+    } else {
+      // JSON response with download URL (local)
+      const result = await res.json();
+      const a = document.createElement('a'); a.href = result.downloadUrl; a.download = result.filename; a.click();
+      toast('PDF exported: ' + result.filename, 'success');
+    }
     setStatus('PDF exported');
   } catch(e) { toast('PDF error: ' + e.message, 'error'); }
 }
@@ -1453,3 +1523,5 @@ function musicBlockFields(prefix) {
 }
 
 module.exports = app;
+module.exports.getAppHtml = getAppHtml;
+module.exports.seedReady = _seedReady;

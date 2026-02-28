@@ -32,15 +32,19 @@ function fetch(urlPath, options = {}) {
   });
 }
 
-before((_, done) => {
-  server = app.listen(0, '127.0.0.1', () => {
-    const addr = server.address();
-    baseUrl = `http://127.0.0.1:${addr.port}`;
-    done();
+before(async () => {
+  // Wait for user seeding to complete before starting tests
+  await app.seedReady;
+  await new Promise((resolve) => {
+    server = app.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      baseUrl = `http://127.0.0.1:${addr.port}`;
+      resolve();
+    });
   });
 });
 
-after((_, done) => { server.close(done); });
+after(async () => { await new Promise(resolve => server.close(resolve)); });
 
 const validBody = JSON.stringify({
   feastName: 'Test Sunday',

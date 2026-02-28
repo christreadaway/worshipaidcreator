@@ -2,15 +2,8 @@
 // Roles derived from worksheet: admin (Director of Liturgy), music_director, pastor, staff
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
-
-const DATA_DIR = path.join(__dirname, '..', '..', 'data');
-const USERS_DIR = path.join(DATA_DIR, 'users');
-const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
-
-fs.mkdirSync(USERS_DIR, { recursive: true });
+const kv = require('./kv');
 
 const ROLES = ['admin', 'music_director', 'pastor', 'staff'];
 
@@ -37,11 +30,11 @@ function hashPassword(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
 }
 
-function createUser({ username, displayName, role, password, googleEmail }) {
+async function createUser({ username, displayName, role, password, googleEmail }) {
   if (!ROLES.includes(role)) throw new Error('Invalid role: ' + role);
   if (!username || !password) throw new Error('Username and password required');
 
-  const existing = listUsers().find(u => u.username === username);
+  const existing = await getUserByUsername(username);
   if (existing) throw new Error('Username already exists');
 
   const id = generateId();
@@ -55,61 +48,53 @@ function createUser({ username, displayName, role, password, googleEmail }) {
     createdAt: new Date().toISOString(),
     active: true
   };
-  const filePath = path.join(USERS_DIR, `${id}.json`);
-  fs.writeFileSync(filePath, JSON.stringify(user, null, 2), 'utf8');
+  await kv.set('users', id, user);
   return sanitizeUser(user);
 }
 
-function getUser(id) {
-  const filePath = path.join(USERS_DIR, `${id}.json`);
-  if (!fs.existsSync(filePath)) return null;
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+async function getUser(id) {
+  return kv.get('users', id);
 }
 
-function getUserByUsername(username) {
-  const users = listUsersRaw();
+async function getUserByUsername(username) {
+  const users = await listUsersRaw();
   return users.find(u => u.username === username) || null;
 }
 
-function getUserByGoogleEmail(email) {
+async function getUserByGoogleEmail(email) {
   if (!email) return null;
-  const users = listUsersRaw();
+  const users = await listUsersRaw();
   return users.find(u => u.googleEmail && u.googleEmail.toLowerCase() === email.toLowerCase()) || null;
 }
 
-function listUsersRaw() {
-  const files = fs.readdirSync(USERS_DIR).filter(f => f.endsWith('.json'));
-  return files.map(f => JSON.parse(fs.readFileSync(path.join(USERS_DIR, f), 'utf8')));
+async function listUsersRaw() {
+  return kv.list('users');
 }
 
-function listUsers() {
-  return listUsersRaw().map(sanitizeUser).sort((a, b) => a.displayName.localeCompare(b.displayName));
+async function listUsers() {
+  const raw = await listUsersRaw();
+  return raw.map(sanitizeUser).sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
-function updateUser(id, updates) {
-  const user = getUser(id);
+async function updateUser(id, updates) {
+  const user = await getUser(id);
   if (!user) return null;
   if (updates.password) {
     updates.passwordHash = hashPassword(updates.password);
     delete updates.password;
   }
   const updated = { ...user, ...updates, id };
-  const filePath = path.join(USERS_DIR, `${id}.json`);
-  fs.writeFileSync(filePath, JSON.stringify(updated, null, 2), 'utf8');
+  await kv.set('users', id, updated);
   return sanitizeUser(updated);
 }
 
-function deleteUser(id) {
-  const filePath = path.join(USERS_DIR, `${id}.json`);
-  if (fs.existsSync(filePath)) {
-    fs.unlinkSync(filePath);
-    return true;
-  }
-  return false;
+async function deleteUser(id) {
+  await kv.del('users', id);
+  return true;
 }
 
-function authenticateUser(username, password) {
-  const user = getUserByUsername(username);
+async function authenticateUser(username, password) {
+  const user = await getUserByUsername(username);
   if (!user || !user.active) return null;
   if (user.passwordHash !== hashPassword(password)) return null;
   return sanitizeUser(user);
@@ -121,28 +106,25 @@ function sanitizeUser(user) {
 }
 
 // Simple session management
-function loadSessions() {
-  if (!fs.existsSync(SESSIONS_FILE)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
-  } catch { return {}; }
+async function loadSessions() {
+  const data = await kv.get('sessions', '_all');
+  return data || {};
 }
 
-function saveSessions(sessions) {
-  fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2), 'utf8');
+async function saveSessions(sessions) {
+  await kv.set('sessions', '_all', sessions);
 }
 
-function createSession(userId) {
+async function createSession(userId) {
   const token = crypto.randomBytes(32).toString('hex');
-  const sessions = loadSessions();
+  const sessions = await loadSessions();
 
   // Enforce exclusive login: only one active session per role
-  // (e.g., morris and vincent share music_director — logging in as one logs out the other)
-  const user = getUser(userId);
+  const user = await getUser(userId);
   if (user) {
     const toRemove = [];
     for (const [tok, sess] of Object.entries(sessions)) {
-      const sessUser = getUser(sess.userId);
+      const sessUser = await getUser(sess.userId);
       if (sessUser && sessUser.role === user.role && sessUser.id !== userId) {
         toRemove.push(tok);
       }
@@ -151,24 +133,24 @@ function createSession(userId) {
   }
 
   sessions[token] = { userId, createdAt: new Date().toISOString() };
-  saveSessions(sessions);
+  await saveSessions(sessions);
   return token;
 }
 
-function getSessionUser(token) {
+async function getSessionUser(token) {
   if (!token) return null;
-  const sessions = loadSessions();
+  const sessions = await loadSessions();
   const session = sessions[token];
   if (!session) return null;
-  const user = getUser(session.userId);
+  const user = await getUser(session.userId);
   if (!user) return null;
   return sanitizeUser(user);
 }
 
-function destroySession(token) {
-  const sessions = loadSessions();
+async function destroySession(token) {
+  const sessions = await loadSessions();
   delete sessions[token];
-  saveSessions(sessions);
+  await saveSessions(sessions);
 }
 
 function hasPermission(user, permission) {
@@ -178,7 +160,7 @@ function hasPermission(user, permission) {
 }
 
 // Seed default users based on worksheet roles
-function seedDefaultUsers() {
+async function seedDefaultUsers() {
   const defaults = [
     { username: 'jd', displayName: 'J.D. (Director of Liturgy)', role: 'admin', password: 'worship2026' },
     { username: 'morris', displayName: 'Morris (Music Director)', role: 'music_director', password: 'music2026' },
@@ -188,12 +170,12 @@ function seedDefaultUsers() {
     { username: 'donna', displayName: 'Donna (Staff)', role: 'staff', password: 'staff2026' }
   ];
 
-  // Seed each default user if not already present
-  defaults.forEach(u => {
-    if (!getUserByUsername(u.username)) {
-      try { createUser(u); } catch (e) { /* skip if exists */ }
+  for (const u of defaults) {
+    const existing = await getUserByUsername(u.username);
+    if (!existing) {
+      try { await createUser(u); } catch (e) { /* skip if exists */ }
     }
-  });
+  }
 }
 
 module.exports = {
