@@ -69,8 +69,25 @@ if (!kv.IS_NETLIFY) {
   app.use('/uploads', express.static(UPLOADS_DIR));
 }
 
-// Seed default users on first run
-const _seedReady = userStore.seedDefaultUsers().catch(e => console.error('Failed to seed users:', e.message));
+// Seed default users — retry on demand if initial attempt fails (e.g. Netlify cold start)
+let _seedDone = false;
+const _seedReady = userStore.seedDefaultUsers()
+  .then(() => { _seedDone = true; console.log('[SEED] Default users ready'); })
+  .catch(e => console.error('[SEED] Initial seed failed:', e.message));
+
+async function ensureSeeded() {
+  await _seedReady;
+  if (!_seedDone) {
+    console.log('[SEED] Retrying seed on demand...');
+    try {
+      await userStore.seedDefaultUsers();
+      _seedDone = true;
+      console.log('[SEED] On-demand seed succeeded');
+    } catch (e) {
+      console.error('[SEED] On-demand seed failed:', e.message, e.stack);
+    }
+  }
+}
 
 // --- AUTH MIDDLEWARE ---
 function getSessionToken(req) {
@@ -96,7 +113,7 @@ function requirePermission(permission) {
 
 // --- AUTH ROUTES ---
 app.post('/api/auth/login', async (req, res) => {
-  await _seedReady;
+  await ensureSeeded();
   const { username, password } = req.body;
   if (!username) {
     console.log('[LOGIN] No username provided in request body');
