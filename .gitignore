@@ -3,6 +3,7 @@ output/
 uploads/
 data/uploads/
 data/sessions.json
+data/sessions/
 data/users/
 data/drafts/
 data/exports/
@@ -10,3 +11,4 @@ data/exports/
 .DS_Store
 .env
 data/settings/
+public/
