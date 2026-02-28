@@ -98,10 +98,28 @@ function requirePermission(permission) {
 app.post('/api/auth/login', async (req, res) => {
   await _seedReady;
   const { username, password } = req.body;
-  const user = await userStore.authenticateUser(username, password);
-  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-  const token = await userStore.createSession(user.id);
-  res.json({ token, user });
+  if (!username) {
+    console.log('[LOGIN] No username provided in request body');
+    return res.status(401).json({ error: 'Please enter your name' });
+  }
+  console.log('[LOGIN] Attempting login for:', JSON.stringify(username));
+  try {
+    const user = await userStore.authenticateUser(username, password);
+    if (!user) {
+      const allUsers = await userStore.listUsers();
+      const names = allUsers.map(u => u.username);
+      console.log('[LOGIN] Failed for %s — known usernames: %s', username, names.join(', '));
+      return res.status(401).json({
+        error: 'No account found for "' + username + '". Try: ' + names.join(', ')
+      });
+    }
+    console.log('[LOGIN] Success: %s -> %s (%s)', username, user.displayName, user.role);
+    const token = await userStore.createSession(user.id);
+    res.json({ token, user });
+  } catch (e) {
+    console.error('[LOGIN] Error:', e);
+    res.status(500).json({ error: 'Login error: ' + e.message });
+  }
 });
 
 app.post('/api/auth/logout', async (req, res) => {
