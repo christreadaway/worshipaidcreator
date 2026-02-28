@@ -162,9 +162,29 @@ app.post('/api/preview', (req, res) => {
 app.post('/api/generate-pdf', async (req, res) => {
   try {
     const settings = store.loadSettings();
+
+    // Enforce pastor approval if enabled in settings
+    if (settings.requirePastorApproval && req.body.id) {
+      const draft = store.loadDraft(req.body.id);
+      if (draft && draft.status !== 'approved') {
+        return res.status(403).json({ error: 'Pastor approval required before export. Current status: ' + (draft.status || 'draft') });
+      }
+    }
+
     const filename = buildFilename(req.body);
     const outputPath = path.join(store.getExportsDir(), filename);
     const result = await generatePdf(req.body, outputPath, { parishSettings: settings });
+
+    // Mark draft as exported if it has an id
+    if (req.body.id) {
+      const draft = store.loadDraft(req.body.id);
+      if (draft) {
+        draft.status = 'exported';
+        draft.exportedAt = new Date().toISOString();
+        store.saveDraft(draft);
+      }
+    }
+
     res.json({
       success: true,
       filename,
@@ -238,6 +258,40 @@ app.post('/api/drafts/:id/duplicate', (req, res) => {
   res.json(copy);
 });
 
+// --- APPROVAL WORKFLOW ---
+app.post('/api/drafts/:id/submit-for-review', requireAuth, (req, res) => {
+  const draft = store.loadDraft(req.params.id);
+  if (!draft) return res.status(404).json({ error: 'Draft not found' });
+  draft.status = 'review';
+  draft.submittedBy = req.user.displayName;
+  draft.submittedAt = new Date().toISOString();
+  store.saveDraft(draft);
+  res.json(draft);
+});
+
+app.post('/api/drafts/:id/approve', requireAuth, requirePermission('approve'), (req, res) => {
+  const draft = store.loadDraft(req.params.id);
+  if (!draft) return res.status(404).json({ error: 'Draft not found' });
+  draft.status = 'approved';
+  draft.approvedBy = req.user.displayName;
+  draft.approvedAt = new Date().toISOString();
+  store.saveDraft(draft);
+  res.json(draft);
+});
+
+app.post('/api/drafts/:id/request-changes', requireAuth, requirePermission('approve'), (req, res) => {
+  const draft = store.loadDraft(req.params.id);
+  if (!draft) return res.status(404).json({ error: 'Draft not found' });
+  draft.status = 'draft';
+  draft.changeRequestedBy = req.user.displayName;
+  draft.changeRequestedAt = new Date().toISOString();
+  draft.changeNote = (req.body && req.body.note) || '';
+  delete draft.approvedBy;
+  delete draft.approvedAt;
+  store.saveDraft(draft);
+  res.json(draft);
+});
+
 // --- SETTINGS ---
 app.get('/api/settings', (req, res) => {
   res.json(store.loadSettings());
@@ -271,7 +325,7 @@ if (require.main === module) {
     console.log(`\n  Worship Aid Generator`);
     console.log(`  http://localhost:${PORT}`);
     console.log(`  Press Ctrl+C to stop.\n`);
-    console.log(`  Default users: jd/worship2026, musicdirector/music2026, pastor/pastor2026, staff/staff2026\n`);
+    console.log(`  Default users: jd/worship2026, morris/music2026, vincent/music2026, frlarry/pastor2026, kari/staff2026, donna/staff2026\n`);
   });
 }
 
@@ -418,7 +472,7 @@ nav .user-info strong { color: var(--gold-light); }
     <h2>Worship Aid Generator</h2>
     <p class="subtitle">Sign in to contribute</p>
     <div id="login-error" class="login-error"></div>
-    <div class="fg"><label>Username</label><input type="text" id="login-username" placeholder="e.g., jd"></div>
+    <div class="fg"><label>Username</label><input type="text" id="login-username" placeholder="e.g., jd, morris, frlarry"></div>
     <div class="fg"><label>Password</label><input type="password" id="login-password" placeholder="Password"></div>
     <button class="btn btn-gold" style="width:100%;justify-content:center;margin-top:8px;" onclick="doLogin()">Sign In</button>
   </div>
@@ -634,6 +688,12 @@ nav .user-info strong { color: var(--gold-light); }
         <div class="fg"><label>Full Copyright (Page 8)</label><textarea id="s_copyrightFull" rows="4"></textarea></div>
       </div>
     </div>
+    <div class="form-section"><div class="form-section-hdr">Workflow</div>
+      <div class="form-section-body">
+        <div class="fg-check"><input type="checkbox" id="s_requirePastorApproval"><label for="s_requirePastorApproval">Require pastor approval before PDF export</label></div>
+        <p style="font-size:11px;color:var(--gray);margin-top:4px;">When enabled, drafts must be submitted for review and approved by the pastor before they can be exported as PDF.</p>
+      </div>
+    </div>
     <button class="btn btn-gold" onclick="saveAdminSettings()" style="margin-top:12px;">Save Settings</button>
   </div>
 </div>
@@ -692,7 +752,7 @@ function showLogin() {
   ['editor','history','admin','users'].forEach(p => document.getElementById('page-' + p).style.display = 'none');
 }
 
-function showApp() {
+async function showApp() {
   document.getElementById('page-login').style.display = 'none';
   document.getElementById('main-nav').style.display = '';
 
@@ -704,6 +764,12 @@ function showApp() {
   // Show/hide nav items based on role
   document.getElementById('nav-users').style.display = _currentUser.role === 'admin' ? '' : 'none';
   document.getElementById('btn-export').style.display = hasRole('export_pdf') ? '' : 'none';
+
+  // Load parish settings for approval workflow awareness
+  try {
+    const sr = await fetch('/api/settings');
+    window._parishSettings = await sr.json();
+  } catch(e) { window._parishSettings = {}; }
 
   applyRolePermissions();
   showPage('editor');
@@ -1063,9 +1129,9 @@ async function generatePdfExport() {
   setStatus('Generating PDF...');
   try {
     const data = buildData();
-    const res = await fetch('/api/generate-pdf', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    const res = await fetch('/api/generate-pdf', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken }, body: JSON.stringify(data) });
     const result = await res.json();
-    if (!res.ok) { toast('Error: ' + (result.error || ''), 'error'); return; }
+    if (!res.ok) { toast('Error: ' + (result.error || ''), 'error'); setStatus('Export blocked'); return; }
     const a = document.createElement('a'); a.href = result.downloadUrl; a.download = result.filename; a.click();
     toast('PDF exported: ' + result.filename, 'success');
     setStatus('PDF exported');
@@ -1077,21 +1143,41 @@ async function loadHistory() {
   try {
     const res = await fetch('/api/drafts');
     const drafts = await res.json();
+    // Load settings to check approval requirement
+    let parishSettings = window._parishSettings;
+    if (!parishSettings) {
+      try { const sr = await fetch('/api/settings'); parishSettings = await sr.json(); window._parishSettings = parishSettings; } catch(e) { parishSettings = {}; }
+    }
+    const approvalRequired = parishSettings.requirePastorApproval;
+
     document.getElementById('history-list').innerHTML = drafts.length === 0
       ? '<p style="color:var(--gray);font-style:italic;">No saved worship aids yet.</p>'
-      : drafts.map(d => \`
-        <div class="draft-card">
-          <div class="info">
-            <h3>\${esc(d.feastName || 'Untitled')} <span class="status-badge \${d.status || 'draft'}">\${d.status || 'draft'}</span></h3>
-            <p>\${esc(d.liturgicalDate || '')} &bull; \${esc(d.liturgicalSeason || '')} &bull; Updated \${new Date(d.updatedAt).toLocaleDateString()}\${d.lastEditedBy ? ' by ' + esc(d.lastEditedBy) : ''}</p>
-          </div>
-          <div class="actions">
-            <button class="btn btn-outline btn-sm" onclick="openDraft('\${d.id}')">Open</button>
-            <button class="btn btn-outline btn-sm" onclick="dupDraft('\${d.id}')">Duplicate</button>
-            <button class="btn btn-danger btn-sm" onclick="delDraft('\${d.id}')">Delete</button>
-          </div>
-        </div>
-      \`).join('');
+      : drafts.map(d => {
+        const status = d.status || 'draft';
+        let approvalBtns = '';
+        if (approvalRequired) {
+          if (status === 'draft' && (hasRole('edit_readings') || hasRole('edit_music'))) {
+            approvalBtns = '<button class="btn btn-outline btn-sm" onclick="submitForReview(\\'' + d.id + '\\')">Submit for Review</button>';
+          }
+          if (status === 'review' && hasRole('approve')) {
+            approvalBtns = '<button class="btn btn-gold btn-sm" onclick="approveDraft(\\'' + d.id + '\\')">Approve</button>' +
+              '<button class="btn btn-outline btn-sm" onclick="requestChanges(\\'' + d.id + '\\')">Request Changes</button>';
+          }
+        }
+        const approvalInfo = d.approvedBy ? ' &bull; Approved by ' + esc(d.approvedBy) : '';
+        return '<div class="draft-card">' +
+          '<div class="info">' +
+            '<h3>' + esc(d.feastName || 'Untitled') + ' <span class="status-badge ' + status + '">' + status + '</span></h3>' +
+            '<p>' + esc(d.liturgicalDate || '') + ' &bull; ' + esc(d.liturgicalSeason || '') + ' &bull; Updated ' + new Date(d.updatedAt).toLocaleDateString() + (d.lastEditedBy ? ' by ' + esc(d.lastEditedBy) : '') + approvalInfo + '</p>' +
+          '</div>' +
+          '<div class="actions">' +
+            approvalBtns +
+            '<button class="btn btn-outline btn-sm" onclick="openDraft(\\'' + d.id + '\\')">Open</button>' +
+            '<button class="btn btn-outline btn-sm" onclick="dupDraft(\\'' + d.id + '\\')">Duplicate</button>' +
+            '<button class="btn btn-danger btn-sm" onclick="delDraft(\\'' + d.id + '\\')">Delete</button>' +
+          '</div>' +
+        '</div>';
+      }).join('');
   } catch(e) { console.error(e); }
 }
 
@@ -1117,17 +1203,45 @@ async function delDraft(id) {
   loadHistory();
 }
 
+// --- Approval Workflow ---
+async function submitForReview(id) {
+  await fetch('/api/drafts/' + id + '/submit-for-review', { method: 'POST', headers: { 'x-session-token': _sessionToken } });
+  toast('Submitted for pastor review', 'success');
+  loadHistory();
+}
+
+async function approveDraft(id) {
+  await fetch('/api/drafts/' + id + '/approve', { method: 'POST', headers: { 'x-session-token': _sessionToken } });
+  toast('Draft approved', 'success');
+  loadHistory();
+}
+
+async function requestChanges(id) {
+  const note = prompt('Note for the team (optional):') || '';
+  await fetch('/api/drafts/' + id + '/request-changes', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken },
+    body: JSON.stringify({ note })
+  });
+  toast('Changes requested — draft returned to editing', 'success');
+  loadHistory();
+}
+
 // --- Admin Settings ---
 const settingsFields = ['parishName','parishAddress','parishPhone','parishUrl','connectBlurb','nurseryBlurb','restroomsBlurb','prayerBlurb','onelicenseNumber','copyrightShort','copyrightFull'];
+const settingsCheckboxes = ['requirePastorApproval'];
 async function loadAdminSettings() {
   const res = await fetch('/api/settings');
   const s = await res.json();
   settingsFields.forEach(f => sv('s_' + f, s[f]));
+  settingsCheckboxes.forEach(f => sc('s_' + f, s[f]));
+  window._parishSettings = s;
 }
 async function saveAdminSettings() {
   const s = {};
   settingsFields.forEach(f => s[f] = v('s_' + f));
+  settingsCheckboxes.forEach(f => s[f] = ch('s_' + f));
   await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(s) });
+  window._parishSettings = s;
   toast('Settings saved', 'success');
 }
 

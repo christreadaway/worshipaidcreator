@@ -53,6 +53,10 @@ function listDrafts() {
       liturgicalDate: data.liturgicalDate,
       liturgicalSeason: data.liturgicalSeason,
       status: data.status,
+      lastEditedBy: data.lastEditedBy,
+      approvedBy: data.approvedBy,
+      approvedAt: data.approvedAt,
+      submittedBy: data.submittedBy,
       updatedAt: data.updatedAt,
       createdAt: data.createdAt
     };

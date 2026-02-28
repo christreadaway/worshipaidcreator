@@ -128,6 +128,21 @@ function saveSessions(sessions) {
 function createSession(userId) {
   const token = crypto.randomBytes(32).toString('hex');
   const sessions = loadSessions();
+
+  // Enforce exclusive login: only one active session per role
+  // (e.g., morris and vincent share music_director — logging in as one logs out the other)
+  const user = getUser(userId);
+  if (user) {
+    const toRemove = [];
+    for (const [tok, sess] of Object.entries(sessions)) {
+      const sessUser = getUser(sess.userId);
+      if (sessUser && sessUser.role === user.role && sessUser.id !== userId) {
+        toRemove.push(tok);
+      }
+    }
+    toRemove.forEach(tok => delete sessions[tok]);
+  }
+
   sessions[token] = { userId, createdAt: new Date().toISOString() };
   saveSessions(sessions);
   return token;
@@ -157,18 +172,20 @@ function hasPermission(user, permission) {
 
 // Seed default users based on worksheet roles
 function seedDefaultUsers() {
-  const users = listUsersRaw();
-  if (users.length > 0) return; // Already seeded
-
   const defaults = [
     { username: 'jd', displayName: 'J.D. (Director of Liturgy)', role: 'admin', password: 'worship2026' },
-    { username: 'musicdirector', displayName: 'Music Director', role: 'music_director', password: 'music2026' },
-    { username: 'pastor', displayName: 'Pastor', role: 'pastor', password: 'pastor2026' },
-    { username: 'staff', displayName: 'Parish Staff', role: 'staff', password: 'staff2026' }
+    { username: 'morris', displayName: 'Morris (Music Director)', role: 'music_director', password: 'music2026' },
+    { username: 'vincent', displayName: 'Vincent (Music Director)', role: 'music_director', password: 'music2026' },
+    { username: 'frlarry', displayName: 'Fr. Larry (Pastor)', role: 'pastor', password: 'pastor2026' },
+    { username: 'kari', displayName: 'Kari (Staff)', role: 'staff', password: 'staff2026' },
+    { username: 'donna', displayName: 'Donna (Staff)', role: 'staff', password: 'staff2026' }
   ];
 
+  // Seed each default user if not already present
   defaults.forEach(u => {
-    try { createUser(u); } catch (e) { /* skip if exists */ }
+    if (!getUserByUsername(u.username)) {
+      try { createUser(u); } catch (e) { /* skip if exists */ }
+    }
   });
 }
 

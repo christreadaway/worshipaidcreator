@@ -170,4 +170,164 @@ describe('Settings', () => {
     const data = res.json();
     assert.equal(data.parishName, 'Test Parish');
   });
+
+  it('should include requirePastorApproval in defaults', async () => {
+    const res = await fetch('/api/settings');
+    const data = res.json();
+    assert.equal(typeof data.requirePastorApproval, 'boolean');
+  });
+});
+
+describe('Auth', () => {
+  it('should login with valid credentials', async () => {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'jd', password: 'worship2026' })
+    });
+    assert.equal(res.status, 200);
+    const data = res.json();
+    assert.ok(data.token);
+    assert.equal(data.user.username, 'jd');
+    assert.equal(data.user.role, 'admin');
+  });
+
+  it('should reject invalid credentials', async () => {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'jd', password: 'wrong' })
+    });
+    assert.equal(res.status, 401);
+  });
+
+  it('should login as morris (music_director)', async () => {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'morris', password: 'music2026' })
+    });
+    assert.equal(res.status, 200);
+    const data = res.json();
+    assert.equal(data.user.role, 'music_director');
+  });
+
+  it('should login as frlarry (pastor)', async () => {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'frlarry', password: 'pastor2026' })
+    });
+    assert.equal(res.status, 200);
+    const data = res.json();
+    assert.equal(data.user.role, 'pastor');
+  });
+});
+
+describe('Approval Workflow', () => {
+  let draftId;
+  let adminToken;
+  let pastorToken;
+
+  before(async () => {
+    // Login as admin
+    const adminRes = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'jd', password: 'worship2026' })
+    });
+    adminToken = adminRes.json().token;
+
+    // Login as pastor
+    const pastorRes = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'frlarry', password: 'pastor2026' })
+    });
+    pastorToken = pastorRes.json().token;
+
+    // Create a draft
+    const draftRes = await fetch('/api/drafts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: validBody });
+    draftId = draftRes.json().id;
+  });
+
+  it('should submit a draft for review', async () => {
+    const res = await fetch('/api/drafts/' + draftId + '/submit-for-review', {
+      method: 'POST', headers: { 'x-session-token': adminToken }
+    });
+    assert.equal(res.status, 200);
+    const data = res.json();
+    assert.equal(data.status, 'review');
+  });
+
+  it('should approve a draft', async () => {
+    const res = await fetch('/api/drafts/' + draftId + '/approve', {
+      method: 'POST', headers: { 'x-session-token': pastorToken }
+    });
+    assert.equal(res.status, 200);
+    const data = res.json();
+    assert.equal(data.status, 'approved');
+    assert.ok(data.approvedBy);
+  });
+
+  it('should request changes on a draft', async () => {
+    // First re-submit
+    await fetch('/api/drafts/' + draftId + '/submit-for-review', {
+      method: 'POST', headers: { 'x-session-token': adminToken }
+    });
+    const res = await fetch('/api/drafts/' + draftId + '/request-changes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': pastorToken },
+      body: JSON.stringify({ note: 'Please fix reading' })
+    });
+    assert.equal(res.status, 200);
+    const data = res.json();
+    assert.equal(data.status, 'draft');
+    assert.equal(data.changeNote, 'Please fix reading');
+  });
+
+  it('should block PDF export when approval required and draft not approved', async () => {
+    // Enable approval requirement
+    await fetch('/api/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requirePastorApproval: true })
+    });
+
+    const bodyWithId = JSON.stringify({ ...JSON.parse(validBody), id: draftId });
+    const res = await fetch('/api/generate-pdf', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: bodyWithId
+    });
+    assert.equal(res.status, 403);
+
+    // Disable approval requirement again
+    await fetch('/api/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requirePastorApproval: false })
+    });
+  });
+
+  it('should allow PDF export when draft is approved', async () => {
+    // Enable approval requirement
+    await fetch('/api/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requirePastorApproval: true })
+    });
+
+    // Submit and approve the draft
+    await fetch('/api/drafts/' + draftId + '/submit-for-review', {
+      method: 'POST', headers: { 'x-session-token': adminToken }
+    });
+    await fetch('/api/drafts/' + draftId + '/approve', {
+      method: 'POST', headers: { 'x-session-token': pastorToken }
+    });
+
+    const bodyWithId = JSON.stringify({ ...JSON.parse(validBody), id: draftId });
+    const res = await fetch('/api/generate-pdf', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: bodyWithId
+    });
+    assert.equal(res.status, 200);
+    const result = res.json();
+    assert.equal(result.success, true);
+
+    // Disable approval requirement again
+    await fetch('/api/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requirePastorApproval: false })
+    });
+  });
 });

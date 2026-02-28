@@ -82,6 +82,21 @@ describe('User Store', () => {
     const user = userStore.getSessionUser(token);
     assert.equal(user, null);
   });
+
+  it('should enforce exclusive login per role (same role kicks previous session)', () => {
+    const ts = Date.now();
+    const user1 = userStore.createUser({ username: 'excl1_' + ts, displayName: 'Excl1', role: 'music_director', password: 'pass' });
+    const user2 = userStore.createUser({ username: 'excl2_' + ts, displayName: 'Excl2', role: 'music_director', password: 'pass' });
+
+    // user1 logs in
+    const token1 = userStore.createSession(user1.id);
+    assert.ok(userStore.getSessionUser(token1), 'user1 should be logged in');
+
+    // user2 logs in — should invalidate user1 session
+    const token2 = userStore.createSession(user2.id);
+    assert.ok(userStore.getSessionUser(token2), 'user2 should be logged in');
+    assert.equal(userStore.getSessionUser(token1), null, 'user1 session should be invalidated when user2 of same role logs in');
+  });
 });
 
 describe('Role permissions', () => {
