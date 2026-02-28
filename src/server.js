@@ -576,8 +576,8 @@ nav .user-info strong { color: var(--gold-light); }
     <h2>Worship Aid Generator</h2>
     <p class="subtitle">Sign in to contribute</p>
     <div id="login-error" class="login-error"></div>
-    <div class="fg"><label>Username</label><input type="text" id="login-username" placeholder="e.g., jd, morris, frlarry"></div>
-    <div class="fg"><label>Password</label><input type="password" id="login-password" placeholder="Password"></div>
+    <div class="fg"><label>Your Name</label><input type="text" id="login-username" placeholder="e.g., jd, morris, frlarry"></div>
+    <input type="hidden" id="login-password" value="">
     <button class="btn btn-gold" style="width:100%;justify-content:center;margin-top:8px;" onclick="doLogin()">Sign In</button>
     <div id="google-signin-divider" style="display:none;margin:16px 0 8px;position:relative;text-align:center;">
       <hr style="border:none;border-top:1px solid var(--border);">
@@ -914,8 +914,7 @@ async function doLogout() {
 }
 
 // Enter key on login
-document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-document.getElementById('login-username').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-password').focus(); });
+document.getElementById('login-username').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 
 // --- Role-Based Permissions ---
 const rolePerms = {

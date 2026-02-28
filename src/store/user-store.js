@@ -32,7 +32,7 @@ function hashPassword(password) {
 
 async function createUser({ username, displayName, role, password, googleEmail }) {
   if (!ROLES.includes(role)) throw new Error('Invalid role: ' + role);
-  if (!username || !password) throw new Error('Username and password required');
+  if (!username) throw new Error('Username required');
 
   const existing = await getUserByUsername(username);
   if (existing) throw new Error('Username already exists');
@@ -43,7 +43,7 @@ async function createUser({ username, displayName, role, password, googleEmail }
     username,
     displayName: displayName || username,
     role,
-    passwordHash: hashPassword(password),
+    passwordHash: password ? hashPassword(password) : '',
     googleEmail: googleEmail || '',
     createdAt: new Date().toISOString(),
     active: true
@@ -96,7 +96,9 @@ async function deleteUser(id) {
 async function authenticateUser(username, password) {
   const user = await getUserByUsername(username);
   if (!user || !user.active) return null;
-  if (user.passwordHash !== hashPassword(password)) return null;
+  // Beta mode: skip password check — login by username only
+  // TODO: re-enable password check for production
+  // if (user.passwordHash !== hashPassword(password)) return null;
   return sanitizeUser(user);
 }
 

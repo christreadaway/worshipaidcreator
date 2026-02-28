@@ -69,22 +69,23 @@ e3443d0 Implement feature-complete Worship Aid Generator with web UI
 ## Test Results (Feb 28, 2026)
 
 ```
-# tests 82
-# suites 7
-# pass 82
+# tests 113
+# suites 23
+# pass 113
 # fail 0
 # cancelled 0
 # skipped 0
-# duration_ms ~1200ms
+# duration_ms ~1300ms
 ```
 
 Breakdown:
 - validator.test.js: 14 pass (schema, estimateLines, detectOverflows)
-- seasons.test.js: 8 pass (5 season defaults, applySeasonDefaults, music formatter)
-- template-renderer.test.js: 28 pass (8 pages, seasons, creed, readings, music, parish info, copyright)
+- seasons.test.js: 16 pass (5 season defaults, applySeasonDefaults, music formatter)
+- template-renderer.test.js: 30 pass (8 pages, seasons, creed, readings, music, parish info, copyright)
 - pdf-generator.test.js: 9 pass (filename, file creation, headers, creed, settings)
-- server.test.js: 14 pass (API endpoints, drafts CRUD, settings)
-- Utilities (escapeHtml, nl2br, formatDate): 3 pass included in template-renderer suite
+- server.test.js: 23 pass (API endpoints, drafts CRUD, settings, auth, approval workflow)
+- user-store.test.js: 15 pass (user CRUD, auth beta mode, sessions, exclusive login, permissions, labels)
+- Utilities (escapeHtml, nl2br, formatDate): 5 pass included in template-renderer suite
 
 ---
 
@@ -120,10 +121,43 @@ Breakdown:
 
 ---
 
+### Session 3 (Feb 28): Multi-User Workflow + Netlify Deployment
+
+**Completed:**
+1. **Multi-user role-based access** — Four roles (admin, music_director, pastor, staff) with per-role permissions, session management, exclusive login per role
+2. **Pastor approval workflow** — Draft → Review → Approved pipeline, with optional requirePastorApproval setting to gate PDF export
+3. **Google OAuth integration** — Google Identity Services login (frontend) + tokeninfo verification (backend), linked to user accounts via email
+4. **Netlify deployment refactoring** — Async KV storage abstraction (`kv.js`) supporting both local filesystem and Netlify Blobs, serverless-http wrapping, build pipeline for SPA extraction
+5. **Image uploads** — Cover images and music notation uploads with Netlify Blobs storage in production
+6. **Default seed users** — jd (admin), morris & vincent (music_director), frlarry (pastor), kari & donna (staff)
+
+### Session 4 (Feb 28): Beta Testing Configuration
+
+**Completed:**
+1. **Disabled password authentication for beta testing** — Login now requires username only, no password. Password infrastructure is commented out, not deleted — marked with TODO comments for production reinstatement.
+2. **Simplified login UI** — Password field replaced with hidden input, label changed to "Your Name", Enter key submits directly.
+3. **Updated tests** — Password rejection tests updated to reflect beta mode behavior.
+4. **Rebuilt SPA** for deployment with password-less login.
+
+---
+
+## PRODUCTION READINESS CHECKLIST
+
+**Before going to production, the following MUST be re-enabled:**
+
+- [ ] **Password authentication** — Un-comment the password hash check in `src/store/user-store.js` line ~101 (`authenticateUser` function). Search for "Beta mode" TODO comments.
+- [ ] **Google Sign-On** — Verify Google OAuth client ID is configured in environment variables and the Google Identity Services integration is active. Update authorized redirect URIs in Google Cloud Console for the production domain.
+- [ ] **Restore password UI** — Replace the hidden password field in the login form (in `src/server.js` `getAppHtml()`) with the actual password input field.
+- [ ] **Restore password test** — Update the "should allow login regardless of password in beta mode" tests back to "should reject incorrect password" in both `user-store.test.js` and `server.test.js`.
+- [ ] **Set strong default passwords** — Change the seed user passwords from simple beta passwords (worship2026, music2026, etc.) to strong defaults or require password setup on first login.
+
+---
+
 ## What's Next (Recommended)
 
-1. **User testing** — Have the liturgy coordinator run through a real week's worship aid and compare output to manual version.
+1. **Beta user testing** — Have the liturgy team log in by name and run through a real week's worship aid.
 2. **Font embedding in PDF** — Embed EB Garamond / Cinzel in PDFKit for typographic parity with HTML preview.
 3. **Saddle-stitch imposition** — Implement the booklet page ordering for direct-to-printer output.
-4. **Deploy** — The app runs on any machine with Node.js. `npm start` on a parish office machine or a simple cloud VM.
+4. **Deploy to Netlify** — Connect repo, configure custom domain (worshipaid.modernizecatholic.com), set up GoDaddy CNAME.
 5. **Puppeteer integration** — For pixel-perfect PDF output matching the HTML preview exactly.
+6. **Re-enable security for production** — See Production Readiness Checklist above.
