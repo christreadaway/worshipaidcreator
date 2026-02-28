@@ -57,11 +57,14 @@ describe('User Store', () => {
     assert.equal(user.username, uname);
   });
 
-  it('should reject incorrect password', async () => {
+  // Beta mode: password check disabled — login by username only
+  // TODO: re-enable this test when password check is restored for production
+  it('should allow login regardless of password in beta mode', async () => {
     const uname = 'authfail_' + Date.now();
     await userStore.createUser({ username: uname, displayName: 'Fail', role: 'staff', password: 'correct' });
     const user = await userStore.authenticateUser(uname, 'wrong');
-    assert.equal(user, null);
+    assert.ok(user, 'Beta mode should allow login without password check');
+    assert.equal(user.username, uname);
   });
 
   it('should create and validate sessions', async () => {

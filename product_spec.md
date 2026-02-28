@@ -25,7 +25,7 @@ A Node.js web application that automates weekly creation of 8-page Catholic Mass
 | Testing | Node.js built-in test runner | `node --test`, assert/strict |
 | CLI | `src/cli.js` | Headless generation from JSON input |
 
-**No external services required.** Runs entirely local — no database, no cloud functions, no auth layer in v1.0.
+**Deployment:** Local Node.js server or Netlify Functions (serverless). KV storage abstraction (`kv.js`) auto-selects filesystem (local) or Netlify Blobs (production).
 
 ---
 
@@ -44,7 +44,9 @@ src/
     seasons.js            Liturgical season auto-rules engine
     defaults.js           Default parish settings
   store/
-    file-store.js         File-based persistence (drafts, settings)
+    kv.js                 KV storage abstraction (filesystem or Netlify Blobs)
+    file-store.js         Async persistence (drafts, settings)
+    user-store.js         User management, sessions, role-based access
   assets/
     logo/jerusalem-cross.svg
     text/creeds.js        Nicene & Apostles' Creed
@@ -187,16 +189,17 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 
 ## Test Coverage
 
-**82 tests across 5 test files. All passing.**
+**113 tests across 6 test files. All passing.**
 
 | Suite | Tests | What It Covers |
 |---|---|---|
 | Validator | 14 | Schema validation, required fields, season enums, overflow detection (pages 3 & 4), line estimation |
-| Seasons | 8 | All 5 season defaults, season application, user override preservation |
-| Template Renderer | 28 | 8-page rendering, seasonal variations (Gloria, Creed, Acclamation), parish info, readings, music display, copyright |
+| Seasons | 16 | All 5 season defaults, season application, user override preservation, music formatter |
+| Template Renderer | 30 | 8-page rendering, seasonal variations (Gloria, Creed, Acclamation), parish info, readings, music display, copyright, Sign of Peace, Great Amen |
 | PDF Generator | 9 | Filename format, file creation, PDF headers, creed selection, parish settings integration |
-| Server API | 14 | All API endpoints, drafts CRUD (save/list/load/duplicate/delete), settings load/save |
-| Utilities | 3 | escapeHtml, nl2br, formatDate |
+| Server API | 23 | All API endpoints, drafts CRUD, settings, auth login, approval workflow |
+| User Store | 15 | User CRUD, authentication (beta mode), sessions, exclusive login, role permissions, role labels |
+| Utilities | 5 | escapeHtml, nl2br, formatDate |
 
 ---
 
@@ -218,14 +221,61 @@ npm test
 
 ---
 
+## Authentication & User Management
+
+### Roles & Permissions
+
+| Role | Label | Key Permissions |
+|---|---|---|
+| admin | Director of Liturgy | Full access: edit all, manage users, manage settings, approve, export |
+| music_director | Music Director | Edit music, seasonal settings, upload images, export PDF |
+| pastor | Pastor | Edit readings, approve drafts, edit announcements |
+| staff | Staff | Edit readings, music, announcements, seasonal settings, export PDF |
+
+### Default Seed Users
+
+| Username | Role | Notes |
+|---|---|---|
+| jd | admin | Director of Liturgy |
+| morris | music_director | Music Director |
+| vincent | music_director | Music Director |
+| frlarry | pastor | Pastor |
+| kari | staff | Staff |
+| donna | staff | Staff |
+
+### Session Management
+
+- Token-based sessions (`x-session-token` header)
+- Exclusive login per role: when a new user of the same role logs in, the previous session is invalidated
+- Google OAuth supported (linked via `googleEmail` field on user record)
+
+### BETA MODE — Temporary Password Bypass
+
+**Current status: Passwords are DISABLED for beta testing.**
+
+- Login requires username only — no password check is performed
+- The password hash comparison is commented out in `src/store/user-store.js` (`authenticateUser` function)
+- The login UI shows only a "Your Name" field with no password input
+- All code changes are marked with `// Beta mode` and `// TODO: re-enable` comments
+- Tests have been updated to reflect beta behavior
+
+**BEFORE PRODUCTION:** Password authentication and Google Sign-On must be re-enabled. See `session_notes.md` Production Readiness Checklist for full details.
+
+### Pastor Approval Workflow
+
+- Drafts follow a status pipeline: `draft` → `review` → `approved`
+- Any user can submit a draft for review
+- Only users with `approve` permission (pastor, admin) can approve or request changes
+- When `requirePastorApproval` is enabled in settings, PDF export is blocked until a draft is approved
+- Request-changes action reverts draft to `draft` status with a change note
+
+---
+
 ## Not Yet Implemented (Deferred to v1.1+)
 
 - Saddle-stitch PDF imposition (booklet page ordering for printer)
 - Puppeteer-based HTML-to-PDF rendering (for pixel-perfect font matching)
 - Auto-populate readings from USCCB lectionary API
-- Cover image upload (per-week liturgical images)
-- Google Auth / user authentication
-- Firebase Firestore / Cloud Functions deployment
 - React + Tailwind frontend rebuild
 - Mobile-optimized input form
 - Multi-parish support
