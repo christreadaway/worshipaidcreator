@@ -577,7 +577,7 @@ nav .user-info strong { color: var(--gold-light); }
     <h2>Worship Aid Generator</h2>
     <p class="subtitle">Sign in to contribute</p>
     <div id="login-error" class="login-error" style="display:none;"></div>
-    <div class="fg"><label>Your Name</label><input type="text" id="login-username" placeholder="e.g., jd, morris, frlarry"></div>
+    <div class="fg"><label>Your Name</label><input type="text" id="login-username" placeholder="e.g., Morris, Kari, Fr. Larry"></div>
     <input type="hidden" id="login-password" value="">
     <button class="btn btn-gold" style="width:100%;justify-content:center;margin-top:8px;" onclick="doLogin()">Sign In</button>
     <div id="google-signin-divider" style="display:none;margin:16px 0 8px;position:relative;text-align:center;">
