@@ -6,7 +6,14 @@
 const fs = require('fs');
 const path = require('path');
 
-const IS_NETLIFY = !!process.env.NETLIFY;
+// Detect Netlify environment — check multiple indicators because
+// process.env.NETLIFY may not be set in the function runtime
+const IS_NETLIFY = !!(
+  process.env.NETLIFY ||
+  process.env.NETLIFY_BLOBS_CONTEXT ||
+  process.env.DEPLOY_PRIME_URL ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME
+);
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 
 // Lazy-loaded Netlify Blobs store
@@ -19,10 +26,12 @@ function getBlobStore(namespace) {
   return _blobStores[namespace];
 }
 
-// Ensure local directory exists
+// Ensure local directory exists (only used in non-Netlify mode)
 function ensureDir(namespace) {
   const dir = path.join(DATA_DIR, namespace);
-  fs.mkdirSync(dir, { recursive: true });
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {
+    console.warn('[KV] Cannot create dir (read-only fs?):', dir, e.message);
+  }
   return dir;
 }
 

@@ -8,7 +8,11 @@ const crypto = require('crypto');
 const kv = require('./kv');
 
 const EXPORTS_DIR = path.join(kv.DATA_DIR, 'exports');
-if (!kv.IS_NETLIFY) fs.mkdirSync(EXPORTS_DIR, { recursive: true });
+if (!kv.IS_NETLIFY) {
+  try { fs.mkdirSync(EXPORTS_DIR, { recursive: true }); } catch (e) {
+    console.warn('[FILE-STORE] Cannot create exports dir (read-only fs?):', e.message);
+  }
+}
 
 function generateId() {
   return crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');

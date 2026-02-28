@@ -206,10 +206,15 @@ app.get('/api/auth/debug', async (req, res) => {
   try {
     await ensureSeeded();
     const users = await userStore.listUsers();
-    const kv = require('./store/kv');
     res.json({
       ok: true,
       environment: kv.IS_NETLIFY ? 'netlify' : 'local',
+      envVars: {
+        NETLIFY: !!process.env.NETLIFY,
+        NETLIFY_BLOBS_CONTEXT: !!process.env.NETLIFY_BLOBS_CONTEXT,
+        DEPLOY_PRIME_URL: !!process.env.DEPLOY_PRIME_URL,
+        AWS_LAMBDA_FUNCTION_NAME: !!process.env.AWS_LAMBDA_FUNCTION_NAME
+      },
       userCount: users.length,
       users: users.map(u => ({ username: u.username, displayName: u.displayName, role: u.role, active: u.active })),
       seedDone: _seedDone,
