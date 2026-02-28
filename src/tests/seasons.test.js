@@ -1,9 +1,10 @@
 // Tests for season auto-rules engine and music formatter
+// Updated: Advent/Easter creed, postlude, advent wreath per worksheet
 'use strict';
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { getSeasonDefaults, applySeasonDefaults, SEASONS } = require('../config/seasons');
+const { getSeasonDefaults, applySeasonDefaults, SEASONS, LENTEN_ACCLAMATION_OPTIONS } = require('../config/seasons');
 const { formatMusicSlot, renderMusicLineText, formatTimeLabel } = require('../music-formatter');
 
 describe('Season auto-rules', () => {
@@ -18,6 +19,8 @@ describe('Season auto-rules', () => {
     assert.equal(d.entranceType, 'antiphon');
     assert.ok(d.holyHolySetting.includes('Vatican'));
     assert.equal(d.gospelAcclamationType, 'lenten');
+    assert.equal(d.includePostlude, false, 'Lent should suppress postlude');
+    assert.equal(d.adventWreath, false);
   });
 
   it('should return correct Ordinary Time defaults', () => {
@@ -25,25 +28,33 @@ describe('Season auto-rules', () => {
     assert.equal(d.gloria, true);
     assert.equal(d.creedType, 'nicene');
     assert.equal(d.entranceType, 'processional');
+    assert.equal(d.includePostlude, true);
+    assert.equal(d.adventWreath, false);
   });
 
-  it('should return correct Advent defaults', () => {
+  it('should return correct Advent defaults with Apostles Creed and wreath', () => {
     const d = getSeasonDefaults('advent');
     assert.equal(d.gloria, false);
     assert.equal(d.entranceType, 'antiphon');
     assert.equal(d.childrenLiturgyDefault, 'no');
+    assert.equal(d.creedType, 'apostles', 'Worksheet: Apostles Creed during Advent');
+    assert.equal(d.adventWreath, true, 'Worksheet: Advent Wreath Lighting during Advent');
+    assert.equal(d.includePostlude, true);
   });
 
   it('should return correct Christmas defaults', () => {
     const d = getSeasonDefaults('christmas');
     assert.equal(d.gloria, true);
     assert.equal(d.creedType, 'nicene');
+    assert.equal(d.adventWreath, false);
   });
 
-  it('should return correct Easter defaults', () => {
+  it('should return correct Easter defaults with Apostles Creed', () => {
     const d = getSeasonDefaults('easter');
     assert.equal(d.gloria, true);
     assert.equal(d.entranceType, 'processional');
+    assert.equal(d.creedType, 'apostles', 'Worksheet: Apostles Creed during Easter');
+    assert.equal(d.includePostlude, true);
   });
 
   it('should apply season defaults to data', () => {
@@ -58,6 +69,25 @@ describe('Season auto-rules', () => {
     const result = applySeasonDefaults(data);
     assert.equal(result.gloria, true); // user override preserved
     assert.equal(result.creedType, 'nicene'); // user override preserved
+  });
+
+  it('should apply includePostlude and adventWreath defaults', () => {
+    const adventData = { liturgicalSeason: 'advent' };
+    const adventResult = applySeasonDefaults(adventData);
+    assert.equal(adventResult.seasonalSettings.adventWreath, true);
+    assert.equal(adventResult.seasonalSettings.includePostlude, true);
+
+    const lentData = { liturgicalSeason: 'lent' };
+    const lentResult = applySeasonDefaults(lentData);
+    assert.equal(lentResult.seasonalSettings.includePostlude, false);
+    assert.equal(lentResult.seasonalSettings.adventWreath, false);
+  });
+
+  it('should export Lenten acclamation options', () => {
+    assert.ok(Array.isArray(LENTEN_ACCLAMATION_OPTIONS));
+    assert.equal(LENTEN_ACCLAMATION_OPTIONS.length, 2);
+    assert.ok(LENTEN_ACCLAMATION_OPTIONS[0].includes('Praise'));
+    assert.ok(LENTEN_ACCLAMATION_OPTIONS[1].includes('Glory'));
   });
 });
 

@@ -1,12 +1,14 @@
 // PDF generation using PDFKit
 // PRD: 5.5" x 8.5" half-letter booklet + optional saddle-stitch imposition
+// Updated with worksheet: Advent wreath, Lenten postlude suppression,
+// alternate Lenten acclamation, Apostles' Creed for Advent/Easter
 'use strict';
 
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 const { APOSTLES_CREED, NICENE_CREED } = require('./assets/text/creeds');
-const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER } = require('./assets/text/mass-texts');
+const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER } = require('./assets/text/mass-texts');
 const { formatMusicSlot, renderMusicLineText } = require('./music-formatter');
 const { applySeasonDefaults } = require('./config/seasons');
 const { detectOverflows } = require('./validator');
@@ -29,7 +31,8 @@ const COLORS = {
   text: '#1C1C1C',
   muted: '#555555',
   light: '#888888',
-  rule: '#C8A84B'
+  rule: '#C8A84B',
+  purple: '#5b3d8f'
 };
 
 function formatDate(dateStr) {
@@ -49,6 +52,12 @@ class WorshipAidPdfGenerator {
 
     const overflows = detectOverflows(this.data);
     overflows.forEach(o => this.warnings.push(o.message));
+
+    // Computed worksheet-driven flags
+    const isLenten = this.data.liturgicalSeason === 'lent';
+    const isAdvent = this.data.liturgicalSeason === 'advent';
+    this.includePostlude = this.ss.includePostlude !== undefined ? this.ss.includePostlude : !isLenten;
+    this.showAdventWreath = this.ss.adventWreath !== undefined ? this.ss.adventWreath : isAdvent;
   }
 
   generate(outputPath) {
@@ -229,6 +238,17 @@ class WorshipAidPdfGenerator {
     this.musicLine('processionalOrEntrance', 'processionalOrEntranceComposer',
       entranceType === 'processional' ? 'Processional' : 'Antiphon');
 
+    // Advent Wreath Lighting — worksheet: added during Advent, after entrance, before Penitential Act
+    if (this.showAdventWreath) {
+      this.y += 3;
+      this.doc.save().rect(MARGIN_SIDE, this.y, CONTENT_WIDTH, 16)
+        .fillColor('#f0eaf5').fill().restore();
+      this.doc.fontSize(8).fillColor(COLORS.purple).font('Helvetica-Bold')
+        .text('Lighting of the Advent Wreath', MARGIN_SIDE, this.y + 3, { width: CONTENT_WIDTH, align: 'center' });
+      this.doc.font('Helvetica');
+      this.y = this.doc.y + 6;
+    }
+
     if ((this.ss.penitentialAct || 'confiteor') === 'confiteor') {
       this.subHeading('Penitential Act');
       this.bodyText(CONFITEOR, { size: 8, gap: 3 });
@@ -270,7 +290,13 @@ class WorshipAidPdfGenerator {
     this.rubric(RUBRICS.stand);
     this.subHeading('Gospel Acclamation');
     const isLenten = this.data.liturgicalSeason === 'lent';
-    this.bodyText(isLenten ? GOSPEL_ACCLAMATION_LENTEN : GOSPEL_ACCLAMATION_STANDARD, { bold: true, size: 9 });
+    let acclamationText;
+    if (isLenten) {
+      acclamationText = (this.ss.lentenAcclamation === 'alternate') ? GOSPEL_ACCLAMATION_LENTEN_ALT : GOSPEL_ACCLAMATION_LENTEN;
+    } else {
+      acclamationText = GOSPEL_ACCLAMATION_STANDARD;
+    }
+    this.bodyText(acclamationText, { bold: true, size: 9 });
     if (this.r.gospelAcclamationVerse) {
       this.bodyText(this.r.gospelAcclamationVerse, { italic: true, size: 8.5 });
     }
@@ -382,8 +408,11 @@ class WorshipAidPdfGenerator {
     this.bodyText('Priest: May almighty God bless you, the Father, and the Son, \u2720 and the Holy Spirit. All: Amen.', { size: 8 });
     this.bodyText('Deacon: Go forth, the Mass is ended. All: Thanks be to God.', { size: 8 });
 
-    this.subHeading('Organ Postlude');
-    this.musicLine('organPostlude', 'organPostludeComposer', 'Postlude');
+    // Postlude: suppressed during Lent per worksheet
+    if (this.includePostlude) {
+      this.subHeading('Organ Postlude');
+      this.musicLine('organPostlude', 'organPostludeComposer', 'Postlude');
+    }
 
     if (this.data.announcements) {
       this.y += 4;
@@ -444,17 +473,8 @@ class WorshipAidPdfGenerator {
 
 /**
  * Generate saddle-stitch imposed PDF — PRD Section 5.3
- * Sheet 1 Side A: Page 8 (left) + Page 1 (right)
- * Sheet 1 Side B: Page 2 (left) + Page 7 (right)
- * Sheet 2 Side A: Page 6 (left) + Page 3 (right)
- * Sheet 2 Side B: Page 4 (left) + Page 5 (right)
  */
 async function generateImposedPdf(data, outputPath, options = {}) {
-  // For imposition we'd need to render 8 individual page PDFs then
-  // composite them onto 8.5x11 sheets. PDFKit can't re-read pages,
-  // so for v1 we generate the sequential PDF and note imposition as
-  // a future enhancement when Puppeteer becomes available.
-  // The sequential PDF is the "alternate export" per PRD §5.3.
   return generatePdf(data, outputPath, options);
 }
 

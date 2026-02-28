@@ -1,5 +1,10 @@
 // Liturgical Season Auto-Rules Engine
-// PRD Section 5.1 — When user selects a season, these defaults apply automatically
+// Updated from St. Theresa worksheet (Feb 2026)
+// Key changes from worksheet:
+//   - Apostles' Creed during Advent, Lent, AND Easter (not just Lent)
+//   - Postlude omitted during Lent
+//   - Advent Wreath Lighting added during Advent
+//   - Two Lenten Gospel Acclamation options available
 'use strict';
 
 const SEASONS = ['ordinary', 'advent', 'christmas', 'lent', 'easter'];
@@ -14,18 +19,22 @@ const SEASON_RULES = {
     lambOfGodSetting: 'Mass of St. Theresa',
     penitentialAct: 'confiteor',
     childrenLiturgyDefault: 'optional',
-    gospelAcclamationType: 'alleluia'
+    gospelAcclamationType: 'alleluia',
+    includePostlude: true,
+    adventWreath: false
   },
   advent: {
     gloria: false,
-    creedType: 'nicene',
+    creedType: 'apostles',      // Worksheet: Apostles' during Advent
     entranceType: 'antiphon',
     holyHolySetting: 'Mass of St. Theresa',
     mysteryOfFaithSetting: 'Mass of St. Theresa',
     lambOfGodSetting: 'Mass of St. Theresa',
     penitentialAct: 'confiteor',
     childrenLiturgyDefault: 'no',
-    gospelAcclamationType: 'alleluia'
+    gospelAcclamationType: 'alleluia',
+    includePostlude: true,
+    adventWreath: true           // Worksheet: Lighting of Advent Wreath added
   },
   christmas: {
     gloria: true,
@@ -36,7 +45,9 @@ const SEASON_RULES = {
     lambOfGodSetting: 'Mass of St. Theresa',
     penitentialAct: 'confiteor',
     childrenLiturgyDefault: 'no',
-    gospelAcclamationType: 'alleluia'
+    gospelAcclamationType: 'alleluia',
+    includePostlude: true,
+    adventWreath: false
   },
   lent: {
     gloria: false,
@@ -48,20 +59,30 @@ const SEASON_RULES = {
     penitentialAct: 'confiteor',
     childrenLiturgyDefault: 'yes',
     childrenLiturgyMassTime: 'Sun 9:00 AM',
-    gospelAcclamationType: 'lenten'
+    gospelAcclamationType: 'lenten',
+    includePostlude: false,      // Worksheet: No postlude during Lent
+    adventWreath: false
   },
   easter: {
     gloria: true,
-    creedType: 'nicene',
+    creedType: 'apostles',      // Worksheet: Apostles' during Easter Season
     entranceType: 'processional',
     holyHolySetting: 'Mass of St. Theresa',
     mysteryOfFaithSetting: 'Mass of St. Theresa',
     lambOfGodSetting: 'Mass of St. Theresa',
     penitentialAct: 'confiteor',
     childrenLiturgyDefault: 'optional',
-    gospelAcclamationType: 'alleluia'
+    gospelAcclamationType: 'alleluia',
+    includePostlude: true,
+    adventWreath: false
   }
 };
+
+// Lenten Gospel Acclamation options (worksheet: both used, chosen by music staff)
+const LENTEN_ACCLAMATION_OPTIONS = [
+  'Praise to you, Lord Jesus Christ, King of endless glory!',
+  'Glory and praise to you, Lord Jesus Christ!'
+];
 
 function getSeasonDefaults(season) {
   return SEASON_RULES[season] || SEASON_RULES.ordinary;
@@ -81,8 +102,10 @@ function applySeasonDefaults(data) {
   if (!merged.seasonalSettings.mysteryOfFaithSetting) merged.seasonalSettings.mysteryOfFaithSetting = defaults.mysteryOfFaithSetting;
   if (!merged.seasonalSettings.lambOfGodSetting) merged.seasonalSettings.lambOfGodSetting = defaults.lambOfGodSetting;
   if (!merged.seasonalSettings.penitentialAct) merged.seasonalSettings.penitentialAct = defaults.penitentialAct;
+  if (merged.seasonalSettings.includePostlude === undefined) merged.seasonalSettings.includePostlude = defaults.includePostlude;
+  if (merged.seasonalSettings.adventWreath === undefined) merged.seasonalSettings.adventWreath = defaults.adventWreath;
 
   return merged;
 }
 
-module.exports = { SEASONS, SEASON_RULES, getSeasonDefaults, applySeasonDefaults };
+module.exports = { SEASONS, SEASON_RULES, LENTEN_ACCLAMATION_OPTIONS, getSeasonDefaults, applySeasonDefaults };

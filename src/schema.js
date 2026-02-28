@@ -1,4 +1,5 @@
 // JSON Schema for worship aid input — matches PRD Section 6.1
+// Updated with worksheet fields: advent wreath, postlude toggle, acclamation choice, image paths
 'use strict';
 
 const musicBlockSchema = {
@@ -29,10 +30,14 @@ const inputSchema = {
   properties: {
     // Metadata
     id: { type: 'string' },
-    status: { type: 'string', enum: ['draft', 'finalized', 'exported'] },
+    status: { type: 'string', enum: ['draft', 'review', 'approved', 'finalized', 'exported'] },
     feastName: { type: 'string', minLength: 1 },
     liturgicalDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
     liturgicalSeason: { type: 'string', enum: ['ordinary', 'advent', 'christmas', 'lent', 'easter'] },
+
+    // Workflow: who last edited, assigned to
+    lastEditedBy: { type: 'string' },
+    assignedTo: { type: 'string' },
 
     // Readings — PRD Section 4.1
     readings: {
@@ -63,7 +68,10 @@ const inputSchema = {
         holyHolySetting: { type: 'string' },
         mysteryOfFaithSetting: { type: 'string' },
         lambOfGodSetting: { type: 'string' },
-        penitentialAct: { type: 'string', enum: ['confiteor', 'kyrie_only'] }
+        penitentialAct: { type: 'string', enum: ['confiteor', 'kyrie_only'] },
+        includePostlude: { type: 'boolean' },
+        adventWreath: { type: 'boolean' },
+        lentenAcclamation: { type: 'string', enum: ['standard', 'alternate'] }
       }
     },
 
@@ -82,8 +90,12 @@ const inputSchema = {
     announcements: { type: 'string' },
     specialNotes: { type: 'string' },
 
-    // Cover image (optional)
-    coverImagePath: { type: 'string' }
+    // Images
+    coverImagePath: { type: 'string' },
+    notationImages: {
+      type: 'object',
+      additionalProperties: { type: 'string' }
+    }
   }
 };
 

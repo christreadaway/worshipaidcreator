@@ -1,22 +1,134 @@
 // Express web server — Worship Aid Generator
-// PRD: Web application with form, live preview, draft save, admin settings
+// Multi-user workflow with role-based access per St. Theresa worksheet
 'use strict';
 
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const multer = require('multer');
 const { validateInput, detectOverflows } = require('./validator');
 const { generatePdf, buildFilename } = require('./pdf-generator');
 const { renderBookletHtml } = require('./template-renderer');
-const { getSeasonDefaults, SEASONS } = require('./config/seasons');
+const { getSeasonDefaults, SEASONS, LENTEN_ACCLAMATION_OPTIONS } = require('./config/seasons');
 const store = require('./store/file-store');
+const userStore = require('./store/user-store');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Ensure upload directories exist
+const UPLOADS_DIR = path.join(__dirname, '..', 'data', 'uploads');
+const NOTATION_DIR = path.join(UPLOADS_DIR, 'notation');
+const COVERS_DIR = path.join(UPLOADS_DIR, 'covers');
+[NOTATION_DIR, COVERS_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
+
+// Multer config for image uploads
+const notationUpload = multer({
+  storage: multer.diskStorage({
+    destination: NOTATION_DIR,
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname);
+      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+    }
+  }),
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.png', '.jpg', '.jpeg', '.gif', '.svg'];
+    cb(null, allowed.includes(path.extname(file.originalname).toLowerCase()));
+  },
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB
+});
+
+const coverUpload = multer({
+  storage: multer.diskStorage({
+    destination: COVERS_DIR,
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname);
+      cb(null, `cover-${Date.now()}${ext}`);
+    }
+  }),
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.png', '.jpg', '.jpeg'];
+    cb(null, allowed.includes(path.extname(file.originalname).toLowerCase()));
+  },
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB
+});
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use('/exports', express.static(store.getExportsDir()));
+app.use('/uploads', express.static(UPLOADS_DIR));
+
+// Seed default users on first run
+userStore.seedDefaultUsers();
+
+// --- AUTH MIDDLEWARE ---
+function getSessionToken(req) {
+  return req.headers['x-session-token'] || req.query.token || null;
+}
+
+function requireAuth(req, res, next) {
+  const token = getSessionToken(req);
+  const user = userStore.getSessionUser(token);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
+  req.user = user;
+  next();
+}
+
+function requirePermission(permission) {
+  return (req, res, next) => {
+    if (!userStore.hasPermission(req.user, permission)) {
+      return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+    next();
+  };
+}
+
+// --- AUTH ROUTES ---
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body;
+  const user = userStore.authenticateUser(username, password);
+  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+  const token = userStore.createSession(user.id);
+  res.json({ token, user });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  const token = getSessionToken(req);
+  if (token) userStore.destroySession(token);
+  res.json({ success: true });
+});
+
+app.get('/api/auth/me', (req, res) => {
+  const token = getSessionToken(req);
+  const user = userStore.getSessionUser(token);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
+  res.json(user);
+});
+
+// --- USER MANAGEMENT (admin only) ---
+app.get('/api/users', requireAuth, requirePermission('manage_users'), (req, res) => {
+  res.json(userStore.listUsers());
+});
+
+app.post('/api/users', requireAuth, requirePermission('manage_users'), (req, res) => {
+  try {
+    const user = userStore.createUser(req.body);
+    res.json(user);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.put('/api/users/:id', requireAuth, requirePermission('manage_users'), (req, res) => {
+  const user = userStore.updateUser(req.params.id, req.body);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json(user);
+});
+
+app.delete('/api/users/:id', requireAuth, requirePermission('manage_users'), (req, res) => {
+  userStore.deleteUser(req.params.id);
+  res.json({ success: true });
+});
 
 // --- API ROUTES ---
 
@@ -24,6 +136,11 @@ app.use('/exports', express.static(store.getExportsDir()));
 app.get('/api/season-defaults/:season', (req, res) => {
   const defaults = getSeasonDefaults(req.params.season);
   res.json(defaults);
+});
+
+// Lenten acclamation options
+app.get('/api/lenten-acclamations', (req, res) => {
+  res.json(LENTEN_ACCLAMATION_OPTIONS);
 });
 
 // Validate
@@ -57,6 +174,41 @@ app.post('/api/generate-pdf', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// --- IMAGE UPLOADS ---
+app.post('/api/upload/notation', requireAuth, requirePermission('upload_images'), notationUpload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  res.json({
+    filename: req.file.filename,
+    url: `/uploads/notation/${req.file.filename}`,
+    originalName: req.file.originalname
+  });
+});
+
+app.post('/api/upload/cover', requireAuth, requirePermission('edit_cover'), coverUpload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  res.json({
+    filename: req.file.filename,
+    url: `/uploads/covers/${req.file.filename}`,
+    originalName: req.file.originalname
+  });
+});
+
+app.get('/api/uploads/notation', (req, res) => {
+  const files = fs.readdirSync(NOTATION_DIR).filter(f => !f.startsWith('.')).map(f => ({
+    filename: f,
+    url: `/uploads/notation/${f}`
+  }));
+  res.json(files);
+});
+
+app.get('/api/uploads/covers', (req, res) => {
+  const files = fs.readdirSync(COVERS_DIR).filter(f => !f.startsWith('.')).map(f => ({
+    filename: f,
+    url: `/uploads/covers/${f}`
+  }));
+  res.json(files);
 });
 
 // --- DRAFTS ---
@@ -108,17 +260,23 @@ app.get('/api/sample', (req, res) => {
 
 // --- MAIN UI ---
 app.get('/', (req, res) => res.send(getAppHtml()));
+app.get('/login', (req, res) => res.send(getAppHtml()));
 app.get('/admin', (req, res) => res.send(getAppHtml()));
 app.get('/history', (req, res) => res.send(getAppHtml()));
+app.get('/users', (req, res) => res.send(getAppHtml()));
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n  Worship Aid Generator`);
-  console.log(`  http://localhost:${PORT}`);
-  console.log(`  Press Ctrl+C to stop.\n`);
-});
+// Only start listening when run directly (not when imported for testing)
+if (require.main === module) {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n  Worship Aid Generator`);
+    console.log(`  http://localhost:${PORT}`);
+    console.log(`  Press Ctrl+C to stop.\n`);
+    console.log(`  Default users: jd/worship2026, musicdirector/music2026, pastor/pastor2026, staff/staff2026\n`);
+  });
+}
 
 // =====================================================================
-// FULL SPA HTML — Form Editor + Live Preview + History + Admin
+// FULL SPA HTML — Login + Role-based Editor + Live Preview + History + Admin + User Management
 // =====================================================================
 function getAppHtml() {
   return `<!DOCTYPE html>
@@ -133,6 +291,7 @@ function getAppHtml() {
   --navy: #1A2E4A; --burgundy: #6B1A1A; --gold: #B8922A; --gold-light: #D4AF5A;
   --cream: #FAF7F2; --parchment: #F2EBD9; --dark: #1C1C1C; --gray: #5A5A5A;
   --border: #E0D5C0; --success: #2d7d46; --error: #c0392b; --white: #fff;
+  --purple: #5b3d8f;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Inter', -apple-system, sans-serif; background: var(--cream); color: var(--dark); font-size: 13px; }
@@ -143,6 +302,8 @@ nav .brand { font-family: 'Cinzel', serif; font-size: 15px; color: var(--gold-li
 nav a { color: rgba(255,255,255,0.7); text-decoration: none; font-size: 12px; font-weight: 500; letter-spacing: 0.5px; padding: 4px 0; border-bottom: 2px solid transparent; transition: all 0.15s; }
 nav a:hover, nav a.active { color: #fff; border-bottom-color: var(--gold); }
 nav .spacer { flex: 1; }
+nav .user-info { color: rgba(255,255,255,0.6); font-size: 11px; }
+nav .user-info strong { color: var(--gold-light); }
 .btn { padding: 6px 14px; border: none; border-radius: 4px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 5px; }
 .btn:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
 .btn-gold { background: var(--gold); color: var(--white); }
@@ -151,10 +312,29 @@ nav .spacer { flex: 1; }
 .btn-sm { padding: 4px 10px; font-size: 11px; }
 .btn-danger { background: var(--error); color: var(--white); }
 
+/* LOGIN */
+.login-view { max-width: 360px; margin: 80px auto; padding: 30px; background: white; border-radius: 8px; border: 1px solid var(--border); box-shadow: 0 4px 20px rgba(0,0,0,0.06); text-align: center; }
+.login-view h2 { font-family: 'Cinzel', serif; color: var(--navy); margin-bottom: 4px; }
+.login-view .subtitle { font-size: 11px; color: var(--gray); margin-bottom: 20px; }
+.login-view .fg { margin-bottom: 12px; text-align: left; }
+.login-view .fg label { display: block; font-size: 10px; font-weight: 600; color: var(--gray); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
+.login-view .fg input { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; font-size: 13px; }
+.login-error { color: var(--error); font-size: 12px; margin-bottom: 8px; display: none; }
+
 /* LAYOUT */
 .app { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 50px); }
 .editor { background: var(--white); border-right: 1px solid var(--border); overflow-y: auto; padding: 14px; }
 .preview-area { overflow-y: auto; padding: 16px; background: #e8e4da; }
+
+/* Role indicator */
+.role-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.role-badge.admin { background: #e8d5f5; color: var(--purple); }
+.role-badge.music_director { background: #d5e8f5; color: #2a5e8a; }
+.role-badge.pastor { background: #f5e8d5; color: #8a5e2a; }
+.role-badge.staff { background: #d5f5e8; color: #2a8a5e; }
+
+/* Section permissions indicator */
+.section-lock { color: var(--gray); font-size: 9px; font-style: italic; margin-bottom: 6px; }
 
 /* FORM */
 .form-section { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; overflow: hidden; }
@@ -162,6 +342,7 @@ nav .spacer { flex: 1; }
 .form-section-hdr:hover { background: #243a5a; }
 .form-section-body { padding: 10px; }
 .form-section-body.collapsed { display: none; }
+.form-section.disabled { opacity: 0.5; pointer-events: none; }
 .fg { margin-bottom: 8px; }
 .fg label { display: block; font-size: 10px; font-weight: 600; color: var(--gray); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
 .fg input, .fg textarea, .fg select { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 3px; font-size: 12px; font-family: inherit; }
@@ -198,34 +379,68 @@ nav .spacer { flex: 1; }
 .draft-card .actions { display: flex; gap: 6px; }
 .status-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 500; }
 .status-badge.draft { background: #fef3cd; color: #856404; }
+.status-badge.review { background: #cce5ff; color: #004085; }
+.status-badge.approved { background: #d1ecf1; color: #0c5460; }
 .status-badge.exported { background: #d4edda; color: #155724; }
 
 /* Admin page */
 .admin-view { max-width: 600px; margin: 30px auto; padding: 0 20px; }
 .admin-view h2 { font-family: 'Cinzel', serif; color: var(--navy); margin-bottom: 16px; }
 
+/* Users page */
+.users-view { max-width: 700px; margin: 30px auto; padding: 0 20px; }
+.users-view h2 { font-family: 'Cinzel', serif; color: var(--navy); margin-bottom: 16px; }
+.user-card { background: white; border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
+.user-card .info { flex: 1; }
+.user-card .info h3 { font-size: 14px; margin-bottom: 2px; }
+.user-card .info p { font-size: 11px; color: var(--gray); }
+
 /* Overflow indicator */
 .overflow-indicator { background: #fdeaea; border: 1px solid var(--error); border-radius: 4px; padding: 6px 10px; margin-bottom: 8px; font-size: 11px; color: var(--error); }
 .page-placeholder { text-align: center; padding: 60px 20px; color: var(--gray); }
 .page-placeholder h2 { color: var(--navy); font-family: 'Cinzel', serif; margin-bottom: 8px; }
+
+/* Image upload */
+.upload-area { border: 2px dashed var(--border); border-radius: 6px; padding: 12px; text-align: center; cursor: pointer; transition: all 0.15s; margin-bottom: 8px; }
+.upload-area:hover { border-color: var(--gold); background: #faf8f0; }
+.upload-area input[type="file"] { display: none; }
+.image-preview { max-width: 100%; max-height: 80px; margin-top: 6px; border: 1px solid var(--border); border-radius: 3px; }
 </style>
 </head>
 <body>
 
-<nav>
+<!-- LOGIN PAGE -->
+<div id="page-login" style="display:none;">
+  <div style="text-align:center;padding-top:40px;">
+    <span style="font-size:36px;">&#x271E;</span>
+  </div>
+  <div class="login-view">
+    <h2>Worship Aid Generator</h2>
+    <p class="subtitle">Sign in to contribute</p>
+    <div id="login-error" class="login-error"></div>
+    <div class="fg"><label>Username</label><input type="text" id="login-username" placeholder="e.g., jd"></div>
+    <div class="fg"><label>Password</label><input type="password" id="login-password" placeholder="Password"></div>
+    <button class="btn btn-gold" style="width:100%;justify-content:center;margin-top:8px;" onclick="doLogin()">Sign In</button>
+  </div>
+</div>
+
+<nav id="main-nav" style="display:none;">
   <span class="brand">&#x271E; Worship Aid Generator</span>
   <a href="/" class="nav-link active" data-page="editor">Editor</a>
   <a href="/history" class="nav-link" data-page="history">History</a>
-  <a href="/admin" class="nav-link" data-page="admin">Settings</a>
+  <a href="/admin" class="nav-link" data-page="admin" id="nav-admin">Settings</a>
+  <a href="/users" class="nav-link" data-page="users" id="nav-users" style="display:none;">Users</a>
   <span class="spacer"></span>
+  <span class="user-info" id="user-display"></span>
   <button class="btn btn-outline btn-sm" onclick="loadSample()">Load Sample</button>
   <button class="btn btn-outline btn-sm" onclick="saveDraft()">Save Draft</button>
   <button class="btn btn-gold btn-sm" onclick="generatePreview()">Preview</button>
-  <button class="btn btn-navy btn-sm" onclick="generatePdfExport()">Export PDF</button>
+  <button class="btn btn-navy btn-sm" id="btn-export" onclick="generatePdfExport()">Export PDF</button>
+  <button class="btn btn-outline btn-sm" onclick="doLogout()" style="color:rgba(255,255,255,0.5);">Logout</button>
 </nav>
 
 <!-- EDITOR PAGE -->
-<div class="app" id="page-editor">
+<div class="app" id="page-editor" style="display:none;">
   <div class="editor" id="editor">
 
     <!-- LITURGICAL DATE -->
@@ -249,9 +464,10 @@ nav .spacer { flex: 1; }
     </div>
 
     <!-- SEASONAL OVERRIDES -->
-    <div class="form-section">
+    <div class="form-section" id="section-seasonal">
       <div class="form-section-hdr" onclick="toggle(this)">Seasonal Settings <span>&#9660;</span></div>
       <div class="form-section-body">
+        <p class="section-lock" id="seasonal-lock-note">These are seasonally static and usually locked for several weeks.</p>
         <div class="fg-check"><input type="checkbox" id="gloria"><label for="gloria">Include Gloria</label></div>
         <div class="fg-row">
           <div class="fg"><label>Creed</label><select id="creedType"><option value="nicene">Nicene Creed</option><option value="apostles">Apostles' Creed</option></select></div>
@@ -261,11 +477,20 @@ nav .spacer { flex: 1; }
         <div class="fg"><label>Mystery of Faith Setting</label><input type="text" id="mysteryOfFaithSetting"></div>
         <div class="fg"><label>Lamb of God Setting</label><input type="text" id="lambOfGodSetting"></div>
         <div class="fg"><label>Penitential Act</label><select id="penitentialAct"><option value="confiteor">Confiteor (I confess)</option><option value="kyrie_only">Kyrie Only</option></select></div>
+        <div class="fg-check"><input type="checkbox" id="includePostlude"><label for="includePostlude">Include Organ Postlude</label></div>
+        <div class="fg-check"><input type="checkbox" id="adventWreath"><label for="adventWreath">Lighting of the Advent Wreath</label></div>
+        <div class="fg" id="lentenAcclamationGroup" style="display:none;">
+          <label>Lenten Gospel Acclamation</label>
+          <select id="lentenAcclamation">
+            <option value="standard">Praise to you, Lord Jesus Christ, King of endless glory!</option>
+            <option value="alternate">Glory and praise to you, Lord Jesus Christ!</option>
+          </select>
+        </div>
       </div>
     </div>
 
     <!-- READINGS -->
-    <div class="form-section">
+    <div class="form-section" id="section-readings">
       <div class="form-section-hdr" onclick="toggle(this)">Readings <span>&#9660;</span></div>
       <div class="form-section-body">
         <div class="fg"><label>First Reading — Citation</label><input type="text" id="firstReadingCitation" placeholder="e.g., Genesis 15:5-12, 17-18"></div>
@@ -284,7 +509,7 @@ nav .spacer { flex: 1; }
     </div>
 
     <!-- MUSIC: SAT 5PM -->
-    <div class="form-section">
+    <div class="form-section" id="section-music-sat5pm">
       <div class="form-section-hdr" onclick="toggle(this)">Music — Sat 5:00 PM <span>&#9660;</span></div>
       <div class="form-section-body" id="music-sat5pm-body">
         ${musicBlockFields('sat5pm')}
@@ -292,7 +517,7 @@ nav .spacer { flex: 1; }
     </div>
 
     <!-- MUSIC: SUN 9AM -->
-    <div class="form-section">
+    <div class="form-section" id="section-music-sun9am">
       <div class="form-section-hdr" onclick="toggle(this)">Music — Sun 9:00 AM <span>&#9660;</span></div>
       <div class="form-section-body" id="music-sun9am-body">
         ${musicBlockFields('sun9am')}
@@ -300,10 +525,23 @@ nav .spacer { flex: 1; }
     </div>
 
     <!-- MUSIC: SUN 11AM -->
-    <div class="form-section">
+    <div class="form-section" id="section-music-sun11am">
       <div class="form-section-hdr" onclick="toggle(this)">Music — Sun 11:00 AM <span>&#9660;</span></div>
       <div class="form-section-body" id="music-sun11am-body">
         ${musicBlockFields('sun11am')}
+      </div>
+    </div>
+
+    <!-- NOTATION IMAGES -->
+    <div class="form-section" id="section-notation">
+      <div class="form-section-hdr" onclick="toggle(this)">Notation Images <span>&#9660;</span></div>
+      <div class="form-section-body">
+        <p style="font-size:11px;color:var(--gray);margin-bottom:8px;">Upload MuseScore exports, score screenshots, or OneLicense notation PNGs.</p>
+        <div class="upload-area" onclick="document.getElementById('notationFileInput').click()">
+          <input type="file" id="notationFileInput" accept="image/*" onchange="uploadNotation(this)">
+          <p style="font-size:11px;color:var(--gray);">Click to upload notation image (PNG, JPG, SVG)</p>
+        </div>
+        <div id="notation-list"></div>
       </div>
     </div>
 
@@ -321,11 +559,24 @@ nav .spacer { flex: 1; }
     </div>
 
     <!-- ANNOUNCEMENTS & NOTES -->
-    <div class="form-section">
+    <div class="form-section" id="section-announcements">
       <div class="form-section-hdr" onclick="toggle(this)">Announcements &amp; Notes <span>&#9660;</span></div>
       <div class="form-section-body">
         <div class="fg"><label>Announcements</label><textarea id="announcements" rows="3"></textarea></div>
         <div class="fg"><label>Special Notes (optional)</label><textarea id="specialNotes" rows="2" placeholder="Any one-off variations..."></textarea></div>
+      </div>
+    </div>
+
+    <!-- COVER IMAGE -->
+    <div class="form-section" id="section-cover">
+      <div class="form-section-hdr" onclick="toggle(this)">Cover Image <span>&#9660;</span></div>
+      <div class="form-section-body">
+        <p style="font-size:11px;color:var(--gray);margin-bottom:8px;">Optional color cover for special seasons (Christmas, Holy Week, Easter).</p>
+        <div class="upload-area" onclick="document.getElementById('coverFileInput').click()">
+          <input type="file" id="coverFileInput" accept="image/*" onchange="uploadCover(this)">
+          <p style="font-size:11px;color:var(--gray);">Click to upload cover image</p>
+        </div>
+        <div id="cover-preview"></div>
       </div>
     </div>
 
@@ -387,9 +638,151 @@ nav .spacer { flex: 1; }
   </div>
 </div>
 
+<!-- USERS PAGE (admin only) -->
+<div id="page-users" style="display:none;">
+  <div class="users-view">
+    <h2>User Management</h2>
+    <div id="user-list"></div>
+    <div class="form-section" style="margin-top:16px;">
+      <div class="form-section-hdr">Add New User</div>
+      <div class="form-section-body">
+        <div class="fg-row">
+          <div class="fg"><label>Username</label><input type="text" id="new_username"></div>
+          <div class="fg"><label>Display Name</label><input type="text" id="new_displayName"></div>
+        </div>
+        <div class="fg-row">
+          <div class="fg"><label>Role</label>
+            <select id="new_role">
+              <option value="admin">Director of Liturgy (Admin)</option>
+              <option value="music_director">Music Director</option>
+              <option value="pastor">Pastor</option>
+              <option value="staff">Staff</option>
+            </select>
+          </div>
+          <div class="fg"><label>Password</label><input type="password" id="new_password"></div>
+        </div>
+        <button class="btn btn-gold btn-sm" onclick="addUser()">Add User</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="status"><span id="status-text">Ready</span><span id="status-extra"></span></div>
 
 <script>
+// --- Session State ---
+let _sessionToken = localStorage.getItem('wa_token');
+let _currentUser = null;
+
+// --- Auth ---
+async function checkAuth() {
+  if (!_sessionToken) { showLogin(); return; }
+  try {
+    const res = await fetch('/api/auth/me', { headers: { 'x-session-token': _sessionToken } });
+    if (!res.ok) { showLogin(); return; }
+    _currentUser = await res.json();
+    showApp();
+  } catch(e) { showLogin(); }
+}
+
+function showLogin() {
+  _currentUser = null;
+  document.getElementById('page-login').style.display = '';
+  document.getElementById('main-nav').style.display = 'none';
+  ['editor','history','admin','users'].forEach(p => document.getElementById('page-' + p).style.display = 'none');
+}
+
+function showApp() {
+  document.getElementById('page-login').style.display = 'none';
+  document.getElementById('main-nav').style.display = '';
+
+  // Show user info
+  const roleLabels = { admin: 'Director of Liturgy', music_director: 'Music Director', pastor: 'Pastor', staff: 'Staff' };
+  document.getElementById('user-display').innerHTML =
+    '<strong>' + esc(_currentUser.displayName) + '</strong> <span class="role-badge ' + _currentUser.role + '">' + (roleLabels[_currentUser.role] || _currentUser.role) + '</span>';
+
+  // Show/hide nav items based on role
+  document.getElementById('nav-users').style.display = _currentUser.role === 'admin' ? '' : 'none';
+  document.getElementById('btn-export').style.display = hasRole('export_pdf') ? '' : 'none';
+
+  applyRolePermissions();
+  showPage('editor');
+}
+
+async function doLogin() {
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || 'Login failed'; errEl.style.display = ''; return; }
+    _sessionToken = data.token;
+    _currentUser = data.user;
+    localStorage.setItem('wa_token', _sessionToken);
+    showApp();
+  } catch(e) { errEl.textContent = 'Connection error'; errEl.style.display = ''; }
+}
+
+async function doLogout() {
+  await fetch('/api/auth/logout', { method: 'POST', headers: { 'x-session-token': _sessionToken } });
+  _sessionToken = null;
+  _currentUser = null;
+  localStorage.removeItem('wa_token');
+  showLogin();
+}
+
+// Enter key on login
+document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+document.getElementById('login-username').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-password').focus(); });
+
+// --- Role-Based Permissions ---
+const rolePerms = {
+  admin: ['edit_all', 'manage_users', 'manage_settings', 'edit_readings', 'edit_music', 'edit_seasonal', 'approve', 'export_pdf', 'edit_announcements', 'upload_images', 'edit_cover'],
+  music_director: ['edit_music', 'edit_seasonal', 'upload_images', 'export_pdf'],
+  pastor: ['edit_readings', 'approve', 'edit_announcements'],
+  staff: ['edit_readings', 'edit_music', 'edit_announcements', 'edit_seasonal', 'export_pdf']
+};
+
+function hasRole(perm) {
+  if (!_currentUser) return false;
+  const perms = rolePerms[_currentUser.role] || [];
+  return perms.includes(perm) || perms.includes('edit_all');
+}
+
+function applyRolePermissions() {
+  // Music sections: only music_director, admin, staff
+  const musicSections = ['section-music-sat5pm', 'section-music-sun9am', 'section-music-sun11am', 'section-notation'];
+  musicSections.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('disabled', !hasRole('edit_music'));
+  });
+
+  // Readings: only pastor, admin, staff
+  const readingsSection = document.getElementById('section-readings');
+  if (readingsSection) readingsSection.classList.toggle('disabled', !hasRole('edit_readings'));
+
+  // Seasonal: music_director, admin, staff
+  const seasonalSection = document.getElementById('section-seasonal');
+  if (seasonalSection) seasonalSection.classList.toggle('disabled', !hasRole('edit_seasonal'));
+
+  // Announcements: pastor, admin, staff
+  const announcementsSection = document.getElementById('section-announcements');
+  if (announcementsSection) announcementsSection.classList.toggle('disabled', !hasRole('edit_announcements'));
+
+  // Cover: admin only
+  const coverSection = document.getElementById('section-cover');
+  if (coverSection) coverSection.classList.toggle('disabled', !hasRole('edit_cover'));
+
+  // Settings nav: admin only
+  document.getElementById('nav-admin').style.display = hasRole('manage_settings') ? '' : 'none';
+}
+
 // --- Navigation ---
 document.querySelectorAll('.nav-link').forEach(link => {
   link.addEventListener('click', e => {
@@ -401,11 +794,12 @@ document.querySelectorAll('.nav-link').forEach(link => {
   });
 });
 function showPage(page) {
-  ['editor','history','admin'].forEach(p => {
+  ['editor','history','admin','users'].forEach(p => {
     document.getElementById('page-' + p).style.display = (p === page) ? '' : 'none';
   });
   if (page === 'history') loadHistory();
   if (page === 'admin') loadAdminSettings();
+  if (page === 'users') loadUsers();
 }
 
 // --- Form helpers ---
@@ -416,6 +810,7 @@ function toggle(hdr) {
   arrow.textContent = body.classList.contains('collapsed') ? '\\u25B6' : '\\u25BC';
 }
 
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 function v(id) { const el = document.getElementById(id); return el ? el.value.trim() : ''; }
 function ch(id) { const el = document.getElementById(id); return el ? el.checked : false; }
 function sv(id, val) { const el = document.getElementById(id); if (el) el.value = val || ''; }
@@ -468,6 +863,7 @@ function buildData() {
     feastName: v('feastName'),
     liturgicalDate: v('liturgicalDate'),
     liturgicalSeason: v('liturgicalSeason'),
+    lastEditedBy: _currentUser ? _currentUser.displayName : undefined,
     seasonalSettings: {
       gloria: ch('gloria'),
       creedType: v('creedType'),
@@ -475,7 +871,10 @@ function buildData() {
       holyHolySetting: v('holyHolySetting'),
       mysteryOfFaithSetting: v('mysteryOfFaithSetting'),
       lambOfGodSetting: v('lambOfGodSetting'),
-      penitentialAct: v('penitentialAct')
+      penitentialAct: v('penitentialAct'),
+      includePostlude: ch('includePostlude'),
+      adventWreath: ch('adventWreath'),
+      lentenAcclamation: v('lentenAcclamation')
     },
     readings: {
       firstReadingCitation: v('firstReadingCitation'),
@@ -499,7 +898,8 @@ function buildData() {
     childrenLiturgyMusic: v('childrenLiturgyMusic'),
     childrenLiturgyMusicComposer: v('childrenLiturgyMusicComposer'),
     announcements: v('announcements'),
-    specialNotes: v('specialNotes')
+    specialNotes: v('specialNotes'),
+    coverImagePath: window._coverImagePath || undefined
   };
 }
 
@@ -516,6 +916,9 @@ function populateForm(data) {
   sv('mysteryOfFaithSetting', ss.mysteryOfFaithSetting);
   sv('lambOfGodSetting', ss.lambOfGodSetting);
   sv('penitentialAct', ss.penitentialAct);
+  sc('includePostlude', ss.includePostlude !== false);
+  sc('adventWreath', !!ss.adventWreath);
+  sv('lentenAcclamation', ss.lentenAcclamation || 'standard');
   const r = data.readings || {};
   sv('firstReadingCitation', r.firstReadingCitation);
   sv('firstReadingText', r.firstReadingText);
@@ -538,6 +941,8 @@ function populateForm(data) {
   sv('childrenLiturgyMusicComposer', data.childrenLiturgyMusicComposer);
   sv('announcements', data.announcements);
   sv('specialNotes', data.specialNotes);
+  window._coverImagePath = data.coverImagePath || undefined;
+  updateSeasonUI();
 }
 
 // --- Season auto-rules ---
@@ -553,8 +958,61 @@ async function onSeasonChange() {
     sv('mysteryOfFaithSetting', defaults.mysteryOfFaithSetting);
     sv('lambOfGodSetting', defaults.lambOfGodSetting);
     sv('penitentialAct', defaults.penitentialAct);
+    sc('includePostlude', defaults.includePostlude !== false);
+    sc('adventWreath', !!defaults.adventWreath);
+    updateSeasonUI();
     toast('Season defaults applied: ' + season, 'success');
   } catch(e) { console.error(e); }
+}
+
+function updateSeasonUI() {
+  const season = v('liturgicalSeason');
+  // Show Lenten acclamation choice only during Lent
+  document.getElementById('lentenAcclamationGroup').style.display = (season === 'lent') ? '' : 'none';
+}
+
+// --- Image Uploads ---
+async function uploadNotation(input) {
+  if (!input.files || !input.files[0]) return;
+  const formData = new FormData();
+  formData.append('image', input.files[0]);
+  try {
+    const res = await fetch('/api/upload/notation', {
+      method: 'POST', headers: { 'x-session-token': _sessionToken }, body: formData
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
+    toast('Image uploaded: ' + data.originalName, 'success');
+    loadNotationList();
+  } catch(e) { toast('Upload error', 'error'); }
+  input.value = '';
+}
+
+async function loadNotationList() {
+  try {
+    const res = await fetch('/api/uploads/notation');
+    const files = await res.json();
+    document.getElementById('notation-list').innerHTML = files.map(f =>
+      '<div style="margin-bottom:4px;"><img src="' + f.url + '" class="image-preview" alt="notation"> <span style="font-size:10px;color:var(--gray);">' + esc(f.filename) + '</span></div>'
+    ).join('');
+  } catch(e) {}
+}
+
+async function uploadCover(input) {
+  if (!input.files || !input.files[0]) return;
+  const formData = new FormData();
+  formData.append('image', input.files[0]);
+  try {
+    const res = await fetch('/api/upload/cover', {
+      method: 'POST', headers: { 'x-session-token': _sessionToken }, body: formData
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
+    window._coverImagePath = data.url;
+    document.getElementById('cover-preview').innerHTML = '<img src="' + data.url + '" class="image-preview" style="max-height:120px;" alt="cover">';
+    toast('Cover image uploaded', 'success');
+  } catch(e) { toast('Upload error', 'error'); }
+  input.value = '';
 }
 
 // --- Actions ---
@@ -570,7 +1028,7 @@ async function loadSample() {
 
 async function saveDraft() {
   const data = buildData();
-  data.status = 'draft';
+  data.status = data.status || 'draft';
   try {
     const res = await fetch('/api/drafts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
     const result = await res.json();
@@ -624,8 +1082,8 @@ async function loadHistory() {
       : drafts.map(d => \`
         <div class="draft-card">
           <div class="info">
-            <h3>\${d.feastName || 'Untitled'} <span class="status-badge \${d.status}">\${d.status}</span></h3>
-            <p>\${d.liturgicalDate || ''} &bull; \${d.liturgicalSeason || ''} &bull; Updated \${new Date(d.updatedAt).toLocaleDateString()}</p>
+            <h3>\${esc(d.feastName || 'Untitled')} <span class="status-badge \${d.status || 'draft'}">\${d.status || 'draft'}</span></h3>
+            <p>\${esc(d.liturgicalDate || '')} &bull; \${esc(d.liturgicalSeason || '')} &bull; Updated \${new Date(d.updatedAt).toLocaleDateString()}\${d.lastEditedBy ? ' by ' + esc(d.lastEditedBy) : ''}</p>
           </div>
           <div class="actions">
             <button class="btn btn-outline btn-sm" onclick="openDraft('\${d.id}')">Open</button>
@@ -673,6 +1131,52 @@ async function saveAdminSettings() {
   toast('Settings saved', 'success');
 }
 
+// --- User Management ---
+async function loadUsers() {
+  try {
+    const res = await fetch('/api/users', { headers: { 'x-session-token': _sessionToken } });
+    if (!res.ok) return;
+    const users = await res.json();
+    const roleLabels = { admin: 'Director of Liturgy', music_director: 'Music Director', pastor: 'Pastor', staff: 'Staff' };
+    document.getElementById('user-list').innerHTML = users.map(u => \`
+      <div class="user-card">
+        <div class="info">
+          <h3>\${esc(u.displayName)} <span class="role-badge \${u.role}">\${roleLabels[u.role] || u.role}</span></h3>
+          <p>Username: \${esc(u.username)} &bull; Created \${new Date(u.createdAt).toLocaleDateString()}</p>
+        </div>
+        <div class="actions">
+          <button class="btn btn-danger btn-sm" onclick="removeUser('\${u.id}')">Remove</button>
+        </div>
+      </div>
+    \`).join('');
+  } catch(e) { console.error(e); }
+}
+
+async function addUser() {
+  const data = {
+    username: v('new_username'),
+    displayName: v('new_displayName'),
+    role: v('new_role'),
+    password: v('new_password')
+  };
+  try {
+    const res = await fetch('/api/users', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) { const err = await res.json(); toast(err.error || 'Error', 'error'); return; }
+    toast('User added', 'success');
+    sv('new_username', ''); sv('new_displayName', ''); sv('new_password', '');
+    loadUsers();
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function removeUser(id) {
+  if (!confirm('Remove this user?')) return;
+  await fetch('/api/users/' + id, { method: 'DELETE', headers: { 'x-session-token': _sessionToken } });
+  loadUsers();
+}
+
 // --- Auto-save ---
 let _autoSaveTimer;
 document.getElementById('editor').addEventListener('input', () => {
@@ -692,6 +1196,9 @@ function toast(msg, type) {
   const t = document.createElement('div'); t.className = 'toast ' + type; t.textContent = msg;
   document.body.appendChild(t); setTimeout(() => t.remove(), 3500);
 }
+
+// --- Init ---
+checkAuth();
 </script>
 </body>
 </html>`;

@@ -1,0 +1,132 @@
+// Tests for user management and role-based access
+'use strict';
+
+const { describe, it, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const userStore = require('../store/user-store');
+
+// Clean up test users after tests
+const testUserIds = [];
+
+describe('User Store', () => {
+  it('should create a user', () => {
+    const user = userStore.createUser({
+      username: 'testuser_' + Date.now(),
+      displayName: 'Test User',
+      role: 'staff',
+      password: 'testpass'
+    });
+    testUserIds.push(user.id);
+    assert.ok(user.id);
+    assert.equal(user.role, 'staff');
+    assert.equal(user.displayName, 'Test User');
+    assert.ok(!user.passwordHash, 'Password hash should not be exposed');
+  });
+
+  it('should reject invalid role', () => {
+    assert.throws(() => {
+      userStore.createUser({ username: 'bad_' + Date.now(), displayName: 'Bad', role: 'invalid', password: 'x' });
+    }, /Invalid role/);
+  });
+
+  it('should reject duplicate username', () => {
+    const unique = 'dup_' + Date.now();
+    userStore.createUser({ username: unique, displayName: 'First', role: 'staff', password: 'x' });
+    assert.throws(() => {
+      userStore.createUser({ username: unique, displayName: 'Second', role: 'staff', password: 'y' });
+    }, /already exists/);
+  });
+
+  it('should list users', () => {
+    const users = userStore.listUsers();
+    assert.ok(Array.isArray(users));
+    assert.ok(users.length > 0);
+    // Ensure no password hashes exposed
+    users.forEach(u => assert.ok(!u.passwordHash));
+  });
+
+  it('should authenticate with correct credentials', () => {
+    const uname = 'authtest_' + Date.now();
+    userStore.createUser({ username: uname, displayName: 'Auth Test', role: 'staff', password: 'secret' });
+    const user = userStore.authenticateUser(uname, 'secret');
+    assert.ok(user);
+    assert.equal(user.username, uname);
+  });
+
+  it('should reject incorrect password', () => {
+    const uname = 'authfail_' + Date.now();
+    userStore.createUser({ username: uname, displayName: 'Fail', role: 'staff', password: 'correct' });
+    const user = userStore.authenticateUser(uname, 'wrong');
+    assert.equal(user, null);
+  });
+
+  it('should create and validate sessions', () => {
+    const uname = 'session_' + Date.now();
+    const created = userStore.createUser({ username: uname, displayName: 'Session', role: 'admin', password: 'pass' });
+    const token = userStore.createSession(created.id);
+    assert.ok(token);
+    assert.ok(token.length > 20);
+
+    const user = userStore.getSessionUser(token);
+    assert.ok(user);
+    assert.equal(user.id, created.id);
+  });
+
+  it('should destroy sessions', () => {
+    const uname = 'destroy_' + Date.now();
+    const created = userStore.createUser({ username: uname, displayName: 'Destroy', role: 'staff', password: 'pass' });
+    const token = userStore.createSession(created.id);
+    userStore.destroySession(token);
+    const user = userStore.getSessionUser(token);
+    assert.equal(user, null);
+  });
+});
+
+describe('Role permissions', () => {
+  it('should grant admin all permissions', () => {
+    const admin = { role: 'admin' };
+    assert.ok(userStore.hasPermission(admin, 'edit_all'));
+    assert.ok(userStore.hasPermission(admin, 'manage_users'));
+    assert.ok(userStore.hasPermission(admin, 'edit_readings'));
+    assert.ok(userStore.hasPermission(admin, 'edit_music'));
+  });
+
+  it('should grant music_director music permissions', () => {
+    const md = { role: 'music_director' };
+    assert.ok(userStore.hasPermission(md, 'edit_music'));
+    assert.ok(userStore.hasPermission(md, 'upload_images'));
+    assert.ok(!userStore.hasPermission(md, 'manage_users'));
+    assert.ok(!userStore.hasPermission(md, 'edit_readings'));
+  });
+
+  it('should grant pastor reading and approval permissions', () => {
+    const pastor = { role: 'pastor' };
+    assert.ok(userStore.hasPermission(pastor, 'edit_readings'));
+    assert.ok(userStore.hasPermission(pastor, 'approve'));
+    assert.ok(!userStore.hasPermission(pastor, 'edit_music'));
+    assert.ok(!userStore.hasPermission(pastor, 'manage_users'));
+  });
+
+  it('should grant staff broad editing permissions', () => {
+    const staff = { role: 'staff' };
+    assert.ok(userStore.hasPermission(staff, 'edit_readings'));
+    assert.ok(userStore.hasPermission(staff, 'edit_music'));
+    assert.ok(userStore.hasPermission(staff, 'edit_announcements'));
+    assert.ok(!userStore.hasPermission(staff, 'manage_users'));
+  });
+
+  it('should deny permissions for null user', () => {
+    assert.ok(!userStore.hasPermission(null, 'edit_all'));
+  });
+});
+
+describe('Role labels', () => {
+  it('should define labels for all roles', () => {
+    assert.equal(userStore.ROLE_LABELS.admin, 'Director of Liturgy');
+    assert.equal(userStore.ROLE_LABELS.music_director, 'Music Director');
+    assert.equal(userStore.ROLE_LABELS.pastor, 'Pastor');
+    assert.equal(userStore.ROLE_LABELS.staff, 'Staff');
+  });
+});
