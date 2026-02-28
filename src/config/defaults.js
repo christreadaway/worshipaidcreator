@@ -20,7 +20,8 @@ Excerpts from the English translation of The Roman Missal © 2010, International
 Music reprinted under OneLicense #A-702171. All rights reserved.`,
   minFontSizePt: 9,
   bodyFont: 'EB Garamond',
-  headerFont: 'Cinzel'
+  headerFont: 'Cinzel',
+  requirePastorApproval: false
 };
 
 module.exports = { DEFAULT_PARISH_SETTINGS };

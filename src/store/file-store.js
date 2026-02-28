@@ -1,28 +1,22 @@
-// File-based persistence for drafts and parish settings
-// Replaces Firebase Firestore for local/dev use — PRD Section 4.4, 6.2
+// Persistence for drafts and parish settings
+// Uses KV abstraction: filesystem locally, Netlify Blobs in production
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const kv = require('./kv');
 
-const DATA_DIR = path.join(__dirname, '..', '..', 'data');
-const DRAFTS_DIR = path.join(DATA_DIR, 'drafts');
-const SETTINGS_FILE = path.join(DATA_DIR, 'settings', 'parish-settings.json');
-const EXPORTS_DIR = path.join(DATA_DIR, 'exports');
-
-// Ensure directories exist
-[DRAFTS_DIR, path.dirname(SETTINGS_FILE), EXPORTS_DIR].forEach(d => {
-  fs.mkdirSync(d, { recursive: true });
-});
-
-// --- DRAFTS ---
+const EXPORTS_DIR = path.join(kv.DATA_DIR, 'exports');
+if (!kv.IS_NETLIFY) fs.mkdirSync(EXPORTS_DIR, { recursive: true });
 
 function generateId() {
   return crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
 }
 
-function saveDraft(data) {
+// --- DRAFTS ---
+
+async function saveDraft(data) {
   const id = data.id || generateId();
   const now = new Date().toISOString();
   const record = {
@@ -32,45 +26,39 @@ function saveDraft(data) {
     createdAt: data.createdAt || now,
     status: data.status || 'draft'
   };
-  const filePath = path.join(DRAFTS_DIR, `${id}.json`);
-  fs.writeFileSync(filePath, JSON.stringify(record, null, 2), 'utf8');
+  await kv.set('drafts', id, record);
   return record;
 }
 
-function loadDraft(id) {
-  const filePath = path.join(DRAFTS_DIR, `${id}.json`);
-  if (!fs.existsSync(filePath)) return null;
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+async function loadDraft(id) {
+  return kv.get('drafts', id);
 }
 
-function listDrafts() {
-  const files = fs.readdirSync(DRAFTS_DIR).filter(f => f.endsWith('.json'));
-  const drafts = files.map(f => {
-    const data = JSON.parse(fs.readFileSync(path.join(DRAFTS_DIR, f), 'utf8'));
-    return {
-      id: data.id,
-      feastName: data.feastName,
-      liturgicalDate: data.liturgicalDate,
-      liturgicalSeason: data.liturgicalSeason,
-      status: data.status,
-      updatedAt: data.updatedAt,
-      createdAt: data.createdAt
-    };
-  });
+async function listDrafts() {
+  const all = await kv.list('drafts');
+  const drafts = all.map(data => ({
+    id: data.id,
+    feastName: data.feastName,
+    liturgicalDate: data.liturgicalDate,
+    liturgicalSeason: data.liturgicalSeason,
+    status: data.status,
+    lastEditedBy: data.lastEditedBy,
+    approvedBy: data.approvedBy,
+    approvedAt: data.approvedAt,
+    submittedBy: data.submittedBy,
+    updatedAt: data.updatedAt,
+    createdAt: data.createdAt
+  }));
   return drafts.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 }
 
-function deleteDraft(id) {
-  const filePath = path.join(DRAFTS_DIR, `${id}.json`);
-  if (fs.existsSync(filePath)) {
-    fs.unlinkSync(filePath);
-    return true;
-  }
-  return false;
+async function deleteDraft(id) {
+  await kv.del('drafts', id);
+  return true;
 }
 
-function duplicateDraft(id) {
-  const original = loadDraft(id);
+async function duplicateDraft(id) {
+  const original = await loadDraft(id);
   if (!original) return null;
   const newId = generateId();
   const copy = {
@@ -86,18 +74,18 @@ function duplicateDraft(id) {
 
 // --- PARISH SETTINGS ---
 
-function loadSettings() {
+async function loadSettings() {
   const { DEFAULT_PARISH_SETTINGS } = require('../config/defaults');
-  if (!fs.existsSync(SETTINGS_FILE)) {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(DEFAULT_PARISH_SETTINGS, null, 2), 'utf8');
+  const saved = await kv.get('settings', 'parish');
+  if (!saved) {
+    await kv.set('settings', 'parish', DEFAULT_PARISH_SETTINGS);
     return { ...DEFAULT_PARISH_SETTINGS };
   }
-  const saved = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
   return { ...DEFAULT_PARISH_SETTINGS, ...saved };
 }
 
-function saveSettings(settings) {
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf8');
+async function saveSettings(settings) {
+  await kv.set('settings', 'parish', settings);
   return settings;
 }
 

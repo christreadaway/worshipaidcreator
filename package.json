@@ -10,6 +10,7 @@
     "start": "node src/server.js",
     "generate": "node src/cli.js",
     "test": "node --test src/tests/*.test.js",
+    "build": "node scripts/extract-html.js",
     "dev": "node src/server.js"
   },
   "keywords": [
@@ -21,10 +22,12 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@netlify/blobs": "^10.7.0",
     "ajv": "^8.18.0",
     "express": "^5.2.1",
     "multer": "^2.1.0",
     "pdfkit": "^0.17.2",
-    "puppeteer-core": "^24.37.5"
+    "puppeteer-core": "^24.37.5",
+    "serverless-http": "^4.0.0"
   }
 }

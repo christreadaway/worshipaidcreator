@@ -46,6 +46,7 @@ Lamb of God, you take away the sins of the world, have mercy on us.
 Lamb of God, you take away the sins of the world, grant us peace.`;
 
 const GOSPEL_ACCLAMATION_LENTEN = 'Praise to you, Lord Jesus Christ, King of endless glory!';
+const GOSPEL_ACCLAMATION_LENTEN_ALT = 'Glory and praise to you, Lord Jesus Christ!';
 const GOSPEL_ACCLAMATION_STANDARD = 'Alleluia, alleluia!';
 
 const RUBRICS = {
@@ -62,6 +63,7 @@ module.exports = {
   LORDS_PRAYER,
   AGNUS_DEI_TEXT,
   GOSPEL_ACCLAMATION_LENTEN,
+  GOSPEL_ACCLAMATION_LENTEN_ALT,
   GOSPEL_ACCLAMATION_STANDARD,
   RUBRICS
 };

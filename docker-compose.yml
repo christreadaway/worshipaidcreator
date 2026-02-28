@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  worshipaid:
+    build: .
+    container_name: worshipaid
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+    volumes:
+      - worshipaid-data:/app/data
+
+volumes:
+  worshipaid-data:

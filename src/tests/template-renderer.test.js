@@ -1,4 +1,5 @@
 // Tests for HTML template renderer (new 5.5x8.5 booklet)
+// Updated with worksheet features: Advent wreath, postlude suppression, alternate acclamation
 'use strict';
 
 const { describe, it } = require('node:test');
@@ -107,6 +108,15 @@ describe('renderBookletHtml', () => {
     assert.ok(html.includes('Praise to you, Lord Jesus Christ'));
   });
 
+  it('should use alternate Lenten acclamation when selected', () => {
+    const altData = {
+      ...sampleData,
+      seasonalSettings: { ...sampleData.seasonalSettings, lentenAcclamation: 'alternate' }
+    };
+    const { html } = renderBookletHtml(altData);
+    assert.ok(html.includes('Glory and praise to you, Lord Jesus Christ'));
+  });
+
   it('should use Alleluia in Ordinary Time', () => {
     const ordinaryData = { ...sampleData, liturgicalSeason: 'ordinary' };
     const { html } = renderBookletHtml(ordinaryData);
@@ -182,7 +192,6 @@ describe('renderBookletHtml', () => {
 
   it('should display per-mass music correctly when same', () => {
     const { html } = renderBookletHtml(sampleData);
-    // organPrelude is same for all 3 → should show once without time labels
     assert.ok(html.includes('O Sacred Head'));
   });
 
@@ -196,9 +205,46 @@ describe('renderBookletHtml', () => {
     assert.ok(html.includes('copyright-full'));
   });
 
-  it('should include Organ Postlude section on page 7', () => {
-    const { html } = renderBookletHtml(sampleData);
+  // Worksheet: postlude suppressed during Lent
+  it('should suppress Organ Postlude in Lent by default', () => {
+    const lentData = {
+      ...sampleData,
+      musicSat5pm: { ...sampleData.musicSat5pm, organPostlude: 'Postlude' },
+      musicSun9am: { ...sampleData.musicSun9am, organPostlude: 'Postlude' },
+      musicSun11am: { ...sampleData.musicSun11am, organPostlude: 'Postlude' }
+    };
+    const { html } = renderBookletHtml(lentData);
+    assert.ok(!html.includes('Organ Postlude'), 'Postlude should be suppressed in Lent');
+  });
+
+  it('should show Organ Postlude in Ordinary Time', () => {
+    const ordinaryData = {
+      ...sampleData,
+      liturgicalSeason: 'ordinary',
+      seasonalSettings: { ...sampleData.seasonalSettings, includePostlude: true },
+      musicSat5pm: { ...sampleData.musicSat5pm, organPostlude: 'Postlude' },
+      musicSun9am: { ...sampleData.musicSun9am, organPostlude: 'Postlude' },
+      musicSun11am: { ...sampleData.musicSun11am, organPostlude: 'Postlude' }
+    };
+    const { html } = renderBookletHtml(ordinaryData);
     assert.ok(html.includes('Organ Postlude'));
+  });
+
+  // Worksheet: Advent Wreath shown during Advent
+  it('should show Advent Wreath in Advent', () => {
+    const adventData = {
+      ...sampleData,
+      liturgicalSeason: 'advent',
+      seasonalSettings: { ...sampleData.seasonalSettings, adventWreath: true }
+    };
+    const { html } = renderBookletHtml(adventData);
+    assert.ok(html.includes('Lighting of the Advent Wreath'), 'Should show Advent Wreath');
+  });
+
+  it('should not show Advent Wreath in Ordinary Time', () => {
+    const ordinaryData = { ...sampleData, liturgicalSeason: 'ordinary' };
+    const { html } = renderBookletHtml(ordinaryData);
+    assert.ok(!html.includes('Lighting of the Advent Wreath'), 'Should not show Advent Wreath element in Ordinary Time');
   });
 
   it('should include Sign of Peace section', () => {

@@ -1,11 +1,13 @@
 // Renders worship aid data into an 8-page HTML booklet
 // PRD: 5.5" x 8.5" half-letter booklet pages
+// Updated with worksheet workflow: Advent wreath, Lenten postlude suppression,
+// alternate Lenten acclamation, Apostles' Creed for Advent/Easter
 'use strict';
 
 const path = require('path');
 const fs = require('fs');
 const { APOSTLES_CREED, NICENE_CREED } = require('./assets/text/creeds');
-const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER } = require('./assets/text/mass-texts');
+const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER } = require('./assets/text/mass-texts');
 const { formatMusicSlot, renderMusicLineHtml } = require('./music-formatter');
 const { applySeasonDefaults } = require('./config/seasons');
 const { detectOverflows } = require('./validator');
@@ -58,7 +60,20 @@ function renderBookletHtml(data, options = {}) {
   const creedTitle = creedType === 'apostles' ? "The Apostles' Creed" : 'The Nicene Creed';
   const entranceType = ss.entranceType || 'processional';
   const penitentialAct = ss.penitentialAct || 'confiteor';
-  const acclamationText = (isLenten) ? GOSPEL_ACCLAMATION_LENTEN : GOSPEL_ACCLAMATION_STANDARD;
+
+  // Lenten acclamation: support alternate choice from worksheet
+  let acclamationText;
+  if (isLenten) {
+    acclamationText = (ss.lentenAcclamation === 'alternate') ? GOSPEL_ACCLAMATION_LENTEN_ALT : GOSPEL_ACCLAMATION_LENTEN;
+  } else {
+    acclamationText = GOSPEL_ACCLAMATION_STANDARD;
+  }
+
+  // Postlude: suppressed during Lent per worksheet
+  const includePostlude = ss.includePostlude !== undefined ? ss.includePostlude : !isLenten;
+
+  // Advent Wreath: shown during Advent per worksheet
+  const showAdventWreath = ss.adventWreath !== undefined ? ss.adventWreath : isAdvent;
 
   // Overflow detection
   const overflows = detectOverflows(d);
@@ -283,6 +298,17 @@ function renderBookletHtml(data, options = {}) {
     font-weight: 600;
   }
 
+  /* --- Advent Wreath --- */
+  .advent-wreath {
+    background: #f0eaf5;
+    border: 0.5pt solid #7b5ea7;
+    padding: 4pt 6pt;
+    margin: 4pt 0;
+    font-size: 8pt;
+    text-align: center;
+  }
+  .advent-wreath strong { color: #5b3d8f; }
+
   /* --- Misc --- */
   .page-number {
     position: absolute;
@@ -357,6 +383,12 @@ function renderBookletHtml(data, options = {}) {
 
   <div class="sub-heading">${entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon'}</div>
   ${renderMusicSection(d, 'processionalOrEntrance', 'processionalOrEntranceComposer', entranceType === 'processional' ? 'Processional' : 'Antiphon')}
+
+  ${showAdventWreath ? `
+  <div class="advent-wreath">
+    <strong>Lighting of the Advent Wreath</strong>
+  </div>
+  ` : ''}
 
   ${penitentialAct === 'confiteor' ? `
   <div class="sub-heading">Penitential Act</div>
@@ -500,8 +532,10 @@ function renderBookletHtml(data, options = {}) {
   <p class="prayer-text" style="font-size:8.5pt;"><strong>Priest:</strong> May almighty God bless you, the Father, and the Son, &#x2720; and the Holy Spirit. <strong>All:</strong> Amen.</p>
   <p class="prayer-text" style="font-size:8.5pt;"><strong>Deacon:</strong> Go forth, the Mass is ended. <strong>All:</strong> Thanks be to God.</p>
 
+  ${includePostlude ? `
   <div class="sub-heading">Organ Postlude</div>
   ${renderMusicSection(d, 'organPostlude', 'organPostludeComposer', 'Postlude')}
+  ` : ''}
 
   ${d.announcements ? `
   <hr class="divider-rule">
