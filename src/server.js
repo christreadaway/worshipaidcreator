@@ -69,8 +69,25 @@ if (!kv.IS_NETLIFY) {
   app.use('/uploads', express.static(UPLOADS_DIR));
 }
 
-// Seed default users on first run
-const _seedReady = userStore.seedDefaultUsers().catch(e => console.error('Failed to seed users:', e.message));
+// Seed default users — retry on demand if initial attempt fails (e.g. Netlify cold start)
+let _seedDone = false;
+const _seedReady = userStore.seedDefaultUsers()
+  .then(() => { _seedDone = true; console.log('[SEED] Default users ready'); })
+  .catch(e => console.error('[SEED] Initial seed failed:', e.message));
+
+async function ensureSeeded() {
+  await _seedReady;
+  if (!_seedDone) {
+    console.log('[SEED] Retrying seed on demand...');
+    try {
+      await userStore.seedDefaultUsers();
+      _seedDone = true;
+      console.log('[SEED] On-demand seed succeeded');
+    } catch (e) {
+      console.error('[SEED] On-demand seed failed:', e.message, e.stack);
+    }
+  }
+}
 
 // --- AUTH MIDDLEWARE ---
 function getSessionToken(req) {
@@ -96,12 +113,30 @@ function requirePermission(permission) {
 
 // --- AUTH ROUTES ---
 app.post('/api/auth/login', async (req, res) => {
-  await _seedReady;
+  await ensureSeeded();
   const { username, password } = req.body;
-  const user = await userStore.authenticateUser(username, password);
-  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-  const token = await userStore.createSession(user.id);
-  res.json({ token, user });
+  if (!username) {
+    console.log('[LOGIN] No username provided in request body');
+    return res.status(401).json({ error: 'Please enter your name' });
+  }
+  console.log('[LOGIN] Attempting login for:', JSON.stringify(username));
+  try {
+    const user = await userStore.authenticateUser(username, password);
+    if (!user) {
+      const allUsers = await userStore.listUsers();
+      const names = allUsers.map(u => u.username);
+      console.log('[LOGIN] Failed for %s — known usernames: %s', username, names.join(', '));
+      return res.status(401).json({
+        error: 'No account found for "' + username + '". Try: ' + names.join(', ')
+      });
+    }
+    console.log('[LOGIN] Success: %s -> %s (%s)', username, user.displayName, user.role);
+    const token = await userStore.createSession(user.id);
+    res.json({ token, user });
+  } catch (e) {
+    console.error('[LOGIN] Error:', e);
+    res.status(500).json({ error: 'Login error: ' + e.message });
+  }
 });
 
 app.post('/api/auth/logout', async (req, res) => {

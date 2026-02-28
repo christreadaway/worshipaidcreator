@@ -151,6 +151,30 @@ Breakdown:
 - [ ] **Restore password test** — Update the "should allow login regardless of password in beta mode" tests back to "should reject incorrect password" in both `user-store.test.js` and `server.test.js`.
 - [ ] **Set strong default passwords** — Change the seed user passwords from simple beta passwords (worship2026, music2026, etc.) to strong defaults or require password setup on first login.
 
+### Session 5 (Feb 28): Login Fix — Name Matching, Error Messages, Netlify Reliability
+
+**Problem:** Users could not log in on the deployed Netlify site. The generic "Invalid credentials" error gave no debugging information.
+
+**Root causes identified:**
+1. Login required exact username (e.g. `jd`) — typing display names like "J.D." or "Morris" or "Larry" failed silently
+2. Error messages were hidden due to a CSS `display:none` bug — the JS set `display=''` which fell back to the CSS rule
+3. User seeding ran at module load time with `.catch()` swallowing errors — on Netlify serverless cold starts, seed could fail silently, leaving zero users in the blob store
+4. No debug logging — impossible to diagnose failures from the deployed site
+
+**Completed:**
+1. **Flexible name matching** — Login now accepts username, display name, partial name, any case. Four fallback levels:
+   - Case-insensitive username match (`JD` → `jd`)
+   - Strip dots/spaces and match username (`Fr. Larry` → `frlarry`)
+   - Match against full display name before parenthetical (`Morris` → `Morris (Music Director)`)
+   - Match against any individual word in display name (`Larry` → `Fr. Larry (Pastor)`)
+2. **Helpful error messages** — Failed logins now show: `No account found for "bob". Try: donna, frlarry, jd, kari, morris, vincent`
+3. **Resilient seeding for Netlify** — If initial seed fails (cold start timing), login route retries on-demand with `ensureSeeded()`
+4. **Server-side `[LOGIN]` debug logging** — Every login attempt logs what was tried, what matched, and what's available
+5. **CSS/JS error display fix** — Login errors now correctly show with `display='block'`
+6. **Cleaned up 36 stale test user files** from data directory
+
+**Test results:** 115 tests passing, 23 name input variants verified via HTTP endpoint.
+
 ---
 
 ## What's Next (Recommended)

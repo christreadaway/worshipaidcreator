@@ -66,10 +66,16 @@ async function getUserByUsername(username) {
   const normalized = lower.replace(/[\s.]+/g, '');
   const byNormalized = users.find(u => u.username.toLowerCase() === normalized);
   if (byNormalized) return byNormalized;
-  // Fallback: match by display name (e.g. "Morris" matches "Morris (Music Director)")
-  return users.find(u => {
+  // Fallback: match by full display name (e.g. "Morris" matches "Morris (Music Director)")
+  const byDisplayFull = users.find(u => {
     const namepart = u.displayName.split('(')[0].trim().replace(/[\s.]+/g, '').toLowerCase();
     return namepart === normalized;
+  });
+  if (byDisplayFull) return byDisplayFull;
+  // Fallback: match by any word in display name (e.g. "Larry" matches "Fr. Larry (Pastor)")
+  return users.find(u => {
+    const words = u.displayName.split('(')[0].trim().split(/[\s.]+/).filter(Boolean);
+    return words.some(w => w.toLowerCase() === lower);
   }) || null;
 }
 

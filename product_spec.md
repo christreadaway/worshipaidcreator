@@ -189,7 +189,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 
 ## Test Coverage
 
-**113 tests across 6 test files. All passing.**
+**115 tests across 6 test files. All passing.**
 
 | Suite | Tests | What It Covers |
 |---|---|---|
@@ -198,7 +198,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 | Template Renderer | 30 | 8-page rendering, seasonal variations (Gloria, Creed, Acclamation), parish info, readings, music display, copyright, Sign of Peace, Great Amen |
 | PDF Generator | 9 | Filename format, file creation, PDF headers, creed selection, parish settings integration |
 | Server API | 23 | All API endpoints, drafts CRUD, settings, auth login, approval workflow |
-| User Store | 15 | User CRUD, authentication (beta mode), sessions, exclusive login, role permissions, role labels |
+| User Store | 17 | User CRUD, authentication (beta mode), case-insensitive login, display name matching, sessions, exclusive login, role permissions, role labels |
 | Utilities | 5 | escapeHtml, nl2br, formatDate |
 
 ---
@@ -242,6 +242,17 @@ npm test
 | frlarry | pastor | Pastor |
 | kari | staff | Staff |
 | donna | staff | Staff |
+
+### Flexible Login Name Matching
+
+Users can log in by typing any recognizable form of their name. The system tries four fallback levels:
+
+1. **Exact username** (case-insensitive): `jd`, `JD`, `frlarry`, `FRLARRY`
+2. **Stripped dots/spaces → username**: `J.D.` → `jd`, `Fr. Larry` → `frlarry`
+3. **Full display name** (before parenthetical): `Morris` matches `Morris (Music Director)`
+4. **Any word in display name**: `Larry` matches `Fr. Larry (Pastor)`
+
+Failed logins show available usernames instead of a generic error.
 
 ### Session Management
 
