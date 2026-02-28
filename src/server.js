@@ -96,6 +96,7 @@ function requirePermission(permission) {
 
 // --- AUTH ROUTES ---
 app.post('/api/auth/login', async (req, res) => {
+  await _seedReady;
   const { username, password } = req.body;
   const user = await userStore.authenticateUser(username, password);
   if (!user) return res.status(401).json({ error: 'Invalid credentials' });
@@ -477,7 +478,7 @@ nav .user-info strong { color: var(--gold-light); }
 .login-view .fg { margin-bottom: 12px; text-align: left; }
 .login-view .fg label { display: block; font-size: 10px; font-weight: 600; color: var(--gray); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
 .login-view .fg input { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; font-size: 13px; }
-.login-error { color: var(--error); font-size: 12px; margin-bottom: 8px; display: none; }
+.login-error { color: var(--error); font-size: 12px; margin-bottom: 8px; }
 
 /* LAYOUT */
 .app { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 50px); }
@@ -575,7 +576,7 @@ nav .user-info strong { color: var(--gold-light); }
   <div class="login-view">
     <h2>Worship Aid Generator</h2>
     <p class="subtitle">Sign in to contribute</p>
-    <div id="login-error" class="login-error"></div>
+    <div id="login-error" class="login-error" style="display:none;"></div>
     <div class="fg"><label>Your Name</label><input type="text" id="login-username" placeholder="e.g., jd, morris, frlarry"></div>
     <input type="hidden" id="login-password" value="">
     <button class="btn btn-gold" style="width:100%;justify-content:center;margin-top:8px;" onclick="doLogin()">Sign In</button>
@@ -897,12 +898,12 @@ async function doLogin() {
       body: JSON.stringify({ username, password })
     });
     const data = await res.json();
-    if (!res.ok) { errEl.textContent = data.error || 'Login failed'; errEl.style.display = ''; return; }
+    if (!res.ok) { errEl.textContent = data.error || 'Login failed'; errEl.style.display = 'block'; return; }
     _sessionToken = data.token;
     _currentUser = data.user;
     localStorage.setItem('wa_token', _sessionToken);
     showApp();
-  } catch(e) { errEl.textContent = 'Connection error'; errEl.style.display = ''; }
+  } catch(e) { errEl.textContent = 'Connection error'; errEl.style.display = 'block'; }
 }
 
 async function doLogout() {
@@ -1484,12 +1485,12 @@ async function handleGoogleCredential(response) {
       body: JSON.stringify({ credential: response.credential })
     });
     const data = await res.json();
-    if (!res.ok) { errEl.textContent = data.error || 'Google login failed'; errEl.style.display = ''; return; }
+    if (!res.ok) { errEl.textContent = data.error || 'Google login failed'; errEl.style.display = 'block'; return; }
     _sessionToken = data.token;
     _currentUser = data.user;
     localStorage.setItem('wa_token', _sessionToken);
     showApp();
-  } catch(e) { errEl.textContent = 'Connection error'; errEl.style.display = ''; }
+  } catch(e) { errEl.textContent = 'Connection error'; errEl.style.display = 'block'; }
 }
 
 // --- Init ---
