@@ -1,6 +1,6 @@
 // Key-value storage abstraction
 // Local dev: uses filesystem under data/
-// Netlify: uses @netlify/blobs for persistent storage
+// Netlify: uses @netlify/blobs, with in-memory fallback if blobs aren't configured
 'use strict';
 
 const fs = require('fs');
@@ -16,6 +16,26 @@ const IS_NETLIFY = !!(
 );
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 
+// In-memory fallback store for when Netlify Blobs aren't configured
+// Data persists within a single Lambda invocation but is lost on cold start
+const _memStore = {};
+let _blobsAvailable = null; // null = unknown, true/false after first attempt
+
+function memGet(namespace, key) {
+  return (_memStore[namespace] && _memStore[namespace][key]) || null;
+}
+function memSet(namespace, key, value) {
+  if (!_memStore[namespace]) _memStore[namespace] = {};
+  _memStore[namespace][key] = JSON.parse(JSON.stringify(value));
+}
+function memDel(namespace, key) {
+  if (_memStore[namespace]) delete _memStore[namespace][key];
+}
+function memList(namespace) {
+  if (!_memStore[namespace]) return [];
+  return Object.values(_memStore[namespace]).map(v => JSON.parse(JSON.stringify(v)));
+}
+
 // Lazy-loaded Netlify Blobs store
 let _blobStores = {};
 function getBlobStore(namespace) {
@@ -24,6 +44,22 @@ function getBlobStore(namespace) {
     _blobStores[namespace] = getStore(namespace);
   }
   return _blobStores[namespace];
+}
+
+// Test if blobs are actually usable (runs once)
+async function checkBlobsAvailable() {
+  if (_blobsAvailable !== null) return _blobsAvailable;
+  try {
+    const store = getBlobStore('_health');
+    await store.setJSON('_ping', { t: Date.now() });
+    _blobsAvailable = true;
+    console.log('[KV] Netlify Blobs: available');
+  } catch (e) {
+    _blobsAvailable = false;
+    console.warn('[KV] Netlify Blobs NOT available — using in-memory fallback. Data will not persist across cold starts.');
+    console.warn('[KV] Reason:', e.message);
+  }
+  return _blobsAvailable;
 }
 
 // Ensure local directory exists (only used in non-Netlify mode)
@@ -37,9 +73,12 @@ function ensureDir(namespace) {
 
 async function get(namespace, key) {
   if (IS_NETLIFY) {
-    const store = getBlobStore(namespace);
-    const data = await store.get(key, { type: 'json' });
-    return data || null;
+    if (await checkBlobsAvailable()) {
+      const store = getBlobStore(namespace);
+      const data = await store.get(key, { type: 'json' });
+      return data || null;
+    }
+    return memGet(namespace, key);
   }
   const dir = ensureDir(namespace);
   const filePath = path.join(dir, `${key}.json`);
@@ -49,8 +88,12 @@ async function get(namespace, key) {
 
 async function set(namespace, key, value) {
   if (IS_NETLIFY) {
-    const store = getBlobStore(namespace);
-    await store.setJSON(key, value);
+    if (await checkBlobsAvailable()) {
+      const store = getBlobStore(namespace);
+      await store.setJSON(key, value);
+      return;
+    }
+    memSet(namespace, key, value);
     return;
   }
   const dir = ensureDir(namespace);
@@ -60,8 +103,12 @@ async function set(namespace, key, value) {
 
 async function del(namespace, key) {
   if (IS_NETLIFY) {
-    const store = getBlobStore(namespace);
-    await store.delete(key);
+    if (await checkBlobsAvailable()) {
+      const store = getBlobStore(namespace);
+      await store.delete(key);
+      return;
+    }
+    memDel(namespace, key);
     return;
   }
   const dir = ensureDir(namespace);
@@ -71,14 +118,17 @@ async function del(namespace, key) {
 
 async function list(namespace) {
   if (IS_NETLIFY) {
-    const store = getBlobStore(namespace);
-    const { blobs } = await store.list();
-    const results = [];
-    for (const blob of blobs) {
-      const data = await store.get(blob.key, { type: 'json' });
-      if (data) results.push(data);
+    if (await checkBlobsAvailable()) {
+      const store = getBlobStore(namespace);
+      const { blobs } = await store.list();
+      const results = [];
+      for (const blob of blobs) {
+        const data = await store.get(blob.key, { type: 'json' });
+        if (data) results.push(data);
+      }
+      return results;
     }
-    return results;
+    return memList(namespace);
   }
   const dir = ensureDir(namespace);
   const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
