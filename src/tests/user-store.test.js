@@ -67,6 +67,22 @@ describe('User Store', () => {
     assert.equal(user.username, uname);
   });
 
+  it('should authenticate with case-insensitive username', async () => {
+    const uname = 'citest_' + Date.now();
+    await userStore.createUser({ username: uname, displayName: 'CaseTest User', role: 'staff', password: 'pass' });
+    const user = await userStore.authenticateUser(uname.toUpperCase(), 'pass');
+    assert.ok(user, 'Should match username regardless of case');
+    assert.equal(user.username, uname);
+  });
+
+  it('should authenticate by display name first word', async () => {
+    const uname = 'dntest_' + Date.now();
+    await userStore.createUser({ username: uname, displayName: 'Zelda (Staff)', role: 'staff', password: 'pass' });
+    const user = await userStore.authenticateUser('Zelda', '');
+    assert.ok(user, 'Should match by display name first word');
+    assert.equal(user.username, uname);
+  });
+
   it('should create and validate sessions', async () => {
     const uname = 'session_' + Date.now();
     const created = await userStore.createUser({ username: uname, displayName: 'Session', role: 'admin', password: 'pass' });

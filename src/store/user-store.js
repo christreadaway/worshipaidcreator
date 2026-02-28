@@ -58,7 +58,19 @@ async function getUser(id) {
 
 async function getUserByUsername(username) {
   const users = await listUsersRaw();
-  return users.find(u => u.username === username) || null;
+  const lower = username.toLowerCase();
+  // Exact username match (case-insensitive)
+  const byUsername = users.find(u => u.username.toLowerCase() === lower);
+  if (byUsername) return byUsername;
+  // Fallback: strip dots/spaces and compare to username (e.g. "Fr. Larry" -> "frlarry")
+  const normalized = lower.replace(/[\s.]+/g, '');
+  const byNormalized = users.find(u => u.username.toLowerCase() === normalized);
+  if (byNormalized) return byNormalized;
+  // Fallback: match by display name (e.g. "Morris" matches "Morris (Music Director)")
+  return users.find(u => {
+    const namepart = u.displayName.split('(')[0].trim().replace(/[\s.]+/g, '').toLowerCase();
+    return namepart === normalized;
+  }) || null;
 }
 
 async function getUserByGoogleEmail(email) {
