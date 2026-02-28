@@ -8,3 +8,5 @@ data/drafts/
 data/exports/
 *.log
 .DS_Store
+.env
+data/settings/

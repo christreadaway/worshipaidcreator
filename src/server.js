@@ -13,8 +13,11 @@ const { getSeasonDefaults, SEASONS, LENTEN_ACCLAMATION_OPTIONS } = require('./co
 const store = require('./store/file-store');
 const userStore = require('./store/user-store');
 
+const https = require('https');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 
 // Ensure upload directories exist
 const UPLOADS_DIR = path.join(__dirname, '..', 'data', 'uploads');
@@ -96,6 +99,53 @@ app.post('/api/auth/logout', (req, res) => {
   const token = getSessionToken(req);
   if (token) userStore.destroySession(token);
   res.json({ success: true });
+});
+
+// Google OAuth login — verify ID token and match to a user by googleEmail
+app.post('/api/auth/google', async (req, res) => {
+  const { credential } = req.body;
+  if (!credential) return res.status(400).json({ error: 'No credential provided' });
+  if (!GOOGLE_CLIENT_ID) return res.status(500).json({ error: 'Google login not configured. Set GOOGLE_CLIENT_ID env variable.' });
+
+  try {
+    // Verify the Google ID token via Google's tokeninfo endpoint
+    const payload = await new Promise((resolve, reject) => {
+      const url = `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`;
+      https.get(url, (resp) => {
+        let data = '';
+        resp.on('data', chunk => data += chunk);
+        resp.on('end', () => {
+          if (resp.statusCode !== 200) return reject(new Error('Token verification failed'));
+          const parsed = JSON.parse(data);
+          if (parsed.aud !== GOOGLE_CLIENT_ID) return reject(new Error('Token audience mismatch'));
+          resolve(parsed);
+        });
+      }).on('error', reject);
+    });
+
+    const email = payload.email;
+    if (!email) return res.status(400).json({ error: 'No email in Google token' });
+
+    // Find user by Google email
+    const rawUser = userStore.getUserByGoogleEmail(email);
+    if (!rawUser) {
+      return res.status(403).json({ error: 'No account linked to ' + email + '. Ask your admin to add your Google email to your user account.' });
+    }
+    if (!rawUser.active) {
+      return res.status(403).json({ error: 'Account is disabled' });
+    }
+
+    const user = { id: rawUser.id, username: rawUser.username, displayName: rawUser.displayName, role: rawUser.role, active: rawUser.active, createdAt: rawUser.createdAt, googleEmail: rawUser.googleEmail };
+    const token = userStore.createSession(user.id);
+    res.json({ token, user });
+  } catch (e) {
+    res.status(401).json({ error: e.message || 'Google authentication failed' });
+  }
+});
+
+// Expose Google client ID to the frontend
+app.get('/api/auth/google-client-id', (req, res) => {
+  res.json({ clientId: GOOGLE_CLIENT_ID || null });
 });
 
 app.get('/api/auth/me', (req, res) => {
@@ -340,6 +390,7 @@ function getAppHtml() {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Worship Aid Generator</title>
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;1,400&family=Cinzel:wght@400;600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
 :root {
   --navy: #1A2E4A; --burgundy: #6B1A1A; --gold: #B8922A; --gold-light: #D4AF5A;
@@ -475,6 +526,11 @@ nav .user-info strong { color: var(--gold-light); }
     <div class="fg"><label>Username</label><input type="text" id="login-username" placeholder="e.g., jd, morris, frlarry"></div>
     <div class="fg"><label>Password</label><input type="password" id="login-password" placeholder="Password"></div>
     <button class="btn btn-gold" style="width:100%;justify-content:center;margin-top:8px;" onclick="doLogin()">Sign In</button>
+    <div id="google-signin-divider" style="display:none;margin:16px 0 8px;position:relative;text-align:center;">
+      <hr style="border:none;border-top:1px solid var(--border);">
+      <span style="position:relative;top:-10px;background:white;padding:0 12px;font-size:11px;color:var(--gray);">or</span>
+    </div>
+    <div id="google-signin-btn" style="display:flex;justify-content:center;"></div>
   </div>
 </div>
 
@@ -721,6 +777,7 @@ nav .user-info strong { color: var(--gold-light); }
           </div>
           <div class="fg"><label>Password</label><input type="password" id="new_password"></div>
         </div>
+        <div class="fg"><label>Google Email (optional — enables "Sign in with Google")</label><input type="email" id="new_googleEmail" placeholder="user@gmail.com"></div>
         <button class="btn btn-gold btn-sm" onclick="addUser()">Add User</button>
       </div>
     </div>
@@ -1252,17 +1309,21 @@ async function loadUsers() {
     if (!res.ok) return;
     const users = await res.json();
     const roleLabels = { admin: 'Director of Liturgy', music_director: 'Music Director', pastor: 'Pastor', staff: 'Staff' };
-    document.getElementById('user-list').innerHTML = users.map(u => \`
-      <div class="user-card">
-        <div class="info">
-          <h3>\${esc(u.displayName)} <span class="role-badge \${u.role}">\${roleLabels[u.role] || u.role}</span></h3>
-          <p>Username: \${esc(u.username)} &bull; Created \${new Date(u.createdAt).toLocaleDateString()}</p>
-        </div>
-        <div class="actions">
-          <button class="btn btn-danger btn-sm" onclick="removeUser('\${u.id}')">Remove</button>
-        </div>
-      </div>
-    \`).join('');
+    document.getElementById('user-list').innerHTML = users.map(u => {
+      const googleBadge = u.googleEmail
+        ? '<span style="font-size:10px;color:var(--success);margin-left:4px;" title="Google login enabled">&#x2713; Google</span>'
+        : '';
+      return '<div class="user-card">' +
+        '<div class="info">' +
+          '<h3>' + esc(u.displayName) + ' <span class="role-badge ' + u.role + '">' + (roleLabels[u.role] || u.role) + '</span>' + googleBadge + '</h3>' +
+          '<p>Username: ' + esc(u.username) + (u.googleEmail ? ' &bull; Google: ' + esc(u.googleEmail) : '') + ' &bull; Created ' + new Date(u.createdAt).toLocaleDateString() + '</p>' +
+        '</div>' +
+        '<div class="actions">' +
+          '<button class="btn btn-outline btn-sm" onclick="editGoogleEmail(\\'' + u.id + '\\', \\'' + esc(u.googleEmail || '') + '\\')">' + (u.googleEmail ? 'Edit' : 'Link') + ' Google</button>' +
+          '<button class="btn btn-danger btn-sm" onclick="removeUser(\\'' + u.id + '\\')">Remove</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
   } catch(e) { console.error(e); }
 }
 
@@ -1271,7 +1332,8 @@ async function addUser() {
     username: v('new_username'),
     displayName: v('new_displayName'),
     role: v('new_role'),
-    password: v('new_password')
+    password: v('new_password'),
+    googleEmail: v('new_googleEmail') || undefined
   };
   try {
     const res = await fetch('/api/users', {
@@ -1280,7 +1342,21 @@ async function addUser() {
     });
     if (!res.ok) { const err = await res.json(); toast(err.error || 'Error', 'error'); return; }
     toast('User added', 'success');
-    sv('new_username', ''); sv('new_displayName', ''); sv('new_password', '');
+    sv('new_username', ''); sv('new_displayName', ''); sv('new_password', ''); sv('new_googleEmail', '');
+    loadUsers();
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function editGoogleEmail(userId, currentEmail) {
+  const email = prompt('Enter Google email address for this user (or leave blank to remove):', currentEmail);
+  if (email === null) return; // cancelled
+  try {
+    const res = await fetch('/api/users/' + userId, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken },
+      body: JSON.stringify({ googleEmail: email.trim() || '' })
+    });
+    if (!res.ok) { toast('Failed to update', 'error'); return; }
+    toast(email.trim() ? 'Google email linked' : 'Google email removed', 'success');
     loadUsers();
   } catch(e) { toast('Error: ' + e.message, 'error'); }
 }
@@ -1311,8 +1387,46 @@ function toast(msg, type) {
   document.body.appendChild(t); setTimeout(() => t.remove(), 3500);
 }
 
+// --- Google Sign-In ---
+async function initGoogleSignIn() {
+  try {
+    const res = await fetch('/api/auth/google-client-id');
+    const data = await res.json();
+    if (!data.clientId) return; // Google not configured, hide the option
+    document.getElementById('google-signin-divider').style.display = '';
+    if (typeof google !== 'undefined' && google.accounts) {
+      google.accounts.id.initialize({
+        client_id: data.clientId,
+        callback: handleGoogleCredential
+      });
+      google.accounts.id.renderButton(document.getElementById('google-signin-btn'), {
+        theme: 'outline', size: 'large', width: 300, text: 'signin_with'
+      });
+    }
+  } catch(e) { /* Google login not available */ }
+}
+
+async function handleGoogleCredential(response) {
+  const errEl = document.getElementById('login-error');
+  errEl.style.display = 'none';
+  try {
+    const res = await fetch('/api/auth/google', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential: response.credential })
+    });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || 'Google login failed'; errEl.style.display = ''; return; }
+    _sessionToken = data.token;
+    _currentUser = data.user;
+    localStorage.setItem('wa_token', _sessionToken);
+    showApp();
+  } catch(e) { errEl.textContent = 'Connection error'; errEl.style.display = ''; }
+}
+
 // --- Init ---
 checkAuth();
+// Init Google after a short delay to let the GSI library load
+setTimeout(initGoogleSignIn, 500);
 </script>
 </body>
 </html>`;

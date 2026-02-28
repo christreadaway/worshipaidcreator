@@ -37,7 +37,7 @@ function hashPassword(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
 }
 
-function createUser({ username, displayName, role, password }) {
+function createUser({ username, displayName, role, password, googleEmail }) {
   if (!ROLES.includes(role)) throw new Error('Invalid role: ' + role);
   if (!username || !password) throw new Error('Username and password required');
 
@@ -51,6 +51,7 @@ function createUser({ username, displayName, role, password }) {
     displayName: displayName || username,
     role,
     passwordHash: hashPassword(password),
+    googleEmail: googleEmail || '',
     createdAt: new Date().toISOString(),
     active: true
   };
@@ -68,6 +69,12 @@ function getUser(id) {
 function getUserByUsername(username) {
   const users = listUsersRaw();
   return users.find(u => u.username === username) || null;
+}
+
+function getUserByGoogleEmail(email) {
+  if (!email) return null;
+  const users = listUsersRaw();
+  return users.find(u => u.googleEmail && u.googleEmail.toLowerCase() === email.toLowerCase()) || null;
 }
 
 function listUsersRaw() {
@@ -196,6 +203,7 @@ module.exports = {
   createUser,
   getUser,
   getUserByUsername,
+  getUserByGoogleEmail,
   listUsers,
   updateUser,
   deleteUser,
