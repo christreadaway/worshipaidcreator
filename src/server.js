@@ -64,6 +64,15 @@ const coverUpload = makeUploadConfig(
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Log all requests on Netlify for debugging
+if (kv.IS_NETLIFY) {
+  app.use((req, res, next) => {
+    console.log('[EXPRESS] %s %s', req.method, req.path);
+    next();
+  });
+}
+
 if (!kv.IS_NETLIFY) {
   app.use('/exports', express.static(store.getExportsDir()));
   app.use('/uploads', express.static(UPLOADS_DIR));
@@ -190,6 +199,35 @@ app.post('/api/auth/google', async (req, res) => {
 // Expose Google client ID to the frontend
 app.get('/api/auth/google-client-id', (req, res) => {
   res.json({ clientId: GOOGLE_CLIENT_ID || null });
+});
+
+// Debug endpoint — visit /api/auth/debug in browser to see what's happening
+app.get('/api/auth/debug', async (req, res) => {
+  try {
+    await ensureSeeded();
+    const users = await userStore.listUsers();
+    res.json({
+      ok: true,
+      environment: kv.IS_NETLIFY ? 'netlify' : 'local',
+      envVars: {
+        NETLIFY: !!process.env.NETLIFY,
+        NETLIFY_BLOBS_CONTEXT: !!process.env.NETLIFY_BLOBS_CONTEXT,
+        DEPLOY_PRIME_URL: !!process.env.DEPLOY_PRIME_URL,
+        AWS_LAMBDA_FUNCTION_NAME: !!process.env.AWS_LAMBDA_FUNCTION_NAME
+      },
+      userCount: users.length,
+      users: users.map(u => ({ username: u.username, displayName: u.displayName, role: u.role, active: u.active })),
+      seedDone: _seedDone,
+      timestamp: new Date().toISOString()
+    });
+  } catch (e) {
+    res.status(500).json({
+      ok: false,
+      error: e.message,
+      stack: e.stack,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 app.get('/api/auth/me', async (req, res) => {
