@@ -1,4 +1,5 @@
-// PDF generation using PDFKit — creates print-ready 8-page worship aid
+// PDF generation using PDFKit
+// PRD: 5.5" x 8.5" half-letter booklet + optional saddle-stitch imposition
 'use strict';
 
 const PDFDocument = require('pdfkit');
@@ -6,19 +7,29 @@ const fs = require('fs');
 const path = require('path');
 const { APOSTLES_CREED, NICENE_CREED } = require('./assets/text/creeds');
 const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER } = require('./assets/text/mass-texts');
-const { DEFAULT_COPYRIGHT } = require('./assets/text/copyright');
+const { formatMusicSlot, renderMusicLineText } = require('./music-formatter');
+const { applySeasonDefaults } = require('./config/seasons');
+const { detectOverflows } = require('./validator');
 
-const PAGE_WIDTH = 612;   // 8.5in
-const PAGE_HEIGHT = 792;  // 11in
-const MARGIN = 54;        // 0.75in
-const CONTENT_WIDTH = PAGE_WIDTH - 2 * MARGIN;
+// 5.5" x 8.5" half-letter at 72dpi
+const PAGE_WIDTH = 396;   // 5.5in
+const PAGE_HEIGHT = 612;  // 8.5in
+const MARGIN_TOP = 25;
+const MARGIN_SIDE = 29;   // 0.4in
+const CONTENT_WIDTH = PAGE_WIDTH - 2 * MARGIN_SIDE;
+
+// 8.5" x 11" for imposition
+const SHEET_WIDTH = 612;
+const SHEET_HEIGHT = 792;
 
 const COLORS = {
-  primary: '#8B0000',
-  text: '#1a1a1a',
+  navy: '#1A2E4A',
+  burgundy: '#6B1A1A',
+  gold: '#B8922A',
+  text: '#1C1C1C',
   muted: '#555555',
-  light: '#777777',
-  border: '#cccccc'
+  light: '#888888',
+  rule: '#C8A84B'
 };
 
 function formatDate(dateStr) {
@@ -29,33 +40,35 @@ function formatDate(dateStr) {
 
 class WorshipAidPdfGenerator {
   constructor(data, options = {}) {
-    this.data = data;
+    this.data = applySeasonDefaults(data);
     this.options = options;
     this.warnings = [];
-    this.compact = data.compact || options.compact || false;
-    this.bodySize = this.compact ? 9 : 10;
-    this.isLenten = data.gospelAcclamation?.lenten || false;
+    this.ss = this.data.seasonalSettings || {};
+    this.r = this.data.readings || {};
+    this.parishSettings = options.parishSettings || {};
+
+    const overflows = detectOverflows(this.data);
+    overflows.forEach(o => this.warnings.push(o.message));
   }
 
   generate(outputPath) {
     return new Promise((resolve, reject) => {
       const doc = new PDFDocument({
-        size: 'LETTER',
-        margins: { top: MARGIN, bottom: MARGIN, left: MARGIN, right: MARGIN },
+        size: [PAGE_WIDTH, PAGE_HEIGHT],
+        margins: { top: MARGIN_TOP, bottom: MARGIN_TOP, left: MARGIN_SIDE, right: MARGIN_SIDE },
         bufferPages: true,
         info: {
-          Title: `Worship Aid — ${this.data.occasionName}`,
+          Title: `Worship Aid — ${this.data.feastName}`,
           Author: 'Worship Aid Generator',
-          Subject: this.data.occasionName,
+          Subject: this.data.feastName,
           CreationDate: new Date()
         }
       });
 
       const stream = fs.createWriteStream(outputPath);
       doc.pipe(stream);
-
       this.doc = doc;
-      this.y = MARGIN;
+      this.y = MARGIN_TOP;
 
       try {
         this.renderPage1Cover();
@@ -66,7 +79,6 @@ class WorshipAidPdfGenerator {
         this.renderPage6CommunionRite();
         this.renderPage7ConcludingRites();
         this.renderPage8BackCover();
-
         doc.end();
         stream.on('finish', () => resolve({ outputPath, warnings: this.warnings }));
         stream.on('error', reject);
@@ -78,436 +90,372 @@ class WorshipAidPdfGenerator {
 
   newPage() {
     this.doc.addPage();
-    this.y = MARGIN;
+    this.y = MARGIN_TOP;
   }
 
-  addPageNumber(num) {
-    this.doc.fontSize(8).fillColor(COLORS.light)
-      .text(String(num), 0, PAGE_HEIGHT - 36, { width: PAGE_WIDTH, align: 'center' });
+  pageNumber(num) {
+    this.doc.fontSize(7).fillColor(COLORS.light)
+      .text(String(num), 0, PAGE_HEIGHT - 20, { width: PAGE_WIDTH, align: 'center' });
   }
 
-  sectionTitle(text) {
-    this.doc.fontSize(16).fillColor(COLORS.primary)
-      .text(text, MARGIN, this.y, { width: CONTENT_WIDTH, align: 'center', characterSpacing: 1 });
-    this.y = this.doc.y + 8;
+  sectionHeader(text) {
+    this.doc.fontSize(11).fillColor(COLORS.navy).font('Helvetica-Bold')
+      .text(text.toUpperCase(), MARGIN_SIDE, this.y, { width: CONTENT_WIDTH, align: 'center', characterSpacing: 1.5 });
+    this.y = this.doc.y + 2;
+    this.doc.save().moveTo(MARGIN_SIDE + 40, this.y).lineTo(PAGE_WIDTH - MARGIN_SIDE - 40, this.y)
+      .lineWidth(0.5).strokeColor(COLORS.gold).stroke().restore();
+    this.y += 6;
+    this.doc.font('Helvetica');
   }
 
-  heading(text) {
-    this.doc.fontSize(11).fillColor('#333333').font('Helvetica-Oblique')
-      .text(text, MARGIN, this.y, { width: CONTENT_WIDTH });
-    this.y = this.doc.y + 3;
+  subHeading(text) {
+    this.doc.fontSize(8).fillColor(COLORS.burgundy).font('Helvetica-Bold')
+      .text(text.toUpperCase(), MARGIN_SIDE, this.y, { width: CONTENT_WIDTH, characterSpacing: 0.8 });
+    this.y = this.doc.y + 2;
     this.doc.font('Helvetica');
   }
 
   rubric(text) {
-    this.doc.fontSize(9).fillColor(COLORS.primary).font('Helvetica-Oblique')
-      .text(text, MARGIN, this.y, { width: CONTENT_WIDTH });
-    this.y = this.doc.y + 3;
+    this.doc.fontSize(7.5).fillColor('#8B0000').font('Helvetica-Oblique')
+      .text(text, MARGIN_SIDE, this.y, { width: CONTENT_WIDTH });
+    this.y = this.doc.y + 2;
     this.doc.font('Helvetica');
   }
 
   bodyText(text, opts = {}) {
-    this.doc.fontSize(opts.size || this.bodySize)
+    if (!text) return;
+    this.doc.fontSize(opts.size || 9)
       .fillColor(opts.color || COLORS.text)
       .font(opts.bold ? 'Helvetica-Bold' : opts.italic ? 'Helvetica-Oblique' : 'Helvetica')
-      .text(text, opts.x || MARGIN, this.y, {
+      .text(text, opts.x || MARGIN_SIDE, this.y, {
         width: opts.width || CONTENT_WIDTH,
         align: opts.align || 'left',
-        lineGap: 2
+        lineGap: 1
       });
-    this.y = this.doc.y + (opts.gap || 4);
+    this.y = this.doc.y + (opts.gap || 3);
     this.doc.font('Helvetica');
   }
 
   citation(text) {
-    this.bodyText(text, { bold: true, color: '#333333', gap: 2 });
+    this.bodyText(text, { bold: true, size: 8.5, color: '#333333', gap: 1 });
   }
 
-  musicItem(title, composer, massTime) {
-    let text = '';
-    if (massTime) text += `(${massTime}) `;
-    text += title;
-    if (composer) text += ` — ${composer}`;
-    this.doc.fontSize(this.bodySize).fillColor(COLORS.text).font('Helvetica-Oblique')
-      .text(text, MARGIN, this.y, { width: CONTENT_WIDTH });
-    this.y = this.doc.y + 3;
+  musicLine(titleField, composerField, label) {
+    const items = formatMusicSlot(this.data, titleField, composerField);
+    if (items.length === 0) return;
+    for (const item of items) {
+      const text = `${label} — ${renderMusicLineText(item)}`;
+      this.doc.fontSize(8.5).fillColor(COLORS.text).font('Helvetica-Oblique')
+        .text(text, MARGIN_SIDE, this.y, { width: CONTENT_WIDTH });
+      this.y = this.doc.y + 2;
+    }
     this.doc.font('Helvetica');
   }
 
-  renderPerMassItems(items) {
-    if (!items || items.length === 0) return;
-    const allSame = items.length === 1 || items.every(i => i.title === items[0].title);
-    if (allSame) {
-      this.musicItem(items[0].title, items[0].composer);
-    } else {
-      for (const item of items) {
-        this.musicItem(item.title, item.composer, item.massTime);
-      }
-    }
-  }
-
-  addImage(imgPath, label) {
-    if (!imgPath) {
-      this.warnings.push(`Missing image for: ${label}`);
-      this.renderPlaceholder(label);
-      return;
-    }
-    const absPath = path.resolve(imgPath);
-    if (!fs.existsSync(absPath)) {
-      this.warnings.push(`Image file not found: ${imgPath} (for ${label})`);
-      this.renderPlaceholder(label);
-      return;
-    }
-    try {
-      const img = this.doc.openImage(absPath);
-      let w = Math.min(img.width, CONTENT_WIDTH);
-      let h = (w / img.width) * img.height;
-      if (h > 200) { h = 200; w = (h / img.height) * img.width; }
-      const x = MARGIN + (CONTENT_WIDTH - w) / 2;
-      this.doc.image(absPath, x, this.y, { width: w, height: h });
-      this.y += h + 6;
-    } catch {
-      this.warnings.push(`Failed to load image: ${imgPath} (for ${label})`);
-      this.renderPlaceholder(label);
-    }
-  }
-
-  renderPlaceholder(label) {
-    const h = 50;
-    this.doc.save()
-      .rect(MARGIN + 20, this.y, CONTENT_WIDTH - 40, h)
-      .dash(3, { space: 3 })
-      .strokeColor('#999999').stroke()
-      .undash()
-      .fontSize(10).fillColor('#666666').font('Helvetica-Oblique')
-      .text(`[NOTATION: ${label}]`, MARGIN + 20, this.y + 16, {
-        width: CONTENT_WIDTH - 40, align: 'center'
-      })
-      .restore();
-    this.y += h + 8;
-    this.doc.font('Helvetica');
-  }
-
-  drawBorder() {
-    this.doc.save()
-      .rect(MARGIN - 10, MARGIN - 10, CONTENT_WIDTH + 20, PAGE_HEIGHT - 2 * MARGIN + 20)
-      .lineWidth(2)
-      .strokeColor(COLORS.primary)
-      .stroke()
-      .restore();
-  }
-
-  // --- PAGE RENDERERS ---
+  // PAGE RENDERERS
 
   renderPage1Cover() {
-    this.drawBorder();
-
-    // Logo
-    const logoPath = path.join(__dirname, 'assets', 'logo', 'jerusalem-cross.svg');
-    // SVG not supported by PDFKit, draw a symbolic cross
     const cx = PAGE_WIDTH / 2;
-    let cy = 200;
-    this.doc.save().lineWidth(6).strokeColor(COLORS.primary);
-    // Vertical
-    this.doc.moveTo(cx, cy - 40).lineTo(cx, cy + 40).stroke();
-    // Horizontal
-    this.doc.moveTo(cx - 40, cy).lineTo(cx + 40, cy).stroke();
-    // Small crosses
-    const offsets = [[-25, -25], [25, -25], [-25, 25], [25, 25]];
-    this.doc.lineWidth(2);
-    for (const [ox, oy] of offsets) {
-      this.doc.moveTo(cx + ox, cy + oy - 8).lineTo(cx + ox, cy + oy + 8).stroke();
-      this.doc.moveTo(cx + ox - 8, cy + oy).lineTo(cx + ox + 8, cy + oy).stroke();
+
+    // Cross logo
+    this.y = 80;
+    this.doc.save().lineWidth(4).strokeColor(COLORS.navy);
+    this.doc.moveTo(cx, this.y - 25).lineTo(cx, this.y + 25).stroke();
+    this.doc.moveTo(cx - 25, this.y).lineTo(cx + 25, this.y).stroke();
+    this.doc.lineWidth(1.5);
+    for (const [ox, oy] of [[-15, -15], [15, -15], [-15, 15], [15, 15]]) {
+      this.doc.moveTo(cx + ox, this.y + oy - 5).lineTo(cx + ox, this.y + oy + 5).stroke();
+      this.doc.moveTo(cx + ox - 5, this.y + oy).lineTo(cx + ox + 5, this.y + oy).stroke();
     }
     this.doc.restore();
 
-    // Title
-    this.y = 280;
-    this.doc.fontSize(26).fillColor(COLORS.primary)
-      .text(this.data.occasionName, MARGIN, this.y, { width: CONTENT_WIDTH, align: 'center', characterSpacing: 1.5 });
-    this.y = this.doc.y + 8;
+    // Feast name
+    this.y = 130;
+    this.doc.fontSize(17).fillColor(COLORS.navy).font('Helvetica-Bold')
+      .text(this.data.feastName, MARGIN_SIDE, this.y, { width: CONTENT_WIDTH, align: 'center' });
+    this.y = this.doc.y + 4;
 
     // Date
-    this.doc.fontSize(14).fillColor(COLORS.muted)
-      .text(formatDate(this.data.occasionDate), MARGIN, this.y, { width: CONTENT_WIDTH, align: 'center' });
-    this.y = this.doc.y + 8;
+    this.doc.fontSize(9.5).fillColor(COLORS.muted).font('Helvetica')
+      .text(formatDate(this.data.liturgicalDate), MARGIN_SIDE, this.y, { width: CONTENT_WIDTH, align: 'center' });
+    this.y = this.doc.y + 3;
 
     // Mass times
-    this.doc.fontSize(11).fillColor(COLORS.muted)
-      .text((this.data.massTimes || []).join('  •  '), MARGIN, this.y, { width: CONTENT_WIDTH, align: 'center' });
-    this.y = this.doc.y + 30;
+    this.doc.fontSize(8).fillColor(COLORS.light)
+      .text('Sat 5:00 PM  •  Sun 9:00 AM  •  Sun 11:00 AM', MARGIN_SIDE, this.y, { width: CONTENT_WIDTH, align: 'center' });
+    this.y = this.doc.y + 8;
 
-    // Welcome
-    this.doc.fontSize(11).fillColor('#333333').font('Helvetica-Oblique')
-      .text('Welcome to our parish community.\nWe are glad you are here to worship with us today.',
-        MARGIN + 40, this.y, { width: CONTENT_WIDTH - 80, align: 'center', lineGap: 4 });
-    this.doc.font('Helvetica');
+    // Rule
+    this.doc.save().moveTo(MARGIN_SIDE + 60, this.y).lineTo(PAGE_WIDTH - MARGIN_SIDE - 60, this.y)
+      .lineWidth(0.5).strokeColor(COLORS.gold).stroke().restore();
+    this.y += 12;
+
+    // Parish info blocks (2x2 grid)
+    const ps = this.parishSettings;
+    const infos = [
+      ['CONNECT', ps.connectBlurb || 'New to the parish? Visit the Welcome Desk after Mass.'],
+      ['NURSERY', ps.nurseryBlurb || 'A nursery is available during the 9:00 AM and 11:00 AM Masses.'],
+      ['RESTROOMS', ps.restroomsBlurb || 'Restrooms are located in the narthex and lower level.'],
+      ['PRAYER', ps.prayerBlurb || 'For prayer requests, contact the parish office.']
+    ];
+
+    const colW = (CONTENT_WIDTH - 10) / 2;
+    for (let i = 0; i < infos.length; i++) {
+      const col = i % 2;
+      const x = MARGIN_SIDE + col * (colW + 10);
+      if (i === 2) this.y += 4;
+      const baseY = (i < 2) ? this.y : this.y;
+
+      this.doc.fontSize(6).fillColor(COLORS.gold).font('Helvetica-Bold')
+        .text(infos[i][0], x, (i < 2) ? this.y : baseY, { width: colW, characterSpacing: 1 });
+      const labelBottom = this.doc.y + 1;
+      this.doc.fontSize(7).fillColor('#444444').font('Helvetica')
+        .text(infos[i][1], x, labelBottom, { width: colW, lineGap: 1 });
+      if (col === 1) this.y = this.doc.y + 4;
+    }
   }
 
   renderPage2IntroductoryRites() {
     this.newPage();
-    this.sectionTitle('The Introductory Rites');
+    this.sectionHeader('The Introductory Rites');
 
-    if (this.data.organPrelude) {
-      this.heading('Organ Prelude');
-      this.musicItem(this.data.organPrelude.title, this.data.organPrelude.composer);
-    }
+    this.subHeading('Organ Prelude');
+    this.musicLine('organPrelude', 'organPreludeComposer', 'Prelude');
 
     this.rubric(RUBRICS.stand);
 
-    this.heading('Entrance Antiphon');
-    if (this.data.entranceAntiphon?.citation) this.citation(this.data.entranceAntiphon.citation);
-    if (this.data.entranceAntiphon?.imagePath) this.addImage(this.data.entranceAntiphon.imagePath, 'Entrance Antiphon');
+    const entranceType = this.ss.entranceType || 'processional';
+    this.subHeading(entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon');
+    this.musicLine('processionalOrEntrance', 'processionalOrEntranceComposer',
+      entranceType === 'processional' ? 'Processional' : 'Antiphon');
 
-    this.heading('Penitential Act');
-    const penitentialText = (this.data.penitentialAct === 'default' || !this.data.penitentialAct) ? CONFITEOR : this.data.penitentialAct;
-    this.bodyText(penitentialText, { size: this.compact ? 8 : 9 });
-
-    this.heading('Kyrie');
-    if (this.data.kyrieSettings && this.data.kyrieSettings.length > 0) {
-      for (const k of this.data.kyrieSettings) {
-        if (this.data.kyrieSettings.length > 1 && k.massTime) {
-          this.musicItem(k.settingName || 'Kyrie', null, k.massTime);
-        } else {
-          this.musicItem(k.settingName || 'Kyrie');
-        }
-        if (k.imagePath) this.addImage(k.imagePath, k.settingName || 'Kyrie');
-      }
-    } else {
-      this.musicItem('Kyrie eleison');
+    if ((this.ss.penitentialAct || 'confiteor') === 'confiteor') {
+      this.subHeading('Penitential Act');
+      this.bodyText(CONFITEOR, { size: 8, gap: 3 });
     }
 
-    if (!this.isLenten && this.data.gloria !== false) {
-      this.heading('Gloria');
-      this.bodyText('Glory to God in the highest,\nand on earth peace to people of good will.', { size: 9 });
+    this.subHeading('Lord, Have Mercy');
+    this.musicLine('kyrieSetting', 'kyrieComposer', 'Kyrie');
+
+    const showGloria = this.ss.gloria !== undefined ? this.ss.gloria :
+      (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
+    if (showGloria) {
+      this.subHeading('Gloria');
+      this.bodyText('Glory to God in the highest, and on earth peace to people of good will.', { size: 8 });
     }
 
-    if (this.data.collect) {
-      this.heading('Collect');
-      this.bodyText(this.data.collect);
-    }
-
-    this.addPageNumber(2);
+    this.pageNumber(2);
   }
 
   renderPage3LiturgyOfWord() {
     this.newPage();
-    this.sectionTitle('The Liturgy of the Word');
+    this.sectionHeader('The Liturgy of the Word');
     this.rubric(RUBRICS.sit);
 
-    this.heading('First Reading');
-    this.citation(this.data.firstReading.citation);
-    this.bodyText(this.data.firstReading.text);
+    this.subHeading('First Reading');
+    this.citation(this.r.firstReadingCitation);
+    this.bodyText(this.r.firstReadingText, { size: 9 });
 
-    this.heading('Responsorial Psalm');
-    this.citation(this.data.responsorialPsalm.citation);
-    if (this.data.responsorialPsalm.response) {
-      this.bodyText(`R. ${this.data.responsorialPsalm.response}`, { bold: true });
-    }
-    if (this.data.responsorialPsalm.imagePath) {
-      this.addImage(this.data.responsorialPsalm.imagePath, 'Responsorial Psalm');
-    }
-    if (this.data.responsorialPsalm.verses) {
-      for (const v of this.data.responsorialPsalm.verses) {
-        this.bodyText(v, { x: MARGIN + 20, width: CONTENT_WIDTH - 20 });
-      }
-    }
+    this.subHeading('Responsorial Psalm');
+    this.citation(this.r.psalmCitation);
+    if (this.r.psalmRefrain) this.bodyText(`R. ${this.r.psalmRefrain}`, { bold: true, size: 9 });
+    if (this.r.psalmVerses) this.bodyText(this.r.psalmVerses, { size: 8.5, x: MARGIN_SIDE + 10, width: CONTENT_WIDTH - 10 });
 
-    if (this.data.secondReading) {
-      this.heading('Second Reading');
-      this.citation(this.data.secondReading.citation);
-      this.bodyText(this.data.secondReading.text);
+    if (!this.r.noSecondReading && this.r.secondReadingCitation) {
+      this.subHeading('Second Reading');
+      this.citation(this.r.secondReadingCitation);
+      this.bodyText(this.r.secondReadingText, { size: 9 });
     }
 
     this.rubric(RUBRICS.stand);
-
-    this.heading('Gospel Acclamation');
-    const accText = this.isLenten ? GOSPEL_ACCLAMATION_LENTEN : GOSPEL_ACCLAMATION_STANDARD;
-    this.bodyText(accText, { bold: true });
-    if (this.data.gospelAcclamation?.verse) {
-      this.bodyText(this.data.gospelAcclamation.verse);
-    }
-    if (this.data.gospelAcclamation?.imagePath) {
-      this.addImage(this.data.gospelAcclamation.imagePath, 'Gospel Acclamation');
+    this.subHeading('Gospel Acclamation');
+    const isLenten = this.data.liturgicalSeason === 'lent';
+    this.bodyText(isLenten ? GOSPEL_ACCLAMATION_LENTEN : GOSPEL_ACCLAMATION_STANDARD, { bold: true, size: 9 });
+    if (this.r.gospelAcclamationVerse) {
+      this.bodyText(this.r.gospelAcclamationVerse, { italic: true, size: 8.5 });
     }
 
-    this.addPageNumber(3);
+    this.pageNumber(3);
   }
 
   renderPage4GospelCreed() {
     this.newPage();
 
-    this.heading('Gospel');
-    this.citation(this.data.gospel.citation);
-    this.bodyText(this.data.gospel.text);
+    this.subHeading('Gospel');
+    this.citation(this.r.gospelCitation);
+    this.bodyText(this.r.gospelText, { size: 9 });
 
-    this.heading('Homily');
+    this.subHeading('Homily');
     this.rubric(RUBRICS.sit);
-    this.y += 6;
+    this.y += 4;
     this.rubric(RUBRICS.stand);
 
-    const creedTitle = this.data.creedType === 'apostles' ? "Apostles' Creed" : 'Nicene Creed';
-    const creedText = this.data.creedType === 'apostles' ? APOSTLES_CREED : NICENE_CREED;
-    this.heading(creedTitle);
-    this.bodyText(creedText, { size: this.compact ? 7.5 : 8.5 });
+    const creedType = this.ss.creedType || 'nicene';
+    this.subHeading(creedType === 'apostles' ? "The Apostles' Creed" : 'The Nicene Creed');
+    const creedText = creedType === 'apostles' ? APOSTLES_CREED : NICENE_CREED;
+    this.bodyText(creedText, { size: 7.5 });
 
-    this.heading('Prayer of the Faithful');
-    if (this.data.prayerOfTheFaithful) {
-      this.bodyText(this.data.prayerOfTheFaithful);
-    } else {
-      this.rubric('Intentions are read; the assembly responds.');
-    }
+    this.subHeading('Prayer of the Faithful');
+    this.bodyText('The intentions are read; the assembly responds.', { italic: true, size: 8 });
 
-    if (this.data.announcements) {
-      this.heading('Announcements');
-      this.bodyText(this.data.announcements, { size: 9 });
-    }
-
-    this.addPageNumber(4);
+    this.pageNumber(4);
   }
 
   renderPage5LiturgyEucharist() {
     this.newPage();
-    this.sectionTitle('The Liturgy of the Eucharist');
+    this.sectionHeader('The Liturgy of the Eucharist');
     this.rubric(RUBRICS.sit);
 
-    this.heading('Offertory');
-    this.renderPerMassItems(this.data.offertoryAnthems);
+    this.subHeading('Offertory');
+    this.musicLine('offertoryAnthem', 'offertoryAnthemComposer', 'Offertory Anthem');
+
+    if (this.data.childrenLiturgyEnabled) {
+      this.y += 3;
+      this.doc.save().rect(MARGIN_SIDE, this.y, CONTENT_WIDTH, 20)
+        .fillColor('#f5f0e6').fill().restore();
+      this.doc.fontSize(7.5).fillColor(COLORS.text).font('Helvetica-Bold')
+        .text(`Children's Liturgy of the Word — ${this.data.childrenLiturgyMassTime || 'Sun 9:00 AM'}`,
+          MARGIN_SIDE + 4, this.y + 3, { width: CONTENT_WIDTH - 8 });
+      if (this.data.childrenLiturgyMusic) {
+        this.doc.font('Helvetica-Oblique').fontSize(7)
+          .text(`${this.data.childrenLiturgyMusic}${this.data.childrenLiturgyMusicComposer ? ', ' + this.data.childrenLiturgyMusicComposer : ''}`,
+            MARGIN_SIDE + 4, this.doc.y, { width: CONTENT_WIDTH - 8 });
+      }
+      this.doc.font('Helvetica');
+      this.y = this.doc.y + 6;
+    }
 
     this.rubric(RUBRICS.stand);
 
-    this.heading('Invitation to Prayer');
-    this.bodyText(`Priest: ${INVITATION_TO_PRAYER.priest}`, { bold: true, size: 9 });
-    this.bodyText(`All: ${INVITATION_TO_PRAYER.all}`, { bold: true, size: 9 });
+    this.subHeading('Invitation to Prayer');
+    this.bodyText(`Priest: ${INVITATION_TO_PRAYER.priest}`, { size: 8 });
+    this.bodyText(`All: ${INVITATION_TO_PRAYER.all}`, { bold: true, size: 8 });
 
-    this.heading('Holy, Holy, Holy');
-    if (this.data.holySanctus?.settingName) this.musicItem(this.data.holySanctus.settingName);
-    if (this.data.holySanctus?.imagePath) this.addImage(this.data.holySanctus.imagePath, this.data.holySanctus?.settingName || 'Sanctus');
+    this.subHeading('Holy, Holy, Holy');
+    this.bodyText(this.ss.holyHolySetting || 'Mass of St. Theresa', { italic: true, size: 8.5 });
 
     this.rubric(RUBRICS.kneel);
 
-    this.heading('Mystery of Faith');
-    if (this.data.mysteryOfFaith?.settingName) this.musicItem(this.data.mysteryOfFaith.settingName);
-    if (this.data.mysteryOfFaith?.imagePath) this.addImage(this.data.mysteryOfFaith.imagePath, this.data.mysteryOfFaith?.settingName || 'Mystery of Faith');
+    this.subHeading('Mystery of Faith');
+    this.bodyText(this.ss.mysteryOfFaithSetting || 'Mass of St. Theresa', { italic: true, size: 8.5 });
 
-    this.addPageNumber(5);
+    this.subHeading('Great Amen');
+
+    this.pageNumber(5);
   }
 
   renderPage6CommunionRite() {
     this.newPage();
-    this.sectionTitle('The Communion Rite');
+    this.sectionHeader('The Communion Rite');
 
-    this.heading("The Lord's Prayer");
+    this.subHeading("The Lord's Prayer");
     this.rubric(RUBRICS.stand);
-    this.bodyText(LORDS_PRAYER, { size: 9 });
+    this.bodyText(LORDS_PRAYER, { size: 8.5 });
 
-    this.heading('Lamb of God');
-    if (this.data.agnus?.settingName) this.musicItem(this.data.agnus.settingName);
-    if (this.data.agnus?.imagePath) this.addImage(this.data.agnus.imagePath, this.data.agnus?.settingName || 'Agnus Dei');
+    this.subHeading('Sign of Peace');
+
+    this.subHeading('Lamb of God');
+    this.bodyText(this.ss.lambOfGodSetting || 'Mass of St. Theresa', { italic: true, size: 8.5 });
 
     this.rubric(RUBRICS.kneel);
 
-    this.heading('Communion Antiphon');
-    if (this.data.communionAntiphon?.imagePath) this.addImage(this.data.communionAntiphon.imagePath, 'Communion Antiphon');
+    this.subHeading('Communion Hymn');
+    this.musicLine('communionHymn', 'communionHymnComposer', 'Communion');
 
-    this.heading('Communion Hymn');
-    this.renderPerMassItems(this.data.communionHymns);
-
-    this.addPageNumber(6);
+    this.pageNumber(6);
   }
 
   renderPage7ConcludingRites() {
     this.newPage();
-    this.sectionTitle('The Concluding Rites');
+    this.sectionHeader('The Concluding Rites');
 
-    this.heading('Hymn of Thanksgiving');
-    if (this.data.hymnThanksgiving?.title) this.musicItem(this.data.hymnThanksgiving.title);
-    if (this.data.hymnThanksgiving?.imagePath) this.addImage(this.data.hymnThanksgiving.imagePath, this.data.hymnThanksgiving?.title || 'Thanksgiving Hymn');
-    if (this.data.hymnThanksgiving?.yearAStanza) {
-      this.bodyText(`Year A Stanza: ${this.data.hymnThanksgiving.yearAStanza}`, { size: 9 });
-    }
+    this.subHeading('Hymn of Thanksgiving');
+    this.musicLine('hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving');
 
-    this.heading('Choral Anthem');
-    this.renderPerMassItems(this.data.choralAnthems);
+    this.subHeading('Choral Anthem');
+    this.musicLine('choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem');
 
     this.rubric(RUBRICS.stand);
 
-    if (this.data.prayerAfterCommunion) {
-      this.heading('Prayer after Communion');
-      this.bodyText(this.data.prayerAfterCommunion);
+    this.subHeading('Blessing & Dismissal');
+    this.bodyText('Priest: The Lord be with you. All: And with your spirit.', { size: 8 });
+    this.bodyText('Priest: May almighty God bless you, the Father, and the Son, \u2720 and the Holy Spirit. All: Amen.', { size: 8 });
+    this.bodyText('Deacon: Go forth, the Mass is ended. All: Thanks be to God.', { size: 8 });
+
+    this.subHeading('Organ Postlude');
+    this.musicLine('organPostlude', 'organPostludeComposer', 'Postlude');
+
+    if (this.data.announcements) {
+      this.y += 4;
+      this.doc.save().moveTo(MARGIN_SIDE, this.y).lineTo(PAGE_WIDTH - MARGIN_SIDE, this.y)
+        .lineWidth(0.5).strokeColor(COLORS.gold).stroke().restore();
+      this.y += 4;
+      this.subHeading('Announcements');
+      this.bodyText(this.data.announcements, { size: 7.5 });
     }
 
-    this.heading('Blessing & Dismissal');
-    this.bodyText('Priest: The Lord be with you.\nAll: And with your spirit.', { bold: true, size: 9 });
-    this.bodyText('Priest: May almighty God bless you, the Father, and the Son, \u2720 and the Holy Spirit.\nAll: Amen.', { size: 9 });
-    this.bodyText('Deacon: Go forth, the Mass is ended.\nAll: Thanks be to God.', { size: 9 });
+    // Short copyright
+    const copyrightShort = this.parishSettings.copyrightShort || 'Music reprinted under OneLicense #A-702171. All rights reserved.';
+    this.doc.fontSize(6.5).fillColor(COLORS.light)
+      .text(copyrightShort, MARGIN_SIDE, PAGE_HEIGHT - 35, { width: CONTENT_WIDTH, align: 'center' });
 
-    this.addPageNumber(7);
+    this.pageNumber(7);
   }
 
   renderPage8BackCover() {
     this.newPage();
-
-    // Logo
     const cx = PAGE_WIDTH / 2;
-    this.y = 150;
-    this.doc.save().lineWidth(4).strokeColor(COLORS.primary);
-    this.doc.moveTo(cx, this.y - 30).lineTo(cx, this.y + 30).stroke();
-    this.doc.moveTo(cx - 30, this.y).lineTo(cx + 30, this.y).stroke();
-    this.doc.lineWidth(1.5);
-    const offsets = [[-18, -18], [18, -18], [-18, 18], [18, 18]];
-    for (const [ox, oy] of offsets) {
-      this.doc.moveTo(cx + ox, this.y + oy - 6).lineTo(cx + ox, this.y + oy + 6).stroke();
-      this.doc.moveTo(cx + ox - 6, this.y + oy).lineTo(cx + ox + 6, this.y + oy).stroke();
+
+    // Cross
+    this.y = 120;
+    this.doc.save().lineWidth(3).strokeColor(COLORS.navy);
+    this.doc.moveTo(cx, this.y - 18).lineTo(cx, this.y + 18).stroke();
+    this.doc.moveTo(cx - 18, this.y).lineTo(cx + 18, this.y).stroke();
+    this.doc.lineWidth(1);
+    for (const [ox, oy] of [[-11, -11], [11, -11], [-11, 11], [11, 11]]) {
+      this.doc.moveTo(cx + ox, this.y + oy - 4).lineTo(cx + ox, this.y + oy + 4).stroke();
+      this.doc.moveTo(cx + ox - 4, this.y + oy).lineTo(cx + ox + 4, this.y + oy).stroke();
     }
     this.doc.restore();
 
-    this.y += 50;
-    this.doc.fontSize(14).fillColor(COLORS.primary)
-      .text(this.data.occasionName, MARGIN, this.y, { width: CONTENT_WIDTH, align: 'center' });
-    this.y = this.doc.y + 4;
-    this.doc.fontSize(10).fillColor(COLORS.muted)
-      .text(formatDate(this.data.occasionDate), MARGIN, this.y, { width: CONTENT_WIDTH, align: 'center' });
-    this.y = this.doc.y + 30;
+    this.y = 160;
+    this.doc.fontSize(12).fillColor(COLORS.navy).font('Helvetica-Bold')
+      .text(this.data.feastName, MARGIN_SIDE, this.y, { width: CONTENT_WIDTH, align: 'center' });
+    this.y = this.doc.y + 3;
+    this.doc.fontSize(9).fillColor(COLORS.muted).font('Helvetica')
+      .text(formatDate(this.data.liturgicalDate), MARGIN_SIDE, this.y, { width: CONTENT_WIDTH, align: 'center' });
 
-    // QR placeholders
-    if (this.data.qrCodes) {
-      const labels = [];
-      if (this.data.qrCodes.give) labels.push('Give Online');
-      if (this.data.qrCodes.join) labels.push('Join Us');
-      if (this.data.qrCodes.bulletin) labels.push('Bulletin');
-      const totalWidth = labels.length * 100;
-      let startX = (PAGE_WIDTH - totalWidth) / 2;
-      for (const label of labels) {
-        this.doc.save()
-          .rect(startX, this.y, 70, 70)
-          .dash(2, { space: 2 }).strokeColor('#999999').stroke()
-          .undash().restore();
-        this.doc.fontSize(8).fillColor(COLORS.muted)
-          .text(label, startX, this.y + 75, { width: 70, align: 'center' });
-        startX += 100;
-      }
-      this.y += 100;
+    if (this.data.specialNotes) {
+      this.y = this.doc.y + 12;
+      this.doc.fontSize(8).fillColor(COLORS.muted).font('Helvetica-Oblique')
+        .text(this.data.specialNotes, MARGIN_SIDE + 20, this.y, { width: CONTENT_WIDTH - 40, align: 'center' });
+      this.doc.font('Helvetica');
     }
 
-    // Social handles
-    if (this.data.socialHandles) {
-      const parts = [];
-      if (this.data.socialHandles.instagram) parts.push(`@${this.data.socialHandles.instagram}`);
-      if (this.data.socialHandles.facebook) parts.push(this.data.socialHandles.facebook);
-      if (this.data.socialHandles.youtube) parts.push(this.data.socialHandles.youtube);
-      this.doc.fontSize(10).fillColor(COLORS.muted)
-        .text(parts.join('   |   '), MARGIN, this.y, { width: CONTENT_WIDTH, align: 'center' });
-      this.y = this.doc.y + 20;
-    }
-
-    // Copyright
-    const copyright = this.data.copyrightBlock || DEFAULT_COPYRIGHT;
-    this.doc.fontSize(7.5).fillColor(COLORS.light)
-      .text(copyright, MARGIN, PAGE_HEIGHT - MARGIN - 80, {
-        width: CONTENT_WIDTH, align: 'center', lineGap: 2
+    // Full copyright
+    const copyrightFull = this.parishSettings.copyrightFull ||
+      `Excerpts from the Lectionary for Mass © 2001, 1998, 1997, 1986, 1970 Confraternity of Christian Doctrine, Inc. Used with permission. All rights reserved.\n\nExcerpts from The Roman Missal © 2010, ICEL. All rights reserved.\n\nMusic reprinted under OneLicense #${this.parishSettings.onelicenseNumber || 'A-702171'}. All rights reserved.`;
+    this.doc.fontSize(6).fillColor(COLORS.light)
+      .text(copyrightFull, MARGIN_SIDE + 10, PAGE_HEIGHT - 120, {
+        width: CONTENT_WIDTH - 20, align: 'center', lineGap: 1.5
       });
   }
+}
+
+/**
+ * Generate saddle-stitch imposed PDF — PRD Section 5.3
+ * Sheet 1 Side A: Page 8 (left) + Page 1 (right)
+ * Sheet 1 Side B: Page 2 (left) + Page 7 (right)
+ * Sheet 2 Side A: Page 6 (left) + Page 3 (right)
+ * Sheet 2 Side B: Page 4 (left) + Page 5 (right)
+ */
+async function generateImposedPdf(data, outputPath, options = {}) {
+  // For imposition we'd need to render 8 individual page PDFs then
+  // composite them onto 8.5x11 sheets. PDFKit can't re-read pages,
+  // so for v1 we generate the sequential PDF and note imposition as
+  // a future enhancement when Puppeteer becomes available.
+  // The sequential PDF is the "alternate export" per PRD §5.3.
+  return generatePdf(data, outputPath, options);
 }
 
 async function generatePdf(data, outputPath, options = {}) {
@@ -515,4 +463,13 @@ async function generatePdf(data, outputPath, options = {}) {
   return generator.generate(outputPath);
 }
 
-module.exports = { generatePdf, WorshipAidPdfGenerator };
+/**
+ * Build filename per PRD §4.3: YYYY_MM_DD__[FeastName].pdf
+ */
+function buildFilename(data) {
+  const date = (data.liturgicalDate || '').replace(/-/g, '_');
+  const name = (data.feastName || 'Untitled').replace(/[^a-zA-Z0-9 ]/g, '').replace(/\s+/g, '_');
+  return `${date}__${name}.pdf`;
+}
+
+module.exports = { generatePdf, generateImposedPdf, buildFilename, WorshipAidPdfGenerator };

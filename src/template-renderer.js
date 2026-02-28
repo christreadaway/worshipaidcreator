@@ -1,19 +1,18 @@
 // Renders worship aid data into an 8-page HTML booklet
+// PRD: 5.5" x 8.5" half-letter booklet pages
 'use strict';
 
 const path = require('path');
 const fs = require('fs');
 const { APOSTLES_CREED, NICENE_CREED } = require('./assets/text/creeds');
-const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER, AGNUS_DEI_TEXT } = require('./assets/text/mass-texts');
-const { DEFAULT_COPYRIGHT } = require('./assets/text/copyright');
+const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER } = require('./assets/text/mass-texts');
+const { formatMusicSlot, renderMusicLineHtml } = require('./music-formatter');
+const { applySeasonDefaults } = require('./config/seasons');
+const { detectOverflows } = require('./validator');
 
 function escapeHtml(str) {
   if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function nl2br(str) {
@@ -21,357 +20,496 @@ function nl2br(str) {
   return escapeHtml(str).replace(/\n/g, '<br>');
 }
 
-function renderImage(imgPath, alt, warnings) {
-  if (!imgPath) {
-    warnings.push(`Missing image for: ${alt}`);
-    return `<div class="notation-placeholder">[NOTATION: ${escapeHtml(alt)}]</div>`;
-  }
-  // For web frontend, images may be base64 or relative paths
-  if (imgPath.startsWith('data:') || imgPath.startsWith('http')) {
-    return `<img class="notation-img" src="${imgPath}" alt="${escapeHtml(alt)}">`;
-  }
-  const absPath = path.resolve(imgPath);
-  if (fs.existsSync(absPath)) {
-    const ext = path.extname(absPath).toLowerCase();
-    const mime = ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : 'image/jpeg';
-    const data = fs.readFileSync(absPath);
-    const b64 = data.toString('base64');
-    return `<img class="notation-img" src="data:${mime};base64,${b64}" alt="${escapeHtml(alt)}">`;
-  }
-  warnings.push(`Image file not found: ${imgPath} (for ${alt})`);
-  return `<div class="notation-placeholder">[NOTATION: ${escapeHtml(alt)}]</div>`;
-}
-
-function renderPerMassItems(items, massTimes, label) {
-  if (!items || items.length === 0) return '';
-  // Check if all same
-  const allSame = items.length === 1 || items.every(i => i.title === items[0].title);
-  if (allSame) {
-    const item = items[0];
-    return `<p class="music-item"><em>${escapeHtml(item.title)}</em>${item.composer ? ' — ' + escapeHtml(item.composer) : ''}</p>`;
-  }
-  // Group by title
-  let html = '';
-  for (const item of items) {
-    const timeLabel = item.massTime || '';
-    html += `<p class="music-item"><strong>(${escapeHtml(timeLabel)})</strong> <em>${escapeHtml(item.title)}</em>${item.composer ? ' — ' + escapeHtml(item.composer) : ''}</p>`;
-  }
-  return html;
+function formatDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 }
 
 function getLogoSvg() {
   const logoPath = path.join(__dirname, 'assets', 'logo', 'jerusalem-cross.svg');
-  if (fs.existsSync(logoPath)) {
-    return fs.readFileSync(logoPath, 'utf8');
-  }
-  return '<div class="logo-placeholder">[LOGO]</div>';
+  if (fs.existsSync(logoPath)) return fs.readFileSync(logoPath, 'utf8');
+  return '';
+}
+
+function renderMusicSection(data, titleField, composerField, label) {
+  const items = formatMusicSlot(data, titleField, composerField);
+  if (items.length === 0) return '';
+  let html = `<div class="music-entry"><span class="music-label">${escapeHtml(label)} &mdash; </span>`;
+  html += items.map(i => renderMusicLineHtml(i)).join(' <span class="music-divider">/</span> ');
+  html += '</div>';
+  return html;
 }
 
 function renderBookletHtml(data, options = {}) {
   const warnings = [];
-  const compact = data.compact || options.compact || false;
-  const fontSize = compact ? '9pt' : '10pt';
-  const creedText = data.creedType === 'apostles' ? APOSTLES_CREED : NICENE_CREED;
-  const isLenten = data.gospelAcclamation?.lenten || false;
-  const acclamationText = isLenten ? GOSPEL_ACCLAMATION_LENTEN : GOSPEL_ACCLAMATION_STANDARD;
 
-  // Check text overflow
-  const readingLines = (data.firstReading?.text || '').split('\n').length +
-    (data.secondReading?.text || '').split('\n').length +
-    (data.gospel?.text || '').split('\n').length;
-  if (readingLines > 90) {
-    warnings.push(`WARNING: Combined reading text is ${readingLines} lines (>90). Consider using --compact flag.`);
-  }
+  // Apply season defaults
+  const d = applySeasonDefaults(data);
+  const ss = d.seasonalSettings || {};
+  const r = d.readings || {};
+  const settings = options.parishSettings || {};
+
+  const isLenten = d.liturgicalSeason === 'lent';
+  const isAdvent = d.liturgicalSeason === 'advent';
+  const showGloria = ss.gloria !== undefined ? ss.gloria : (d.liturgicalSeason !== 'lent' && d.liturgicalSeason !== 'advent');
+  const creedType = ss.creedType || 'nicene';
+  const creedText = creedType === 'apostles' ? APOSTLES_CREED : NICENE_CREED;
+  const creedTitle = creedType === 'apostles' ? "The Apostles' Creed" : 'The Nicene Creed';
+  const entranceType = ss.entranceType || 'processional';
+  const penitentialAct = ss.penitentialAct || 'confiteor';
+  const acclamationText = (isLenten) ? GOSPEL_ACCLAMATION_LENTEN : GOSPEL_ACCLAMATION_STANDARD;
+
+  // Overflow detection
+  const overflows = detectOverflows(d);
+  overflows.forEach(o => warnings.push(o.message));
+  const overflowPages = new Set(overflows.map(o => o.page));
+
+  // Parish info
+  const parishName = settings.parishName || '[Parish Name]';
+  const nurseryBlurb = settings.nurseryBlurb || 'A nursery is available during the 9:00 AM and 11:00 AM Masses.';
+  const connectBlurb = settings.connectBlurb || 'New to the parish? Visit the Welcome Desk after Mass.';
+  const restroomsBlurb = settings.restroomsBlurb || 'Restrooms are located in the narthex and lower level.';
+  const prayerBlurb = settings.prayerBlurb || 'For prayer requests, contact the parish office.';
+  const copyrightShort = settings.copyrightShort || 'Music reprinted under OneLicense #A-702171. All rights reserved.';
+  const copyrightFull = settings.copyrightFull || `Excerpts from the Lectionary for Mass for Use in the Dioceses of the United States of America, second typical edition © 2001, 1998, 1997, 1986, 1970 Confraternity of Christian Doctrine, Inc., Washington, DC. Used with permission. All rights reserved.\n\nExcerpts from the English translation of The Roman Missal © 2010, International Commission on English in the Liturgy Corporation. All rights reserved.\n\nMusic reprinted under OneLicense #${escapeHtml(settings.onelicenseNumber || 'A-702171')}. All rights reserved.`;
 
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Worship Aid — ${escapeHtml(data.occasionName)} — ${escapeHtml(data.occasionDate)}</title>
+<title>Worship Aid — ${escapeHtml(d.feastName)} — ${escapeHtml(d.liturgicalDate)}</title>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Cinzel:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
-  @page {
-    size: 8.5in 11in;
-    margin: 0;
-  }
+  @page { size: 5.5in 8.5in; margin: 0; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    font-family: 'Georgia', 'Times New Roman', serif;
-    font-size: ${fontSize};
-    line-height: 1.4;
-    color: #1a1a1a;
+    font-family: 'EB Garamond', Georgia, 'Times New Roman', serif;
+    font-size: 9.5pt;
+    line-height: 1.35;
+    color: #1C1C1C;
     background: white;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
+
+  /* --- Page container: 5.5in x 8.5in booklet page --- */
   .page {
-    width: 8.5in;
-    height: 11in;
-    padding: 0.6in 0.75in;
+    width: 5.5in;
+    height: 8.5in;
+    padding: 0.35in 0.4in;
     page-break-after: always;
     position: relative;
     overflow: hidden;
   }
   .page:last-child { page-break-after: auto; }
-  h1 { font-size: 22pt; text-align: center; margin-bottom: 4pt; color: #8B0000; }
-  h2 { font-size: 14pt; color: #8B0000; border-bottom: 1.5pt solid #8B0000; padding-bottom: 3pt; margin: 10pt 0 6pt; }
-  h3 { font-size: 11pt; color: #333; margin: 8pt 0 3pt; font-style: italic; }
-  .section-title { font-size: 16pt; text-align: center; color: #8B0000; margin: 8pt 0; font-variant: small-caps; letter-spacing: 1pt; }
-  .rubric { color: #8B0000; font-style: italic; font-size: 9pt; margin: 4pt 0; }
-  .citation { font-weight: bold; color: #333; margin-bottom: 2pt; }
-  .reading-text { margin: 4pt 0 8pt; text-align: justify; }
-  .response { font-weight: bold; margin: 4pt 0; }
-  .music-item { margin: 3pt 0; }
-  .notation-img {
-    display: block;
-    max-width: 6.5in;
-    height: auto;
-    margin: 6pt auto;
-    border: 0.5pt solid #ccc;
-  }
-  .notation-placeholder {
-    display: block;
-    max-width: 6.5in;
-    min-height: 60px;
-    margin: 6pt auto;
-    border: 1.5pt dashed #999;
-    background: #f9f9f9;
+  .page.overflow-warning { outline: 3px solid #c0392b; }
+
+  /* --- Typography --- */
+  .section-header {
+    font-family: 'Cinzel', serif;
+    font-size: 12pt;
+    font-weight: 600;
     text-align: center;
-    padding: 18pt;
-    color: #666;
-    font-style: italic;
-    font-size: 10pt;
+    color: #1A2E4A;
+    letter-spacing: 1.5pt;
+    text-transform: uppercase;
+    margin: 0 0 6pt;
+    padding-bottom: 4pt;
+    border-bottom: 0.75pt solid #B8922A;
   }
-  .cover-logo { text-align: center; margin: 20pt 0 10pt; }
-  .cover-logo svg { width: 100px; height: 100px; }
-  .cover-occasion { text-align: center; font-size: 26pt; color: #8B0000; margin: 14pt 0 6pt; font-variant: small-caps; }
-  .cover-date { text-align: center; font-size: 14pt; color: #555; margin: 4pt 0; }
-  .cover-times { text-align: center; font-size: 11pt; color: #555; margin: 8pt 0; }
-  .cover-welcome {
-    text-align: center; font-size: 11pt; color: #333;
-    margin: 24pt auto 0; max-width: 5in; line-height: 1.5;
-    font-style: italic;
+  .sub-heading {
+    font-family: 'Cinzel', serif;
+    font-size: 8.5pt;
+    font-weight: 600;
+    color: #6B1A1A;
+    text-transform: uppercase;
+    letter-spacing: 1pt;
+    margin: 7pt 0 2pt;
   }
-  .cover-border {
-    border: 2pt solid #8B0000;
-    padding: 30pt;
+  .rubric {
+    color: #8B0000;
+    font-style: italic;
+    font-size: 8pt;
+    margin: 3pt 0;
+  }
+  .citation {
+    font-weight: 600;
+    font-size: 9pt;
+    color: #333;
+    margin: 1pt 0;
+  }
+  .reading-text {
+    text-align: justify;
+    text-indent: 0;
+    margin: 2pt 0 5pt;
+    font-size: 9.5pt;
+    line-height: 1.3;
+  }
+  .psalm-refrain {
+    font-weight: 700;
+    font-style: italic;
+    margin: 3pt 0;
+  }
+  .psalm-verse {
+    margin: 2pt 0 2pt 12pt;
+    font-size: 9pt;
+  }
+  .prayer-text {
+    margin: 2pt 0;
+    line-height: 1.3;
+    white-space: pre-line;
+  }
+  .creed-text {
+    white-space: pre-line;
+    font-size: 8.5pt;
+    line-height: 1.25;
+    margin: 2pt 0;
+  }
+
+  /* --- Music entries per PRD §5.4 --- */
+  .music-entry {
+    margin: 2pt 0;
+    font-size: 9pt;
+  }
+  .music-label {
+    font-family: 'Cinzel', serif;
+    font-size: 7.5pt;
+    font-weight: 600;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: 0.5pt;
+  }
+  .music-entry em { font-style: italic; }
+  .mass-time-label { font-size: 8pt; color: #666; }
+  .music-divider { color: #999; margin: 0 2pt; }
+
+  /* --- Cover (Page 1) --- */
+  .cover-page {
+    display: flex;
+    flex-direction: column;
     height: 100%;
+  }
+  .cover-top {
+    flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
+    border-bottom: 0.75pt solid #B8922A;
+    padding-bottom: 10pt;
   }
+  .cover-logo svg { width: 60px; height: 60px; }
+  .cover-feast {
+    font-family: 'Cinzel', serif;
+    font-size: 16pt;
+    font-weight: 700;
+    color: #1A2E4A;
+    text-align: center;
+    margin: 8pt 0 3pt;
+    letter-spacing: 0.5pt;
+  }
+  .cover-date {
+    font-size: 10pt;
+    color: #555;
+    text-align: center;
+    margin-bottom: 3pt;
+  }
+  .cover-times {
+    font-size: 8.5pt;
+    color: #777;
+    text-align: center;
+    letter-spacing: 0.5pt;
+  }
+
+  /* Parish info block — PRD Appendix A Page 1 */
+  .parish-info {
+    padding-top: 8pt;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 5pt 10pt;
+    font-size: 7.5pt;
+    line-height: 1.35;
+    color: #444;
+  }
+  .info-block-title {
+    font-family: 'Cinzel', serif;
+    font-size: 6.5pt;
+    font-weight: 600;
+    color: #B8922A;
+    text-transform: uppercase;
+    letter-spacing: 1pt;
+    margin-bottom: 1pt;
+  }
+  .info-block p { margin: 0; }
+
+  /* --- Back Cover (Page 8) --- */
   .back-cover {
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    justify-content: center;
+    align-items: center;
     height: 100%;
+    text-align: center;
   }
-  .qr-section { display: flex; justify-content: center; gap: 40pt; margin: 20pt 0; }
-  .qr-item { text-align: center; }
-  .qr-item img { width: 80px; height: 80px; }
-  .qr-placeholder { width: 80px; height: 80px; border: 1pt dashed #999; display: flex; align-items: center; justify-content: center; font-size: 8pt; color: #999; }
-  .social-section { text-align: center; margin: 12pt 0; font-size: 10pt; color: #555; }
-  .copyright-block { font-size: 7.5pt; color: #777; text-align: center; line-height: 1.3; margin-top: auto; padding-top: 16pt; }
-  .prayer-text { margin: 4pt 0; white-space: pre-line; }
-  .indent { margin-left: 20pt; }
-  .bold { font-weight: bold; }
-  .page-number { position: absolute; bottom: 0.4in; left: 0; right: 0; text-align: center; font-size: 8pt; color: #999; }
-  .creed-text { white-space: pre-line; margin: 4pt 0; }
-  .two-col { column-count: 2; column-gap: 20pt; }
-  .announcements { background: #f5f5f5; padding: 8pt 10pt; margin: 6pt 0; border-left: 3pt solid #8B0000; font-size: 9pt; }
+  .copyright-full {
+    font-size: 6.5pt;
+    color: #888;
+    line-height: 1.35;
+    max-width: 4in;
+    text-align: center;
+    margin-top: auto;
+    padding-top: 12pt;
+  }
+  .copyright-short {
+    font-size: 7pt;
+    color: #888;
+    text-align: center;
+    margin-top: 6pt;
+    padding-top: 4pt;
+    border-top: 0.5pt solid #ccc;
+  }
+
+  /* --- Overflow error banner --- */
+  .overflow-banner {
+    background: #fdeaea;
+    border: 1.5pt solid #c0392b;
+    color: #c0392b;
+    font-size: 7.5pt;
+    padding: 3pt 6pt;
+    margin-bottom: 4pt;
+    text-align: center;
+    font-weight: 600;
+  }
+
+  /* --- Misc --- */
+  .page-number {
+    position: absolute;
+    bottom: 0.25in;
+    left: 0; right: 0;
+    text-align: center;
+    font-size: 7pt;
+    color: #aaa;
+  }
+  .divider-rule {
+    border: none;
+    border-top: 0.5pt solid #B8922A;
+    margin: 5pt 0;
+  }
+  .children-liturgy {
+    background: #f5f0e6;
+    border: 0.5pt solid #d4c9a8;
+    padding: 4pt 6pt;
+    margin: 4pt 0;
+    font-size: 8pt;
+  }
+  .announcement-block {
+    background: #f7f5f0;
+    border-left: 2pt solid #B8922A;
+    padding: 4pt 6pt;
+    margin: 4pt 0;
+    font-size: 8pt;
+  }
 </style>
 </head>
 <body>
 
 <!-- PAGE 1: COVER -->
 <div class="page" id="page-1">
-  <div class="cover-border">
-    <div class="cover-logo">${getLogoSvg()}</div>
-    <div class="cover-occasion">${escapeHtml(data.occasionName)}</div>
-    <div class="cover-date">${escapeHtml(formatDate(data.occasionDate))}</div>
-    <div class="cover-times">${(data.massTimes || []).map(t => escapeHtml(t)).join(' &bull; ')}</div>
-    <div class="cover-welcome">
-      Welcome to our parish community.<br>
-      We are glad you are here to worship with us today.
+  <div class="cover-page">
+    <div class="cover-top">
+      <div class="cover-logo">${getLogoSvg()}</div>
+      <div class="cover-feast">${escapeHtml(d.feastName)}</div>
+      <div class="cover-date">${escapeHtml(formatDate(d.liturgicalDate))}</div>
+      <div class="cover-times">Sat 5:00 PM &bull; Sun 9:00 AM &bull; Sun 11:00 AM</div>
+    </div>
+    <div class="parish-info">
+      <div>
+        <div class="info-block-title">Connect</div>
+        <p>${nl2br(connectBlurb)}</p>
+      </div>
+      <div>
+        <div class="info-block-title">Nursery</div>
+        <p>${nl2br(nurseryBlurb)}</p>
+      </div>
+      <div>
+        <div class="info-block-title">Restrooms</div>
+        <p>${nl2br(restroomsBlurb)}</p>
+      </div>
+      <div>
+        <div class="info-block-title">Prayer</div>
+        <p>${nl2br(prayerBlurb)}</p>
+      </div>
     </div>
   </div>
 </div>
 
 <!-- PAGE 2: INTRODUCTORY RITES -->
-<div class="page" id="page-2">
-  <div class="section-title">The Introductory Rites</div>
+<div class="page${overflowPages.has(2) ? ' overflow-warning' : ''}" id="page-2">
+  ${overflowPages.has(2) ? '<div class="overflow-banner">Page 2 content may overflow</div>' : ''}
+  <div class="section-header">The Introductory Rites</div>
 
-  ${data.organPrelude ? `
-  <h3>Organ Prelude</h3>
-  <p class="music-item"><em>${escapeHtml(data.organPrelude.title)}</em>${data.organPrelude.composer ? ' — ' + escapeHtml(data.organPrelude.composer) : ''}</p>
-  ` : ''}
+  <div class="sub-heading">Organ Prelude</div>
+  ${renderMusicSection(d, 'organPrelude', 'organPreludeComposer', 'Prelude')}
 
   <p class="rubric">${RUBRICS.stand}</p>
 
-  <h3>Entrance Antiphon</h3>
-  ${data.entranceAntiphon?.citation ? `<p class="citation">${escapeHtml(data.entranceAntiphon.citation)}</p>` : ''}
-  ${data.entranceAntiphon?.imagePath ? renderImage(data.entranceAntiphon.imagePath, 'Entrance Antiphon', warnings) : ''}
-  ${data.entranceAntiphon?.composerCredit ? `<p style="font-size:8pt;color:#777;text-align:right;">${escapeHtml(data.entranceAntiphon.composerCredit)}</p>` : ''}
+  <div class="sub-heading">${entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon'}</div>
+  ${renderMusicSection(d, 'processionalOrEntrance', 'processionalOrEntranceComposer', entranceType === 'processional' ? 'Processional' : 'Antiphon')}
 
-  <h3>Penitential Act</h3>
-  <div class="prayer-text">${nl2br(data.penitentialAct === 'default' || !data.penitentialAct ? CONFITEOR : data.penitentialAct)}</div>
-
-  <h3>Kyrie</h3>
-  ${data.kyrieSettings && data.kyrieSettings.length > 0 ? data.kyrieSettings.map(k => {
-    let out = '';
-    if (data.kyrieSettings.length > 1 && k.massTime) {
-      out += `<p class="music-item"><strong>(${escapeHtml(k.massTime)})</strong> <em>${escapeHtml(k.settingName || '')}</em></p>`;
-    } else {
-      out += `<p class="music-item"><em>${escapeHtml(k.settingName || '')}</em></p>`;
-    }
-    if (k.imagePath) out += renderImage(k.imagePath, k.settingName || 'Kyrie', warnings);
-    return out;
-  }).join('') : '<p class="music-item"><em>Kyrie eleison</em></p>'}
-
-  ${!isLenten && data.gloria !== false ? `
-  <h3>Gloria</h3>
-  <p class="prayer-text">Glory to God in the highest,<br>and on earth peace to people of good will.</p>
+  ${penitentialAct === 'confiteor' ? `
+  <div class="sub-heading">Penitential Act</div>
+  <div class="prayer-text" style="font-size:8.5pt;">${nl2br(CONFITEOR)}</div>
   ` : ''}
 
-  ${data.collect ? `
-  <h3>Collect</h3>
-  <div class="prayer-text">${nl2br(data.collect)}</div>
+  <div class="sub-heading">Lord, Have Mercy</div>
+  ${renderMusicSection(d, 'kyrieSetting', 'kyrieComposer', 'Kyrie')}
+
+  ${showGloria ? `
+  <div class="sub-heading">Gloria</div>
+  <p class="prayer-text" style="font-size:8.5pt;">Glory to God in the highest, and on earth peace to people of good will.</p>
   ` : ''}
 
   <div class="page-number">2</div>
 </div>
 
 <!-- PAGE 3: LITURGY OF THE WORD -->
-<div class="page" id="page-3">
-  <div class="section-title">The Liturgy of the Word</div>
+<div class="page${overflowPages.has(3) ? ' overflow-warning' : ''}" id="page-3">
+  ${overflowPages.has(3) ? `<div class="overflow-banner">${escapeHtml(overflows.find(o => o.page === 3)?.message || 'Page 3 overflow')}</div>` : ''}
+  <div class="section-header">The Liturgy of the Word</div>
 
   <p class="rubric">${RUBRICS.sit}</p>
 
-  <h3>First Reading</h3>
-  <p class="citation">${escapeHtml(data.firstReading.citation)}</p>
-  <div class="reading-text">${nl2br(data.firstReading.text)}</div>
+  <div class="sub-heading">First Reading</div>
+  <p class="citation">${escapeHtml(r.firstReadingCitation)}</p>
+  <div class="reading-text">${nl2br(r.firstReadingText)}</div>
 
-  <h3>Responsorial Psalm</h3>
-  <p class="citation">${escapeHtml(data.responsorialPsalm.citation)}</p>
-  ${data.responsorialPsalm.response ? `<p class="response">R. ${escapeHtml(data.responsorialPsalm.response)}</p>` : ''}
-  ${data.responsorialPsalm.imagePath ? renderImage(data.responsorialPsalm.imagePath, 'Responsorial Psalm', warnings) : ''}
-  ${data.responsorialPsalm.verses ? data.responsorialPsalm.verses.map(v => `<p class="reading-text indent">${nl2br(v)}</p>`).join('') : ''}
+  <div class="sub-heading">Responsorial Psalm</div>
+  <p class="citation">${escapeHtml(r.psalmCitation)}</p>
+  ${r.psalmRefrain ? `<p class="psalm-refrain">R. ${escapeHtml(r.psalmRefrain)}</p>` : ''}
+  ${r.psalmVerses ? r.psalmVerses.split('\n\n').map(v => `<p class="psalm-verse">${nl2br(v)}</p>`).join('') : ''}
 
-  ${data.secondReading ? `
-  <h3>Second Reading</h3>
-  <p class="citation">${escapeHtml(data.secondReading.citation)}</p>
-  <div class="reading-text">${nl2br(data.secondReading.text)}</div>
+  ${!r.noSecondReading && r.secondReadingCitation ? `
+  <div class="sub-heading">Second Reading</div>
+  <p class="citation">${escapeHtml(r.secondReadingCitation)}</p>
+  <div class="reading-text">${nl2br(r.secondReadingText)}</div>
   ` : ''}
 
   <p class="rubric">${RUBRICS.stand}</p>
 
-  <h3>Gospel Acclamation</h3>
-  <p class="response">${escapeHtml(acclamationText)}</p>
-  ${data.gospelAcclamation?.verse ? `<p class="reading-text">${nl2br(data.gospelAcclamation.verse)}</p>` : ''}
-  ${data.gospelAcclamation?.imagePath ? renderImage(data.gospelAcclamation.imagePath, 'Gospel Acclamation', warnings) : ''}
+  <div class="sub-heading">Gospel Acclamation</div>
+  <p class="psalm-refrain">${escapeHtml(acclamationText)}</p>
+  ${r.gospelAcclamationReference ? `<p class="citation">${escapeHtml(r.gospelAcclamationReference)}</p>` : ''}
+  ${r.gospelAcclamationVerse ? `<p style="font-size:9pt;font-style:italic;margin:2pt 0;">${nl2br(r.gospelAcclamationVerse)}</p>` : ''}
 
   <div class="page-number">3</div>
 </div>
 
-<!-- PAGE 4: GOSPEL, HOMILY, CREED, INTERCESSIONS -->
-<div class="page" id="page-4">
-  <h3>Gospel</h3>
-  <p class="citation">${escapeHtml(data.gospel.citation)}</p>
-  <div class="reading-text">${nl2br(data.gospel.text)}</div>
+<!-- PAGE 4: GOSPEL + CREED -->
+<div class="page${overflowPages.has(4) ? ' overflow-warning' : ''}" id="page-4">
+  ${overflowPages.has(4) ? `<div class="overflow-banner">${escapeHtml(overflows.find(o => o.page === 4)?.message || 'Page 4 overflow')}</div>` : ''}
 
-  <h3>Homily</h3>
+  <div class="sub-heading">Gospel</div>
+  <p class="citation">${escapeHtml(r.gospelCitation)}</p>
+  <div class="reading-text">${nl2br(r.gospelText)}</div>
+
+  <div class="sub-heading">Homily</div>
   <p class="rubric">${RUBRICS.sit}</p>
 
   <p class="rubric">${RUBRICS.stand}</p>
+  <div class="sub-heading">${escapeHtml(creedTitle)}</div>
+  <div class="creed-text">${nl2br(creedText)}</div>
 
-  <h3>${data.creedType === 'apostles' ? 'Apostles\' Creed' : 'Nicene Creed'}</h3>
-  <div class="creed-text" style="font-size:${compact ? '8pt' : '9pt'}">${nl2br(creedText)}</div>
-
-  <h3>Prayer of the Faithful</h3>
-  ${data.prayerOfTheFaithful ? `<div class="reading-text">${nl2br(data.prayerOfTheFaithful)}</div>` : '<p class="rubric"><em>Intentions are read; the assembly responds.</em></p>'}
-
-  ${data.announcements ? `
-  <h3>Announcements</h3>
-  <div class="announcements">${nl2br(data.announcements)}</div>
-  ` : ''}
+  <div class="sub-heading">Prayer of the Faithful</div>
+  <p class="rubric" style="font-style:italic;">The intentions are read; the assembly responds.</p>
 
   <div class="page-number">4</div>
 </div>
 
 <!-- PAGE 5: LITURGY OF THE EUCHARIST -->
 <div class="page" id="page-5">
-  <div class="section-title">The Liturgy of the Eucharist</div>
+  <div class="section-header">The Liturgy of the Eucharist</div>
 
   <p class="rubric">${RUBRICS.sit}</p>
 
-  <h3>Offertory</h3>
-  ${renderPerMassItems(data.offertoryAnthems, data.massTimes, 'Offertory Anthem')}
+  <div class="sub-heading">Offertory</div>
+  ${renderMusicSection(d, 'offertoryAnthem', 'offertoryAnthemComposer', 'Offertory Anthem')}
+
+  ${d.childrenLiturgyEnabled ? `
+  <div class="children-liturgy">
+    <strong>Children's Liturgy of the Word</strong> — ${escapeHtml(d.childrenLiturgyMassTime || 'Sun 9:00 AM')}
+    ${d.childrenLiturgyMusic ? `<br><em>${escapeHtml(d.childrenLiturgyMusic)}</em>${d.childrenLiturgyMusicComposer ? ', ' + escapeHtml(d.childrenLiturgyMusicComposer) : ''}` : ''}
+  </div>
+  ` : ''}
 
   <p class="rubric">${RUBRICS.stand}</p>
 
-  <h3>Invitation to Prayer</h3>
-  <p class="prayer-text"><strong>Priest:</strong> ${escapeHtml(INVITATION_TO_PRAYER.priest)}</p>
-  <p class="prayer-text"><strong>All:</strong> ${escapeHtml(INVITATION_TO_PRAYER.all)}</p>
+  <div class="sub-heading">Invitation to Prayer</div>
+  <p class="prayer-text" style="font-size:8.5pt;"><strong>Priest:</strong> ${escapeHtml(INVITATION_TO_PRAYER.priest)}</p>
+  <p class="prayer-text" style="font-size:8.5pt;"><strong>All:</strong> ${escapeHtml(INVITATION_TO_PRAYER.all)}</p>
 
-  <h3>Holy, Holy, Holy</h3>
-  ${data.holySanctus?.settingName ? `<p class="music-item"><em>${escapeHtml(data.holySanctus.settingName)}</em></p>` : ''}
-  ${data.holySanctus?.imagePath ? renderImage(data.holySanctus.imagePath, data.holySanctus?.settingName || 'Sanctus', warnings) : ''}
+  <div class="sub-heading">Holy, Holy, Holy</div>
+  <p class="music-entry"><em>${escapeHtml(ss.holyHolySetting || 'Mass of St. Theresa')}</em></p>
 
   <p class="rubric">${RUBRICS.kneel}</p>
 
-  <h3>Mystery of Faith</h3>
-  ${data.mysteryOfFaith?.settingName ? `<p class="music-item"><em>${escapeHtml(data.mysteryOfFaith.settingName)}</em></p>` : ''}
-  ${data.mysteryOfFaith?.imagePath ? renderImage(data.mysteryOfFaith.imagePath, data.mysteryOfFaith?.settingName || 'Mystery of Faith', warnings) : ''}
+  <div class="sub-heading">Mystery of Faith</div>
+  <p class="music-entry"><em>${escapeHtml(ss.mysteryOfFaithSetting || 'Mass of St. Theresa')}</em></p>
+
+  <div class="sub-heading">Great Amen</div>
 
   <div class="page-number">5</div>
 </div>
 
 <!-- PAGE 6: COMMUNION RITE -->
 <div class="page" id="page-6">
-  <div class="section-title">The Communion Rite</div>
+  <div class="section-header">The Communion Rite</div>
 
-  <h3>The Lord's Prayer</h3>
+  <div class="sub-heading">The Lord's Prayer</div>
   <p class="rubric">${RUBRICS.stand}</p>
-  <div class="prayer-text">${nl2br(LORDS_PRAYER)}</div>
+  <div class="prayer-text" style="font-size:8.5pt;">${nl2br(LORDS_PRAYER)}</div>
 
-  <h3>Lamb of God</h3>
-  ${data.agnus?.settingName ? `<p class="music-item"><em>${escapeHtml(data.agnus.settingName)}</em></p>` : ''}
-  ${data.agnus?.imagePath ? renderImage(data.agnus.imagePath, data.agnus?.settingName || 'Agnus Dei', warnings) : ''}
+  <div class="sub-heading">Sign of Peace</div>
+
+  <div class="sub-heading">Lamb of God</div>
+  <p class="music-entry"><em>${escapeHtml(ss.lambOfGodSetting || 'Mass of St. Theresa')}</em></p>
 
   <p class="rubric">${RUBRICS.kneel}</p>
 
-  <h3>Communion Antiphon</h3>
-  ${data.communionAntiphon?.imagePath ? renderImage(data.communionAntiphon.imagePath, 'Communion Antiphon', warnings) : ''}
-  ${data.communionAntiphon?.composerCredit ? `<p style="font-size:8pt;color:#777;text-align:right;">${escapeHtml(data.communionAntiphon.composerCredit)}</p>` : ''}
-
-  <h3>Communion Hymn</h3>
-  ${renderPerMassItems(data.communionHymns, data.massTimes, 'Communion Hymn')}
+  <div class="sub-heading">Communion Hymn</div>
+  ${renderMusicSection(d, 'communionHymn', 'communionHymnComposer', 'Communion')}
 
   <div class="page-number">6</div>
 </div>
 
 <!-- PAGE 7: CONCLUDING RITES -->
 <div class="page" id="page-7">
-  <div class="section-title">The Concluding Rites</div>
+  <div class="section-header">The Concluding Rites</div>
 
-  <h3>Hymn of Thanksgiving</h3>
-  ${data.hymnThanksgiving?.title ? `<p class="music-item"><em>${escapeHtml(data.hymnThanksgiving.title)}</em></p>` : ''}
-  ${data.hymnThanksgiving?.imagePath ? renderImage(data.hymnThanksgiving.imagePath, data.hymnThanksgiving?.title || 'Thanksgiving Hymn', warnings) : ''}
-  ${data.hymnThanksgiving?.yearAStanza ? `<p class="reading-text"><strong>Year A Stanza:</strong><br>${nl2br(data.hymnThanksgiving.yearAStanza)}</p>` : ''}
+  <div class="sub-heading">Hymn of Thanksgiving</div>
+  ${renderMusicSection(d, 'hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving')}
 
-  <h3>Choral Anthem</h3>
-  ${renderPerMassItems(data.choralAnthems, data.massTimes, 'Choral Anthem')}
+  <div class="sub-heading">Choral Anthem</div>
+  ${renderMusicSection(d, 'choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem')}
 
   <p class="rubric">${RUBRICS.stand}</p>
 
-  ${data.prayerAfterCommunion ? `
-  <h3>Prayer after Communion</h3>
-  <div class="prayer-text">${nl2br(data.prayerAfterCommunion)}</div>
+  <div class="sub-heading">Blessing &amp; Dismissal</div>
+  <p class="prayer-text" style="font-size:8.5pt;"><strong>Priest:</strong> The Lord be with you. <strong>All:</strong> And with your spirit.</p>
+  <p class="prayer-text" style="font-size:8.5pt;"><strong>Priest:</strong> May almighty God bless you, the Father, and the Son, &#x2720; and the Holy Spirit. <strong>All:</strong> Amen.</p>
+  <p class="prayer-text" style="font-size:8.5pt;"><strong>Deacon:</strong> Go forth, the Mass is ended. <strong>All:</strong> Thanks be to God.</p>
+
+  <div class="sub-heading">Organ Postlude</div>
+  ${renderMusicSection(d, 'organPostlude', 'organPostludeComposer', 'Postlude')}
+
+  ${d.announcements ? `
+  <hr class="divider-rule">
+  <div class="sub-heading">Announcements</div>
+  <div class="announcement-block">${nl2br(d.announcements)}</div>
   ` : ''}
 
-  <h3>Blessing &amp; Dismissal</h3>
-  <p class="prayer-text"><strong>Priest:</strong> The Lord be with you.<br><strong>All:</strong> And with your spirit.</p>
-  <p class="prayer-text"><strong>Priest:</strong> May almighty God bless you, the Father, and the Son, &#x2720; and the Holy Spirit.<br><strong>All:</strong> Amen.</p>
-  <p class="prayer-text"><strong>Deacon:</strong> Go forth, the Mass is ended.<br><strong>All:</strong> Thanks be to God.</p>
+  <div class="copyright-short">${escapeHtml(copyrightShort)}</div>
 
   <div class="page-number">7</div>
 </div>
@@ -379,31 +517,15 @@ function renderBookletHtml(data, options = {}) {
 <!-- PAGE 8: BACK COVER -->
 <div class="page" id="page-8">
   <div class="back-cover">
-    <div>
-      <div class="cover-logo" style="margin-top:40pt">${getLogoSvg()}</div>
-      <div style="text-align:center;margin-top:10pt;">
-        <p style="font-size:14pt;color:#8B0000;font-variant:small-caps;">${escapeHtml(data.occasionName)}</p>
-        <p style="font-size:10pt;color:#555;">${escapeHtml(formatDate(data.occasionDate))}</p>
-      </div>
+    <div class="cover-logo" style="margin-top:30pt;">${getLogoSvg()}</div>
+    <div style="margin:10pt 0;">
+      <div class="cover-feast" style="font-size:13pt;">${escapeHtml(d.feastName)}</div>
+      <div class="cover-date" style="font-size:9pt;">${escapeHtml(formatDate(d.liturgicalDate))}</div>
     </div>
 
-    ${data.qrCodes ? `
-    <div class="qr-section">
-      ${data.qrCodes.give ? `<div class="qr-item"><div class="qr-placeholder">GIVE</div><p style="font-size:8pt;margin-top:4pt;">Give Online</p></div>` : ''}
-      ${data.qrCodes.join ? `<div class="qr-item"><div class="qr-placeholder">JOIN</div><p style="font-size:8pt;margin-top:4pt;">Join Us</p></div>` : ''}
-      ${data.qrCodes.bulletin ? `<div class="qr-item"><div class="qr-placeholder">BULLETIN</div><p style="font-size:8pt;margin-top:4pt;">Bulletin</p></div>` : ''}
-    </div>
-    ` : ''}
+    ${d.specialNotes ? `<div style="margin:8pt 0;font-size:8pt;font-style:italic;text-align:center;max-width:4in;">${nl2br(d.specialNotes)}</div>` : ''}
 
-    ${data.socialHandles ? `
-    <div class="social-section">
-      ${data.socialHandles.instagram ? `<span>&#x1F4F7; @${escapeHtml(data.socialHandles.instagram)}</span> &nbsp; ` : ''}
-      ${data.socialHandles.facebook ? `<span>&#x1F44D; ${escapeHtml(data.socialHandles.facebook)}</span> &nbsp; ` : ''}
-      ${data.socialHandles.youtube ? `<span>&#x25B6; ${escapeHtml(data.socialHandles.youtube)}</span>` : ''}
-    </div>
-    ` : ''}
-
-    <div class="copyright-block">${nl2br(data.copyrightBlock || DEFAULT_COPYRIGHT)}</div>
+    <div class="copyright-full">${nl2br(copyrightFull)}</div>
   </div>
 </div>
 
@@ -411,12 +533,6 @@ function renderBookletHtml(data, options = {}) {
 </html>`;
 
   return { html, warnings };
-}
-
-function formatDate(dateStr) {
-  if (!dateStr) return '';
-  const d = new Date(dateStr + 'T00:00:00');
-  return d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 }
 
 module.exports = { renderBookletHtml, escapeHtml, nl2br, formatDate };

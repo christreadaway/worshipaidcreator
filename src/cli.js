@@ -4,9 +4,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { validateInput } = require('./validator');
-const { generatePdf } = require('./pdf-generator');
+const { validateInput, detectOverflows } = require('./validator');
+const { generatePdf, buildFilename } = require('./pdf-generator');
 const { renderBookletHtml } = require('./template-renderer');
+const store = require('./store/file-store');
 
 const args = process.argv.slice(2);
 
@@ -18,14 +19,13 @@ Usage:
   worship-aid <input.json> [options]
 
 Options:
-  --output, -o <path>   Output directory (default: ./output)
-  --compact             Use compact (9pt) font for overflow pages
+  --output, -o <path>   Output directory (default: ./data/exports)
   --html                Also generate HTML preview
   --help, -h            Show this help
 
 Examples:
   worship-aid sample/second-sunday-lent.json
-  worship-aid input.json --compact --output ./build
+  worship-aid input.json --output ./build
   worship-aid input.json --html
 `);
 }
@@ -43,15 +43,13 @@ async function main() {
     process.exit(1);
   }
 
-  const compact = args.includes('--compact');
   const generateHtml = args.includes('--html');
-  let outputDir = './output';
+  let outputDir = store.getExportsDir();
   const outputIdx = args.indexOf('--output') !== -1 ? args.indexOf('--output') : args.indexOf('-o');
   if (outputIdx !== -1 && args[outputIdx + 1]) {
     outputDir = args[outputIdx + 1];
   }
 
-  // Read and parse input
   let data;
   try {
     const raw = fs.readFileSync(inputFile, 'utf8');
@@ -61,7 +59,6 @@ async function main() {
     process.exit(1);
   }
 
-  // Validate
   const validation = validateInput(data);
   if (!validation.valid) {
     console.error('Validation errors:');
@@ -69,36 +66,45 @@ async function main() {
     process.exit(1);
   }
 
-  // Ensure output directory
+  // Overflow warnings
+  const overflows = detectOverflows(data);
+  if (overflows.length > 0) {
+    console.log(`\nOverflow warnings (${overflows.length}):`);
+    for (const o of overflows) console.log(`  Page ${o.page}: ${o.message}`);
+  }
+
   fs.mkdirSync(outputDir, { recursive: true });
 
-  const dateSlug = data.occasionDate || 'undated';
-  const baseName = `worship-aid-${dateSlug}`;
+  const filename = buildFilename(data);
+  const pdfPath = path.join(outputDir, filename);
 
-  // Generate PDF
+  const settings = store.loadSettings();
+
   console.log('Generating PDF...');
-  const pdfPath = path.join(outputDir, `${baseName}.pdf`);
-  const result = await generatePdf(data, pdfPath, { compact });
+  const result = await generatePdf(data, pdfPath, { parishSettings: settings });
   console.log(`PDF created: ${result.outputPath}`);
 
-  // Generate HTML preview if requested
   if (generateHtml) {
     console.log('Generating HTML preview...');
-    const { html, warnings: htmlWarnings } = renderBookletHtml(data, { compact });
-    const htmlPath = path.join(outputDir, `${baseName}.html`);
+    const { html, warnings: htmlWarnings } = renderBookletHtml(data, { parishSettings: settings });
+    const htmlFilename = filename.replace('.pdf', '.html');
+    const htmlPath = path.join(outputDir, htmlFilename);
     fs.writeFileSync(htmlPath, html, 'utf8');
     console.log(`HTML created: ${htmlPath}`);
     result.warnings.push(...htmlWarnings);
   }
 
-  // Write build log
+  // Build log
   const logPath = path.join(outputDir, 'build.log');
   const logContent = [
     `Worship Aid Generator — Build Log`,
     `Date: ${new Date().toISOString()}`,
     `Input: ${inputFile}`,
     `Output: ${pdfPath}`,
-    `Compact: ${compact}`,
+    '',
+    `Overflows (${overflows.length}):`,
+    ...overflows.map(o => `  Page ${o.page}: ${o.message}`),
+    overflows.length === 0 ? '  (none)' : '',
     '',
     `Warnings (${result.warnings.length}):`,
     ...result.warnings.map(w => `  - ${w}`),
@@ -106,11 +112,6 @@ async function main() {
   ].join('\n');
   fs.writeFileSync(logPath, logContent, 'utf8');
   console.log(`Build log: ${logPath}`);
-
-  if (result.warnings.length > 0) {
-    console.log(`\nWarnings (${result.warnings.length}):`);
-    for (const w of result.warnings) console.log(`  ⚠ ${w}`);
-  }
 
   console.log('\nDone!');
 }

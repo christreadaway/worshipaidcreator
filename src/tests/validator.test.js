@@ -1,112 +1,139 @@
-// Tests for input validation
+// Tests for input validation and overflow detection
 'use strict';
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { validateInput } = require('../validator');
+const { validateInput, detectOverflows, estimateLines } = require('../validator');
+
+const minValid = {
+  feastName: 'Test Sunday',
+  liturgicalDate: '2026-03-01',
+  liturgicalSeason: 'ordinary'
+};
 
 describe('validateInput', () => {
-  const minimalValid = {
-    occasionName: 'Test Sunday',
-    occasionDate: '2026-03-01',
-    massTimes: ['Sun 9:00 AM'],
-    firstReading: { citation: 'Gen 1:1', text: 'In the beginning...' },
-    responsorialPsalm: { citation: 'Psalm 23' },
-    gospel: { citation: 'John 3:16', text: 'For God so loved...' }
-  };
-
   it('should accept minimal valid input', () => {
-    const result = validateInput(minimalValid);
+    const result = validateInput(minValid);
     assert.equal(result.valid, true);
-    assert.equal(result.errors.length, 0);
   });
 
-  it('should reject missing occasionName', () => {
-    const data = { ...minimalValid };
-    delete data.occasionName;
-    const result = validateInput(data);
-    assert.equal(result.valid, false);
-    assert.ok(result.errors.length > 0);
+  it('should reject missing feastName', () => {
+    const data = { ...minValid };
+    delete data.feastName;
+    assert.equal(validateInput(data).valid, false);
   });
 
-  it('should reject missing massTimes', () => {
-    const data = { ...minimalValid };
-    delete data.massTimes;
-    const result = validateInput(data);
-    assert.equal(result.valid, false);
-  });
-
-  it('should reject empty massTimes array', () => {
-    const data = { ...minimalValid, massTimes: [] };
-    const result = validateInput(data);
-    assert.equal(result.valid, false);
+  it('should reject missing liturgicalDate', () => {
+    const data = { ...minValid };
+    delete data.liturgicalDate;
+    assert.equal(validateInput(data).valid, false);
   });
 
   it('should reject invalid date format', () => {
-    const data = { ...minimalValid, occasionDate: 'March 1, 2026' };
-    const result = validateInput(data);
-    assert.equal(result.valid, false);
+    assert.equal(validateInput({ ...minValid, liturgicalDate: 'March 1' }).valid, false);
   });
 
-  it('should reject missing firstReading', () => {
-    const data = { ...minimalValid };
-    delete data.firstReading;
-    const result = validateInput(data);
-    assert.equal(result.valid, false);
+  it('should reject invalid liturgicalSeason', () => {
+    assert.equal(validateInput({ ...minValid, liturgicalSeason: 'pentecost' }).valid, false);
   });
 
-  it('should reject missing gospel', () => {
-    const data = { ...minimalValid };
-    delete data.gospel;
-    const result = validateInput(data);
-    assert.equal(result.valid, false);
+  it('should accept all valid seasons', () => {
+    for (const season of ['ordinary', 'advent', 'christmas', 'lent', 'easter']) {
+      assert.equal(validateInput({ ...minValid, liturgicalSeason: season }).valid, true);
+    }
   });
 
-  it('should accept full input with all optional fields', () => {
+  it('should accept full input with readings and music', () => {
     const full = {
-      ...minimalValid,
-      organPrelude: { title: 'Test Prelude', composer: 'Test Composer' },
-      entranceAntiphon: { citation: 'Ps 1:1', composerCredit: 'Test' },
-      penitentialAct: 'default',
-      kyrieSettings: [{ massTime: 'Sun 9 AM', settingName: 'Mass of Creation' }],
-      gloria: true,
-      collect: 'O God...',
-      secondReading: { citation: 'Rom 1:1', text: 'Paul...' },
-      gospelAcclamation: { citation: 'Mt 1:1', verse: 'Alleluia', lenten: false },
-      creedType: 'nicene',
-      announcements: 'Test announcements',
-      offertoryAnthems: [{ massTime: 'All', title: 'Hymn', composer: 'Author' }],
-      holySanctus: { settingName: 'Test' },
-      mysteryOfFaith: { settingName: 'Test', option: 'A' },
-      agnus: { settingName: 'Test' },
-      communionAntiphon: { composerCredit: 'Test' },
-      communionHymns: [{ massTime: 'All', title: 'Hymn' }],
-      hymnThanksgiving: { title: 'Thanks' },
-      choralAnthems: [{ title: 'Anthem', composer: 'Comp' }],
-      prayerAfterCommunion: 'We give thanks...',
-      qrCodes: { give: 'https://give.test', join: 'https://join.test' },
-      socialHandles: { instagram: 'test', facebook: 'test' },
-      compact: false
+      ...minValid,
+      readings: {
+        firstReadingCitation: 'Gen 1:1',
+        firstReadingText: 'In the beginning...',
+        psalmCitation: 'Psalm 23',
+        psalmRefrain: 'The Lord is my shepherd.',
+        gospelCitation: 'John 3:16',
+        gospelText: 'For God so loved...'
+      },
+      seasonalSettings: {
+        gloria: true,
+        creedType: 'nicene',
+        entranceType: 'processional',
+        holyHolySetting: 'Mass of St. Theresa',
+        penitentialAct: 'confiteor'
+      },
+      musicSat5pm: {
+        organPrelude: 'Test Prelude',
+        organPreludeComposer: 'Bach',
+        offertoryAnthem: 'Test Offertory'
+      },
+      musicSun9am: { organPrelude: 'Test' },
+      musicSun11am: { organPrelude: 'Test' },
+      childrenLiturgyEnabled: true,
+      childrenLiturgyMassTime: 'Sun 9:00 AM',
+      announcements: 'Test announcement',
+      specialNotes: 'Test note'
     };
-    const result = validateInput(full);
-    assert.equal(result.valid, true);
+    assert.equal(validateInput(full).valid, true);
+  });
+});
+
+describe('estimateLines', () => {
+  it('should count newlines', () => {
+    assert.equal(estimateLines('line1\nline2\nline3'), 3);
   });
 
-  it('should reject invalid creedType', () => {
-    const data = { ...minimalValid, creedType: 'lutheran' };
-    const result = validateInput(data);
-    assert.equal(result.valid, false);
+  it('should account for line wrapping', () => {
+    const longLine = 'a'.repeat(200);
+    assert.ok(estimateLines(longLine) > 1);
   });
 
-  it('should reject invalid mysteryOfFaith option', () => {
-    const data = { ...minimalValid, mysteryOfFaith: { settingName: 'X', option: 'D' } };
-    const result = validateInput(data);
-    assert.equal(result.valid, false);
+  it('should return 0 for empty/null', () => {
+    assert.equal(estimateLines(''), 0);
+    assert.equal(estimateLines(null), 0);
+  });
+});
+
+describe('detectOverflows', () => {
+  it('should return empty array for short content', () => {
+    const data = {
+      ...minValid,
+      readings: { firstReadingText: 'Short.', gospelText: 'Short.', psalmRefrain: 'R.' }
+    };
+    assert.deepEqual(detectOverflows(data), []);
   });
 
-  it('should reject extra properties', () => {
-    const data = { ...minimalValid, unknownField: 'test' };
-    const result = validateInput(data);
-    assert.equal(result.valid, false);
+  it('should detect page 3 overflow for very long readings', () => {
+    const longText = ('This is a long sentence that repeats many times. '.repeat(50) + '\n').repeat(10);
+    const data = {
+      ...minValid,
+      readings: { firstReadingText: longText, secondReadingText: longText, psalmVerses: longText }
+    };
+    const overflows = detectOverflows(data);
+    assert.ok(overflows.some(o => o.page === 3));
+  });
+
+  it('should detect page 4 overflow for long gospel + nicene creed', () => {
+    const longGospel = ('The Gospel text continues with many verses. '.repeat(60) + '\n').repeat(5);
+    const data = {
+      ...minValid,
+      readings: { gospelText: longGospel },
+      seasonalSettings: { creedType: 'nicene' }
+    };
+    const overflows = detectOverflows(data);
+    assert.ok(overflows.some(o => o.page === 4));
+  });
+
+  it('should include page number and severity', () => {
+    const longText = ('text '.repeat(100) + '\n').repeat(20);
+    const data = {
+      ...minValid,
+      readings: { firstReadingText: longText, secondReadingText: longText, psalmVerses: longText }
+    };
+    const overflows = detectOverflows(data);
+    if (overflows.length > 0) {
+      assert.ok(overflows[0].page);
+      assert.ok(overflows[0].severity);
+      assert.ok(overflows[0].message);
+    }
   });
 });

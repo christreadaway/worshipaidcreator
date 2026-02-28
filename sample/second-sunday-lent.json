@@ -1,138 +1,97 @@
 {
-  "occasionName": "Second Sunday of Lent",
-  "occasionDate": "2026-03-01",
-  "massTimes": ["Sat 5:00 PM", "Sun 9:00 AM", "Sun 11:00 AM"],
+  "feastName": "Second Sunday of Lent",
+  "liturgicalDate": "2026-03-01",
+  "liturgicalSeason": "lent",
 
-  "organPrelude": {
-    "title": "O Sacred Head, Now Wounded",
-    "composer": "J.S. Bach"
+  "seasonalSettings": {
+    "gloria": false,
+    "creedType": "apostles",
+    "entranceType": "antiphon",
+    "holyHolySetting": "Vatican Edition XVIII",
+    "mysteryOfFaithSetting": "Vatican Edition XVIII",
+    "lambOfGodSetting": "Agnus Dei, Vatican Edition XVIII",
+    "penitentialAct": "confiteor"
   },
 
-  "entranceAntiphon": {
-    "citation": "Cf. Ps 27 (26):8-9",
-    "composerCredit": "Setting by Richard Rice"
+  "readings": {
+    "firstReadingCitation": "Genesis 15:5-12, 17-18",
+    "firstReadingText": "The Lord God took Abram outside and said, \"Look up at the sky and count the stars, if you can. Just so,\" he added, \"shall your descendants be.\" Abram put his faith in the LORD, who credited it to him as an act of righteousness.\n\nHe then said to him, \"I am the LORD who brought you from Ur of the Chaldeans to give you this land as a possession.\" \"O Lord GOD,\" he asked, \"how am I to know that I shall possess it?\" He answered him, \"Bring me a three-year-old heifer, a three-year-old she-goat, a three-year-old ram, a turtledove, and a young pigeon.\"\n\nAbram brought him all these, split them in two, and placed each half opposite the other; but the birds he did not cut up. Birds of prey swooped down on the carcasses, but Abram stayed with them. As the sun was about to set, a trance fell upon Abram, and a deep, terrifying darkness enveloped him.\n\nWhen the sun had set and it was dark, there appeared a smoking fire pot and a flaming torch, which passed between those pieces. It was on that occasion that the LORD made a covenant with Abram, saying: \"To your descendants I give this land, from the Wadi of Egypt to the Great River, the Euphrates.\"\n\nThe word of the Lord.",
+
+    "psalmCitation": "Psalm 27:1, 7-8, 8-9, 13-14",
+    "psalmRefrain": "The Lord is my light and my salvation.",
+    "psalmVerses": "The LORD is my light and my salvation;\n  whom should I fear?\nThe LORD is my life's refuge;\n  of whom should I be afraid?\n\nHear, O LORD, the sound of my call;\n  have pity on me, and answer me.\nOf you my heart speaks; you my glance seeks.\n\nYour presence, O LORD, I seek.\n  Do not hide your face from me;\ndo not in anger repel your servant.\n  You are my helper: cast me not off.\n\nI believe that I shall see the bounty of the LORD\n  in the land of the living.\nWait for the LORD with courage;\n  be stouthearted, and wait for the LORD.",
+
+    "secondReadingCitation": "Philippians 3:17—4:1",
+    "secondReadingText": "Join with others in being imitators of me, brothers and sisters, and observe those who thus conduct themselves according to the model you have in us. For many, as I have often told you and now tell you even in tears, conduct themselves as enemies of the cross of Christ. Their end is destruction. Their God is their stomach; their glory is in their \"shame.\" Their minds are occupied with earthly things.\n\nBut our citizenship is in heaven, and from it we also await a savior, the Lord Jesus Christ. He will change our lowly body to conform with his glorified body by the power that enables him also to bring all things into subjection to himself.\n\nTherefore, my brothers and sisters, whom I love and long for, my joy and crown, in this way stand firm in the Lord.\n\nThe word of the Lord.",
+
+    "gospelAcclamationReference": "Cf. Mt 17:5",
+    "gospelAcclamationVerse": "From the shining cloud the Father's voice is heard: This is my beloved Son, hear him.",
+
+    "gospelCitation": "Luke 9:28b-36",
+    "gospelText": "Jesus took Peter, John, and James and went up the mountain to pray. While he was praying his face changed in appearance and his clothing became dazzling white. And behold, two men were conversing with him, Moses and Elijah, who appeared in glory and spoke of his exodus that he was going to accomplish in Jerusalem.\n\nPeter and his companions had been overcome by sleep, but becoming fully awake, they saw his glory and the two men standing with him. As they were about to part from him, Peter said to Jesus, \"Master, it is good that we are here; let us make three tents, one for you, one for Moses, and one for Elijah.\" But he did not know what he was saying.\n\nWhile he was still speaking, a cloud came and cast a shadow over them, and they became frightened when they entered the cloud. Then from the cloud came a voice that said, \"This is my chosen Son; listen to him.\" After the voice had spoken, Jesus was found alone. They fell silent and did not at that time tell anyone what they had seen.\n\nThe Gospel of the Lord."
   },
 
-  "penitentialAct": "default",
-
-  "kyrieSettings": [
-    {
-      "massTime": "Sat 5:00 PM & Sun 9:00 AM",
-      "settingName": "Mass of Creation (Haugen)"
-    },
-    {
-      "massTime": "Sun 11:00 AM",
-      "settingName": "Missa Emmanuel (McGonigal)"
-    }
-  ],
-
-  "gloria": false,
-  "collect": "O God, who have commanded us to listen to your beloved Son, be pleased, we pray, to nourish us inwardly by your word, that, with spiritual sight made pure, we may rejoice to behold your glory. Through our Lord Jesus Christ, your Son, who lives and reigns with you in the unity of the Holy Spirit, God, for ever and ever.",
-
-  "firstReading": {
-    "citation": "Genesis 15:5-12, 17-18",
-    "text": "The Lord God took Abram outside and said, \"Look up at the sky and count the stars, if you can. Just so,\" he added, \"shall your descendants be.\" Abram put his faith in the LORD, who credited it to him as an act of righteousness.\n\nHe then said to him, \"I am the LORD who brought you from Ur of the Chaldeans to give you this land as a possession.\" \"O Lord GOD,\" he asked, \"how am I to know that I shall possess it?\" He answered him, \"Bring me a three-year-old heifer, a three-year-old she-goat, a three-year-old ram, a turtledove, and a young pigeon.\"\n\nAbram brought him all these, split them in two, and placed each half opposite the other; but the birds he did not cut up. Birds of prey swooped down on the carcasses, but Abram stayed with them. As the sun was about to set, a trance fell upon Abram, and a deep, terrifying darkness enveloped him.\n\nWhen the sun had set and it was dark, there appeared a smoking fire pot and a flaming torch, which passed between those pieces. It was on that occasion that the LORD made a covenant with Abram, saying: \"To your descendants I give this land, from the Wadi of Egypt to the Great River, the Euphrates.\"\n\nThe word of the Lord."
+  "musicSat5pm": {
+    "organPrelude": "O Sacred Head, Now Wounded",
+    "organPreludeComposer": "J.S. Bach",
+    "processionalOrEntrance": "Entrance Antiphon (Marc Cerisier)",
+    "processionalOrEntranceComposer": "Cf. Ps 27 (26):8-9",
+    "kyrieSetting": "Mass of Creation",
+    "kyrieComposer": "Marty Haugen",
+    "offertoryAnthem": "Lord, Who Throughout These Forty Days",
+    "offertoryAnthemComposer": "attr. C. Hernaman",
+    "communionHymn": "'Tis Good, Lord, to Be Here",
+    "communionHymnComposer": "J. Armitage Robinson",
+    "hymnOfThanksgiving": "How Good, Lord, to Be Here!",
+    "hymnOfThanksgivingComposer": "",
+    "organPostlude": "Fugue in G Minor",
+    "organPostludeComposer": "J.S. Bach",
+    "choralAnthemConcluding": "Jesus, Sun of Life, My Splendor",
+    "choralAnthemConcludingComposer": "J.S. Bach"
   },
 
-  "responsorialPsalm": {
-    "citation": "Psalm 27:1, 7-8, 8-9, 13-14",
-    "response": "The Lord is my light and my salvation.",
-    "verses": [
-      "The LORD is my light and my salvation;\n  whom should I fear?\nThe LORD is my life's refuge;\n  of whom should I be afraid?",
-      "Hear, O LORD, the sound of my call;\n  have pity on me, and answer me.\nOf you my heart speaks; you my glance seeks.",
-      "Your presence, O LORD, I seek.\n  Do not hide your face from me;\ndo not in anger repel your servant.\n  You are my helper: cast me not off.",
-      "I believe that I shall see the bounty of the LORD\n  in the land of the living.\nWait for the LORD with courage;\n  be stouthearted, and wait for the LORD."
-    ]
+  "musicSun9am": {
+    "organPrelude": "O Sacred Head, Now Wounded",
+    "organPreludeComposer": "J.S. Bach",
+    "processionalOrEntrance": "Entrance Antiphon (Marc Cerisier)",
+    "processionalOrEntranceComposer": "Cf. Ps 27 (26):8-9",
+    "kyrieSetting": "Mass of Creation",
+    "kyrieComposer": "Marty Haugen",
+    "offertoryAnthem": "Lord, Who Throughout These Forty Days",
+    "offertoryAnthemComposer": "attr. C. Hernaman",
+    "communionHymn": "'Tis Good, Lord, to Be Here",
+    "communionHymnComposer": "J. Armitage Robinson",
+    "hymnOfThanksgiving": "How Good, Lord, to Be Here!",
+    "hymnOfThanksgivingComposer": "",
+    "organPostlude": "Fugue in G Minor",
+    "organPostludeComposer": "J.S. Bach",
+    "choralAnthemConcluding": "Jesus, Sun of Life, My Splendor",
+    "choralAnthemConcludingComposer": "J.S. Bach"
   },
 
-  "secondReading": {
-    "citation": "Philippians 3:17—4:1",
-    "text": "Join with others in being imitators of me, brothers and sisters, and observe those who thus conduct themselves according to the model you have in us. For many, as I have often told you and now tell you even in tears, conduct themselves as enemies of the cross of Christ. Their end is destruction. Their God is their stomach; their glory is in their \"shame.\" Their minds are occupied with earthly things.\n\nBut our citizenship is in heaven, and from it we also await a savior, the Lord Jesus Christ. He will change our lowly body to conform with his glorified body by the power that enables him also to bring all things into subjection to himself.\n\nTherefore, my brothers and sisters, whom I love and long for, my joy and crown, in this way stand firm in the Lord.\n\nThe word of the Lord."
+  "musicSun11am": {
+    "organPrelude": "O Sacred Head, Now Wounded",
+    "organPreludeComposer": "J.S. Bach",
+    "processionalOrEntrance": "Entrance Antiphon (Marc Cerisier)",
+    "processionalOrEntranceComposer": "Cf. Ps 27 (26):8-9",
+    "kyrieSetting": "Missa Emmanuel",
+    "kyrieComposer": "Richard McGonigal",
+    "offertoryAnthem": "Transfigure Us, O Lord",
+    "offertoryAnthemComposer": "Bob Hurd",
+    "communionHymn": "Christ, Be Our Light",
+    "communionHymnComposer": "Bernadette Farrell",
+    "hymnOfThanksgiving": "How Good, Lord, to Be Here!",
+    "hymnOfThanksgivingComposer": "",
+    "organPostlude": "Fugue in G Minor",
+    "organPostludeComposer": "J.S. Bach",
+    "choralAnthemConcluding": "O Nata Lux",
+    "choralAnthemConcludingComposer": "T.L. de Victoria"
   },
 
-  "gospelAcclamation": {
-    "citation": "Cf. Mt 17:5",
-    "verse": "From the shining cloud the Father's voice is heard: This is my beloved Son, hear him.",
-    "lenten": true
-  },
-
-  "gospel": {
-    "citation": "Luke 9:28b-36",
-    "text": "Jesus took Peter, John, and James and went up the mountain to pray. While he was praying his face changed in appearance and his clothing became dazzling white. And behold, two men were conversing with him, Moses and Elijah, who appeared in glory and spoke of his exodus that he was going to accomplish in Jerusalem.\n\nPeter and his companions had been overcome by sleep, but becoming fully awake, they saw his glory and the two men standing with him. As they were about to part from him, Peter said to Jesus, \"Master, it is good that we are here; let us make three tents, one for you, one for Moses, and one for Elijah.\" But he did not know what he was saying.\n\nWhile he was still speaking, a cloud came and cast a shadow over them, and they became frightened when they entered the cloud. Then from the cloud came a voice that said, \"This is my chosen Son; listen to him.\" After the voice had spoken, Jesus was found alone. They fell silent and did not at that time tell anyone what they had seen.\n\nThe Gospel of the Lord."
-  },
-
-  "creedType": "nicene",
+  "childrenLiturgyEnabled": true,
+  "childrenLiturgyMassTime": "Sun 9:00 AM",
+  "childrenLiturgyMusic": "Jesus Loves the Little Children",
 
   "announcements": "Lenten Fish Fry — Every Friday through April 3, 5:00–7:00 PM in the Parish Hall. Stations of the Cross — Fridays at 7:00 PM. Lenten Penance Service — March 18 at 7:00 PM.",
-
-  "offertoryAnthems": [
-    {
-      "massTime": "Sat 5:00 PM & Sun 9:00 AM",
-      "title": "Lord, Who Throughout These Forty Days",
-      "composer": "attr. C. Hernaman"
-    },
-    {
-      "massTime": "Sun 11:00 AM",
-      "title": "Transfigure Us, O Lord",
-      "composer": "Bob Hurd"
-    }
-  ],
-
-  "holySanctus": {
-    "settingName": "Mass of Creation (Haugen)"
-  },
-
-  "mysteryOfFaith": {
-    "settingName": "Mass of Creation (Haugen)",
-    "option": "A"
-  },
-
-  "agnus": {
-    "settingName": "Mass of Creation (Haugen)"
-  },
-
-  "communionHymns": [
-    {
-      "massTime": "Sat 5:00 PM & Sun 9:00 AM",
-      "title": "'Tis Good, Lord, to Be Here",
-      "composer": "J. Armitage Robinson"
-    },
-    {
-      "massTime": "Sun 11:00 AM",
-      "title": "Christ, Be Our Light",
-      "composer": "Bernadette Farrell"
-    }
-  ],
-
-  "hymnThanksgiving": {
-    "title": "How Good, Lord, to Be Here!",
-    "yearAStanza": "Before we taste of death,\ngive us to share with thee\nthe resurrection's promised breath\nof immortality."
-  },
-
-  "choralAnthems": [
-    {
-      "massTime": "Sat 5:00 PM & Sun 9:00 AM",
-      "title": "Jesus, Sun of Life, My Splendor",
-      "composer": "J.S. Bach"
-    },
-    {
-      "massTime": "Sun 11:00 AM",
-      "title": "O Nata Lux",
-      "composer": "T.L. de Victoria"
-    }
-  ],
-
-  "prayerAfterCommunion": "As we receive these glorious mysteries, we make thanksgiving to you, O Lord, for allowing us, while still on earth, to be partakers even now of the things of heaven. Through Christ our Lord.",
-
-  "qrCodes": {
-    "give": "https://parish.example.com/give",
-    "join": "https://parish.example.com/join",
-    "bulletin": "https://parish.example.com/bulletin"
-  },
-
-  "socialHandles": {
-    "instagram": "ourparishlife",
-    "facebook": "Our Parish Community",
-    "youtube": "Our Parish Channel"
-  }
+  "specialNotes": ""
 }
