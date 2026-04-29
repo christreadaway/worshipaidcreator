@@ -281,6 +281,47 @@ app.get('/api/bible-translations', (req, res) => {
   res.json(TRANSLATIONS.map(({ id, label, source }) => ({ id, label, source })));
 });
 
+// Cover image concept suggestions — derived from feast/season + tone.
+// Returns short concepts, a starter image-generation prompt, and search URLs
+// so a designer can pick a stock photo or generate an image.
+app.post('/api/cover-suggestions', (req, res) => {
+  const { feastName = '', liturgicalSeason = 'ordinary', tone = 'reverent' } = req.body || {};
+  const seasonImagery = {
+    advent:    ['advent wreath with lit candles', 'starlit night sky over Bethlehem', 'purple and rose vestments', 'open Bible with first candle'],
+    christmas: ['nativity scene at night', 'star of Bethlehem', 'candlelit altar with poinsettias', 'angels announcing to shepherds'],
+    lent:      ['simple wooden cross at dawn', 'desert landscape', 'crown of thorns on stone', 'ashes in the shape of a cross'],
+    easter:    ['empty tomb at sunrise', 'lilies on the altar', 'risen Christ icon', 'paschal candle'],
+    ordinary:  ['stained glass cross', 'open Gospel book', 'parish sanctuary detail', 'bread and chalice still life']
+  };
+  const toneStyles = {
+    reverent:      'warm sepia tones, soft chiaroscuro lighting, classical Catholic iconography',
+    joyful:        'bright golden light, vibrant color, uplifting composition',
+    solemn:        'deep shadows, muted palette, candlelight, prayerful stillness',
+    hopeful:       'dawn light breaking through, gentle pastels, open horizon',
+    contemplative: 'soft monochrome, minimal composition, quiet space, gentle texture',
+    triumphant:    'rich golds and reds, sweeping verticals, banners and incense'
+  };
+  const baseImagery = seasonImagery[liturgicalSeason] || seasonImagery.ordinary;
+  const style = toneStyles[tone] || toneStyles.reverent;
+  const subject = feastName.trim() || (liturgicalSeason.charAt(0).toUpperCase() + liturgicalSeason.slice(1));
+  const concepts = baseImagery.map(img => ({
+    title: img.replace(/^./, c => c.toUpperCase()),
+    prompt: `${img}, ${style}, fine-art photography, vertical composition, room for title text at top, no text, ${subject}`
+  }));
+  const searchTerms = [
+    feastName,
+    liturgicalSeason + ' liturgy',
+    baseImagery[0]
+  ].filter(Boolean).map(s => s.trim());
+  const searchLinks = searchTerms.map(q => ({
+    query: q,
+    unsplash: 'https://unsplash.com/s/photos/' + encodeURIComponent(q),
+    pexels:   'https://www.pexels.com/search/' + encodeURIComponent(q),
+    wikimedia: 'https://commons.wikimedia.org/w/index.php?search=' + encodeURIComponent(q) + '&title=Special:MediaSearch&go=Go&type=image'
+  }));
+  res.json({ subject, tone, style, concepts, searchLinks });
+});
+
 // Fetch Mass readings from USCCB (NABRE Lectionary), optionally re-translated
 app.get('/api/readings', async (req, res) => {
   const date = String(req.query.date || '');
@@ -708,7 +749,7 @@ nav .user-info strong { color: var(--gold-light); }
       <div class="form-section-body">
         <div class="fg"><label>Feast / Sunday Name</label><input type="text" id="feastName" placeholder="e.g., Second Sunday of Lent"></div>
         <div class="fg-row">
-          <div class="fg"><label>Date</label><input type="date" id="liturgicalDate"></div>
+          <div class="fg"><label>Date <span style="font-weight:400;text-transform:none;color:var(--gray);">(defaults to next Sunday)</span></label><input type="date" id="liturgicalDate" onchange="onLiturgicalDateChange()"></div>
           <div class="fg"><label>Liturgical Season</label>
             <select id="liturgicalSeason" onchange="onSeasonChange()">
               <option value="ordinary">Ordinary Time</option>
@@ -819,7 +860,12 @@ nav .user-info strong { color: var(--gold-light); }
     <div class="form-section">
       <div class="form-section-hdr" onclick="toggle(this)">Children's Liturgy <span>&#9660;</span></div>
       <div class="form-section-body">
-        <div class="fg-check"><input type="checkbox" id="childrenLiturgyEnabled"><label for="childrenLiturgyEnabled">Enable Children's Liturgy of the Word</label></div>
+        <p class="section-lock">Auto-defaults to ON when school is in session and OFF for summer, Christmas, and Easter. Toggle to override.</p>
+        <div class="fg-check">
+          <input type="checkbox" id="childrenLiturgyEnabled" onchange="onChildrenLiturgyToggle()">
+          <label for="childrenLiturgyEnabled">Enable Children's Liturgy of the Word</label>
+          <span id="childrenLiturgyAutoNote" style="font-size: 11px; color: var(--gray); margin-left: 8px;"></span>
+        </div>
         <div class="fg"><label>Mass Time</label><input type="text" id="childrenLiturgyMassTime" placeholder="Sun 9:00 AM" value="Sun 9:00 AM"></div>
         <div class="fg-row">
           <div class="fg"><label>Music Title</label><input type="text" id="childrenLiturgyMusic"></div>
@@ -847,6 +893,25 @@ nav .user-info strong { color: var(--gold-light); }
           <p style="font-size:11px;color:var(--gray);">Click to upload cover image</p>
         </div>
         <div id="cover-preview"></div>
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px;">
+          <p style="font-size:11px;color:var(--gray);margin-bottom:6px;">Need ideas? Pick a tone and we'll suggest cover concepts and search prompts.</p>
+          <div class="fg-row" style="grid-template-columns: 1fr auto; gap: 8px;">
+            <div class="fg"><label>Tone</label>
+              <select id="coverTone">
+                <option value="reverent">Reverent &amp; traditional</option>
+                <option value="joyful">Joyful &amp; celebratory</option>
+                <option value="solemn">Solemn &amp; reflective</option>
+                <option value="hopeful">Hopeful &amp; expectant</option>
+                <option value="contemplative">Contemplative &amp; quiet</option>
+                <option value="triumphant">Triumphant &amp; glorious</option>
+              </select>
+            </div>
+            <div class="fg"><label>&nbsp;</label>
+              <button type="button" onclick="suggestCoverImages()">Suggest covers</button>
+            </div>
+          </div>
+          <div id="coverSuggestions" style="margin-top:8px;"></div>
+        </div>
       </div>
     </div>
 
@@ -1218,6 +1283,11 @@ function populateForm(data) {
   populateMusicBlock('sun9am', data.musicSun9am);
   populateMusicBlock('sun11am', data.musicSun11am);
   sc('childrenLiturgyEnabled', data.childrenLiturgyEnabled);
+  // If the saved doc carries an explicit value, respect it; otherwise the
+  // load is a no-op and auto-defaults will run on date/season change.
+  const _clCb = document.getElementById('childrenLiturgyEnabled');
+  if (_clCb) _clCb.dataset.userSet = (data.childrenLiturgyEnabled !== undefined) ? '1' : '';
+  updateChildrenLiturgyAutoNote(data.childrenLiturgyEnabled !== undefined);
   sv('childrenLiturgyMassTime', data.childrenLiturgyMassTime);
   sv('childrenLiturgyMusic', data.childrenLiturgyMusic);
   sv('childrenLiturgyMusicComposer', data.childrenLiturgyMusicComposer);
@@ -1243,6 +1313,7 @@ async function onSeasonChange() {
     sc('includePostlude', defaults.includePostlude !== false);
     sc('adventWreath', !!defaults.adventWreath);
     updateSeasonUI();
+    applyChildrenLiturgyAutoDefault();
     toast('Season defaults applied: ' + season, 'success');
   } catch(e) { console.error(e); }
 }
@@ -1251,6 +1322,190 @@ function updateSeasonUI() {
   const season = v('liturgicalSeason');
   // Show Lenten acclamation choice only during Lent
   document.getElementById('lentenAcclamationGroup').style.display = (season === 'lent') ? '' : 'none';
+}
+
+// --- Children's Liturgy auto-defaults ---
+// School in session = Sep through May, with a break ~Dec 22-Jan 6.
+// Off during summer (Jun-Aug), Christmas season, and Easter season.
+function suggestChildrenLiturgyDefault(dateStr, season) {
+  if (!dateStr) return { enabled: false, reason: 'No date set' };
+  if (season === 'christmas') return { enabled: false, reason: 'Off during Christmas season' };
+  if (season === 'easter')    return { enabled: false, reason: 'Off during Easter season' };
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!m) return { enabled: false, reason: 'No date set' };
+  const month = parseInt(m[2], 10);
+  const day   = parseInt(m[3], 10);
+  if (month >= 6 && month <= 8) return { enabled: false, reason: 'Off — school summer break' };
+  if (month === 12 && day >= 22) return { enabled: false, reason: 'Off — school Christmas break' };
+  if (month === 1 && day <= 6)   return { enabled: false, reason: 'Off — school Christmas break' };
+  return { enabled: true, reason: 'School in session' };
+}
+
+function applyChildrenLiturgyAutoDefault(force) {
+  const cb = document.getElementById('childrenLiturgyEnabled');
+  if (!cb) return;
+  if (!force && cb.dataset.userSet === '1') {
+    updateChildrenLiturgyAutoNote(true);
+    return;
+  }
+  const sug = suggestChildrenLiturgyDefault(v('liturgicalDate'), v('liturgicalSeason'));
+  cb.checked = sug.enabled;
+  cb.dataset.userSet = '';
+  updateChildrenLiturgyAutoNote(false, sug.reason);
+}
+
+function updateChildrenLiturgyAutoNote(overridden, reason) {
+  const note = document.getElementById('childrenLiturgyAutoNote');
+  if (!note) return;
+  if (overridden) {
+    note.textContent = '(manually overridden)';
+  } else {
+    note.textContent = reason ? '(auto: ' + reason + ')' : '';
+  }
+}
+
+function onChildrenLiturgyToggle() {
+  const cb = document.getElementById('childrenLiturgyEnabled');
+  if (cb) cb.dataset.userSet = '1';
+  updateChildrenLiturgyAutoNote(true);
+}
+
+// --- Liturgical date / season auto-detection ---
+// Computus (Anonymous Gregorian) — Western Easter for a given year.
+function computeEaster(year) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const L = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * L) / 451);
+  const month = Math.floor((h + L - 7 * m + 114) / 31); // 3=Mar, 4=Apr
+  const day = ((h + L - 7 * m + 114) % 31) + 1;
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function dateOnly(y, m, d) { return new Date(Date.UTC(y, m, d)); }
+function addDaysUTC(d, days) { return new Date(d.getTime() + days * 86400000); }
+
+// Given a YYYY-MM-DD date, return the liturgical season per the General Roman
+// Calendar (US): advent / christmas / lent / easter / ordinary.
+function detectLiturgicalSeason(dateStr) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || '');
+  if (!m) return null;
+  const year = parseInt(m[1], 10);
+  const date = dateOnly(year, parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+
+  const easter = computeEaster(year);
+  const ashWed = addDaysUTC(easter, -46);
+  const pentecost = addDaysUTC(easter, 49);
+
+  // Advent: 4th Sunday before Dec 25 through Dec 24.
+  const dec25 = dateOnly(year, 11, 25);
+  const dec25Dow = dec25.getUTCDay(); // 0=Sun
+  // Sunday on/before Dec 24
+  const sundayBeforeChristmas = addDaysUTC(dec25, -((dec25Dow + 7) % 7 || 7));
+  const adventStart = addDaysUTC(sundayBeforeChristmas, -21);
+
+  // Christmas season: Dec 25 through Baptism of the Lord (Sunday after Jan 6).
+  // Use simpler rule: Dec 25 of (year or year-1) through Sunday after Jan 6.
+  const christmasStartThisYear = dateOnly(year, 11, 25);
+  const christmasStartLastYear = dateOnly(year - 1, 11, 25);
+  function baptismOfLord(yr) {
+    const jan6 = dateOnly(yr, 0, 6);
+    let d = addDaysUTC(jan6, 1);
+    while (d.getUTCDay() !== 0) d = addDaysUTC(d, 1);
+    return d;
+  }
+  const baptism = baptismOfLord(year);
+
+  if (date >= ashWed && date < easter) return 'lent';
+  if (date >= easter && date <= pentecost) return 'easter';
+  if (date >= adventStart && date < christmasStartThisYear) return 'advent';
+  if (date >= christmasStartThisYear) return 'christmas'; // late Dec
+  if (date <= baptism && date >= christmasStartLastYear) return 'christmas';
+  if (date <= baptism) return 'christmas';
+  return 'ordinary';
+}
+
+function nextSundayISO(fromDate) {
+  const d = fromDate ? new Date(fromDate) : new Date();
+  const dow = d.getDay(); // local 0=Sun
+  const daysUntilSunday = dow === 0 ? 7 : (7 - dow);
+  const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + daysUntilSunday);
+  const iso = next.getFullYear() + '-' +
+    String(next.getMonth() + 1).padStart(2, '0') + '-' +
+    String(next.getDate()).padStart(2, '0');
+  return iso;
+}
+
+function onLiturgicalDateChange() {
+  const date = v('liturgicalDate');
+  if (!date) return;
+  const detected = detectLiturgicalSeason(date);
+  const seasonSel = document.getElementById('liturgicalSeason');
+  if (detected && seasonSel && seasonSel.value !== detected) {
+    seasonSel.value = detected;
+    onSeasonChange(); // applies seasonal defaults + cascades to children's liturgy
+  } else {
+    applyChildrenLiturgyAutoDefault();
+  }
+}
+
+async function suggestCoverImages() {
+  const target = document.getElementById('coverSuggestions');
+  if (!target) return;
+  target.innerHTML = '<p style="font-size:11px;color:var(--gray);">Generating ideas…</p>';
+  try {
+    const res = await fetch('/api/cover-suggestions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        feastName: v('feastName'),
+        liturgicalSeason: v('liturgicalSeason'),
+        tone: document.getElementById('coverTone').value
+      })
+    });
+    const data = await res.json();
+    const conceptHtml = data.concepts.map(c => (
+      '<div style="border:1px solid var(--border);border-radius:3px;padding:6px 8px;margin-bottom:6px;">' +
+        '<div style="font-weight:600;font-size:12px;">' + esc(c.title) + '</div>' +
+        '<div style="font-size:11px;color:var(--gray);margin-top:2px;">' + esc(c.prompt) + '</div>' +
+        '<button type="button" style="margin-top:4px;font-size:10px;" onclick="navigator.clipboard.writeText(' + JSON.stringify(c.prompt) + ');toast(\'Prompt copied\',\'success\');">Copy prompt</button>' +
+      '</div>'
+    )).join('');
+    const linkHtml = data.searchLinks.map(s => (
+      '<div style="font-size:11px;margin-bottom:3px;">' +
+        '<strong>' + esc(s.query) + ':</strong> ' +
+        '<a href="' + s.unsplash + '" target="_blank" rel="noopener">Unsplash</a> &middot; ' +
+        '<a href="' + s.pexels + '" target="_blank" rel="noopener">Pexels</a> &middot; ' +
+        '<a href="' + s.wikimedia + '" target="_blank" rel="noopener">Wikimedia</a>' +
+      '</div>'
+    )).join('');
+    target.innerHTML =
+      '<div style="font-size:11px;color:var(--gray);margin-bottom:6px;">Tone: <em>' + esc(data.tone) + '</em> &middot; ' + esc(data.style) + '</div>' +
+      conceptHtml +
+      '<div style="margin-top:6px;font-size:11px;font-weight:600;">Stock search:</div>' +
+      linkHtml;
+  } catch (e) {
+    target.innerHTML = '<p style="font-size:11px;color:var(--burgundy);">Could not generate ideas: ' + esc(e.message) + '</p>';
+  }
+}
+
+function suggestNextLiturgicalDate() {
+  const dateInput = document.getElementById('liturgicalDate');
+  if (!dateInput || dateInput.value) return; // don't override an existing pick
+  const iso = nextSundayISO();
+  dateInput.value = iso;
+  const detected = detectLiturgicalSeason(iso);
+  const seasonSel = document.getElementById('liturgicalSeason');
+  if (detected && seasonSel) seasonSel.value = detected;
+  applyChildrenLiturgyAutoDefault();
 }
 
 // --- Image Uploads ---
@@ -1603,6 +1858,7 @@ async function fetchReadingsFromUsccb() {
 }
 
 initBibleTranslations();
+suggestNextLiturgicalDate();
 
 // --- Auto-save ---
 let _autoSaveTimer;
