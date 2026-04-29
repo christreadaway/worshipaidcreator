@@ -63,7 +63,7 @@ const inputSchema = {
       type: 'object',
       properties: {
         gloria: { type: 'boolean' },
-        creedType: { type: 'string', enum: ['nicene', 'apostles'] },
+        creedType: { type: 'string', enum: ['nicene', 'apostles', 'baptismal_vows'] },
         entranceType: { type: 'string', enum: ['processional', 'antiphon'] },
         holyHolySetting: { type: 'string' },
         mysteryOfFaithSetting: { type: 'string' },

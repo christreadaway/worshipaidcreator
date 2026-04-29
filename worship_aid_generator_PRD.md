@@ -1,9 +1,11 @@
 # Worship Aid Generator — Product Requirements Document
 
-**Version:** 1.0  
-**Date:** February 27, 2026  
-**Owner:** COO, [Parish Name]  
-**Status:** Ready for Development
+**Version:** 1.1
+**Date:** April 29, 2026
+**Owner:** COO, [Parish Name]
+**Status:** Active development — Publisher-replacement (Microsoft is discontinuing Publisher in fall 2026; this app is the primary substitute).
+
+> See `product_spec.md` for the implementation-level reference and the **Future Build Requirements** section for the prioritized backlog (OneLicense automation, wedding/funeral variants, true imposition, proofing workflow, etc.).
 
 ---
 

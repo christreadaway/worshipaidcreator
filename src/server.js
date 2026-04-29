@@ -12,6 +12,9 @@ const { renderBookletHtml } = require('./template-renderer');
 const { getSeasonDefaults, SEASONS, LENTEN_ACCLAMATION_OPTIONS } = require('./config/seasons');
 const store = require('./store/file-store');
 const userStore = require('./store/user-store');
+const { fetchReadings, TRANSLATIONS } = require('./readings-fetcher');
+const { autoCropNotation } = require('./image-utils');
+const hymnLibrary = require('./store/hymn-library');
 
 const https = require('https');
 
@@ -60,6 +63,13 @@ const coverUpload = makeUploadConfig(
   ext => `cover-${Date.now()}${ext}`,
   ['.png', '.jpg', '.jpeg'],
   10 * 1024 * 1024
+);
+
+const logoUpload = makeUploadConfig(
+  COVERS_DIR,
+  ext => `logo-${Date.now()}${ext}`,
+  ['.png', '.jpg', '.jpeg'],
+  5 * 1024 * 1024
 );
 
 app.use(express.json({ limit: '10mb' }));
@@ -275,6 +285,100 @@ app.get('/api/lenten-acclamations', (req, res) => {
   res.json(LENTEN_ACCLAMATION_OPTIONS);
 });
 
+// Bible translations available for the readings dropdown
+app.get('/api/bible-translations', (req, res) => {
+  res.json(TRANSLATIONS.map(({ id, label, source }) => ({ id, label, source })));
+});
+
+// Local hymn library — parish-managed catalog. English-only by default.
+app.get('/api/hymns/search', async (req, res) => {
+  try {
+    const lib = await hymnLibrary.loadLibrary();
+    const results = hymnLibrary.search(lib, req.query.q || '', {
+      englishOnly: req.query.includeNonEnglish !== '1',
+      limit: Math.min(parseInt(req.query.limit, 10) || 20, 100)
+    });
+    res.json({ results, total: lib.entries.length, updatedAt: lib.updatedAt });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/hymns', async (req, res) => {
+  try {
+    const lib = await hymnLibrary.loadLibrary();
+    res.json(lib);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/hymns', requireAuth, requirePermission('manage_settings'), async (req, res) => {
+  try {
+    const saved = await hymnLibrary.saveLibrary(req.body && req.body.entries);
+    res.json(saved);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Cover image concept suggestions — derived from feast/season + tone.
+// Returns short concepts, a starter image-generation prompt, and search URLs
+// so a designer can pick a stock photo or generate an image.
+app.post('/api/cover-suggestions', (req, res) => {
+  const { feastName = '', liturgicalSeason = 'ordinary', tone = 'reverent' } = req.body || {};
+  const seasonImagery = {
+    advent:    ['advent wreath with lit candles', 'starlit night sky over Bethlehem', 'purple and rose vestments', 'open Bible with first candle'],
+    christmas: ['nativity scene at night', 'star of Bethlehem', 'candlelit altar with poinsettias', 'angels announcing to shepherds'],
+    lent:      ['simple wooden cross at dawn', 'desert landscape', 'crown of thorns on stone', 'ashes in the shape of a cross'],
+    easter:    ['empty tomb at sunrise', 'lilies on the altar', 'risen Christ icon', 'paschal candle'],
+    ordinary:  ['stained glass cross', 'open Gospel book', 'parish sanctuary detail', 'bread and chalice still life']
+  };
+  const toneStyles = {
+    reverent:      'warm sepia tones, soft chiaroscuro lighting, classical Catholic iconography',
+    joyful:        'bright golden light, vibrant color, uplifting composition',
+    solemn:        'deep shadows, muted palette, candlelight, prayerful stillness',
+    hopeful:       'dawn light breaking through, gentle pastels, open horizon',
+    contemplative: 'soft monochrome, minimal composition, quiet space, gentle texture',
+    triumphant:    'rich golds and reds, sweeping verticals, banners and incense'
+  };
+  const baseImagery = seasonImagery[liturgicalSeason] || seasonImagery.ordinary;
+  const style = toneStyles[tone] || toneStyles.reverent;
+  const subject = feastName.trim() || (liturgicalSeason.charAt(0).toUpperCase() + liturgicalSeason.slice(1));
+  const concepts = baseImagery.map(img => ({
+    title: img.replace(/^./, c => c.toUpperCase()),
+    prompt: `${img}, ${style}, fine-art photography, vertical composition, room for title text at top, no text, ${subject}`
+  }));
+  const searchTerms = [
+    feastName,
+    liturgicalSeason + ' liturgy',
+    baseImagery[0]
+  ].filter(Boolean).map(s => s.trim());
+  const searchLinks = searchTerms.map(q => ({
+    query: q,
+    unsplash: 'https://unsplash.com/s/photos/' + encodeURIComponent(q),
+    pexels:   'https://www.pexels.com/search/' + encodeURIComponent(q),
+    wikimedia: 'https://commons.wikimedia.org/w/index.php?search=' + encodeURIComponent(q) + '&title=Special:MediaSearch&go=Go&type=image'
+  }));
+  res.json({ subject, tone, style, concepts, searchLinks });
+});
+
+// Fetch Mass readings from USCCB (NABRE Lectionary), optionally re-translated
+app.get('/api/readings', async (req, res) => {
+  const date = String(req.query.date || '');
+  const translation = String(req.query.translation || 'NABRE');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  }
+  try {
+    const readings = await fetchReadings(date, translation);
+    res.json(readings);
+  } catch (e) {
+    console.error('[readings] fetch failed:', e.message);
+    res.status(502).json({ error: 'Failed to fetch readings: ' + e.message });
+  }
+});
+
 // Validate
 app.post('/api/validate', (req, res) => {
   const result = validateInput(req.body);
@@ -306,7 +410,11 @@ app.post('/api/generate-pdf', async (req, res) => {
     const filename = buildFilename(req.body);
     const outputDir = kv.IS_NETLIFY ? '/tmp' : store.getExportsDir();
     const outputPath = path.join(outputDir, filename);
-    const result = await generatePdf(req.body, outputPath, { parishSettings: settings });
+    const bookletSize = (req.body.bookletSize || req.query.bookletSize || 'half-letter');
+    const result = await generatePdf(req.body, outputPath, {
+      parishSettings: settings,
+      bookletSize
+    });
 
     // Mark draft as exported if it has an id
     if (req.body.id) {
@@ -343,14 +451,44 @@ app.post('/api/upload/notation', requireAuth, requirePermission('upload_images')
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const ext = path.extname(req.file.originalname);
   const filename = req.file.filename || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+
+  // Auto-crop white margins so scanned sheet music doesn't waste page space.
+  let cropInfo = { skipped: true };
   if (kv.IS_NETLIFY) {
-    await kv.set('uploads-notation', filename, { data: req.file.buffer.toString('base64'), mime: req.file.mimetype });
+    const result = await autoCropNotation({ buffer: req.file.buffer, mime: req.file.mimetype });
+    const finalBuf = result.buffer || req.file.buffer;
+    await kv.set('uploads-notation', filename, { data: finalBuf.toString('base64'), mime: req.file.mimetype });
+    cropInfo = { cropped: !!result.cropped };
+  } else {
+    const filePath = path.join(NOTATION_DIR, filename);
+    cropInfo = await autoCropNotation({ filePath, mime: req.file.mimetype });
   }
+
   res.json({
     filename,
     url: kv.IS_NETLIFY ? `/api/uploads/notation/${filename}` : `/uploads/notation/${filename}`,
-    originalName: req.file.originalname
+    originalName: req.file.originalname,
+    autoCrop: cropInfo
   });
+});
+
+app.post('/api/upload/logo', requireAuth, requirePermission('manage_settings'), logoUpload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const ext = path.extname(req.file.originalname);
+  const filename = req.file.filename || `logo-${Date.now()}${ext}`;
+  if (kv.IS_NETLIFY) {
+    await kv.set('uploads-covers', filename, { data: req.file.buffer.toString('base64'), mime: req.file.mimetype });
+  }
+  const url = kv.IS_NETLIFY ? `/api/uploads/covers/${filename}` : `/uploads/covers/${filename}`;
+  // Persist as the active logo path in parish settings.
+  try {
+    const settings = await store.loadSettings();
+    settings.logoPath = url;
+    await store.saveSettings(settings);
+  } catch (e) {
+    console.warn('[logo] could not persist logoPath:', e.message);
+  }
+  res.json({ filename, url, originalName: req.file.originalname });
 });
 
 app.post('/api/upload/cover', requireAuth, requirePermission('edit_cover'), coverUpload.single('image'), async (req, res) => {
@@ -583,7 +721,7 @@ nav .user-info strong { color: var(--gold-light); }
 .fg-check { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .fg-check input { width: auto; }
 .fg-check label { margin: 0; text-transform: none; font-size: 12px; }
-.fg-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.fg-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; align-items: end; }
 
 /* Music block per mass time */
 .mass-time-block { background: var(--parchment); border: 1px solid var(--border); border-radius: 4px; padding: 8px; margin-bottom: 8px; }
@@ -671,6 +809,10 @@ nav .user-info strong { color: var(--gold-light); }
   <span class="user-info" id="user-display"></span>
   <button class="btn btn-outline btn-sm" onclick="loadSample()">Load Sample</button>
   <button class="btn btn-outline btn-sm" onclick="saveDraft()">Save Draft</button>
+  <select id="bookletSize" class="btn-sm" style="margin-right:6px;padding:4px 6px;font-size:11px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:3px;" title="Booklet trim size">
+    <option value="half-letter">5.5×8.5 booklet</option>
+    <option value="tabloid">8.5×11 booklet (11×17)</option>
+  </select>
   <button class="btn btn-gold btn-sm" onclick="generatePreview()">Preview</button>
   <button class="btn btn-navy btn-sm" id="btn-export" onclick="generatePdfExport()">Export PDF</button>
   <button class="btn btn-outline btn-sm" onclick="doLogout()" style="color:rgba(255,255,255,0.5);">Logout</button>
@@ -686,7 +828,7 @@ nav .user-info strong { color: var(--gold-light); }
       <div class="form-section-body">
         <div class="fg"><label>Feast / Sunday Name</label><input type="text" id="feastName" placeholder="e.g., Second Sunday of Lent"></div>
         <div class="fg-row">
-          <div class="fg"><label>Date</label><input type="date" id="liturgicalDate"></div>
+          <div class="fg"><label>Date <span style="font-weight:400;text-transform:none;color:var(--gray);">(defaults to next Sunday)</span></label><input type="date" id="liturgicalDate" onchange="onLiturgicalDateChange()"></div>
           <div class="fg"><label>Liturgical Season</label>
             <select id="liturgicalSeason" onchange="onSeasonChange()">
               <option value="ordinary">Ordinary Time</option>
@@ -707,7 +849,7 @@ nav .user-info strong { color: var(--gold-light); }
         <p class="section-lock" id="seasonal-lock-note">These are seasonally static and usually locked for several weeks.</p>
         <div class="fg-check"><input type="checkbox" id="gloria"><label for="gloria">Include Gloria</label></div>
         <div class="fg-row">
-          <div class="fg"><label>Creed</label><select id="creedType"><option value="nicene">Nicene Creed</option><option value="apostles">Apostles' Creed</option></select></div>
+          <div class="fg"><label>Creed</label><select id="creedType"><option value="nicene">Nicene Creed</option><option value="apostles">Apostles' Creed</option><option value="baptismal_vows">Renewal of Baptismal Vows</option></select></div>
           <div class="fg"><label>Entrance Type</label><select id="entranceType"><option value="processional">Processional Hymn</option><option value="antiphon">Entrance Antiphon</option></select></div>
         </div>
         <div class="fg"><label>Holy Holy Setting</label><input type="text" id="holyHolySetting" placeholder="e.g., Mass of St. Theresa"></div>
@@ -730,6 +872,17 @@ nav .user-info strong { color: var(--gold-light); }
     <div class="form-section" id="section-readings">
       <div class="form-section-hdr" onclick="toggle(this)">Readings <span>&#9660;</span></div>
       <div class="form-section-body">
+        <div class="fg-row" style="grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end;">
+          <div class="fg"><label>Bible Translation</label>
+            <select id="bibleTranslation"></select>
+          </div>
+          <div class="fg"><label>USCCB lookup</label>
+            <button type="button" id="fetchReadingsBtn" onclick="fetchReadingsFromUsccb()">Fetch from USCCB</button>
+          </div>
+          <div class="fg"><label>&nbsp;</label>
+            <span id="fetchReadingsStatus" style="font-size: 11px; color: var(--gray);"></span>
+          </div>
+        </div>
         <div class="fg"><label>First Reading — Citation</label><input type="text" id="firstReadingCitation" placeholder="e.g., Genesis 15:5-12, 17-18"></div>
         <div class="fg"><label>First Reading — Text</label><textarea id="firstReadingText" rows="5"></textarea></div>
         <div class="fg"><label>Responsorial Psalm — Citation</label><input type="text" id="psalmCitation"></div>
@@ -786,7 +939,12 @@ nav .user-info strong { color: var(--gold-light); }
     <div class="form-section">
       <div class="form-section-hdr" onclick="toggle(this)">Children's Liturgy <span>&#9660;</span></div>
       <div class="form-section-body">
-        <div class="fg-check"><input type="checkbox" id="childrenLiturgyEnabled"><label for="childrenLiturgyEnabled">Enable Children's Liturgy of the Word</label></div>
+        <p class="section-lock">Auto-defaults to ON when school is in session and OFF for summer, Christmas, and Easter. Toggle to override.</p>
+        <div class="fg-check">
+          <input type="checkbox" id="childrenLiturgyEnabled" onchange="onChildrenLiturgyToggle()">
+          <label for="childrenLiturgyEnabled">Enable Children's Liturgy of the Word</label>
+          <span id="childrenLiturgyAutoNote" style="font-size: 11px; color: var(--gray); margin-left: 8px;"></span>
+        </div>
         <div class="fg"><label>Mass Time</label><input type="text" id="childrenLiturgyMassTime" placeholder="Sun 9:00 AM" value="Sun 9:00 AM"></div>
         <div class="fg-row">
           <div class="fg"><label>Music Title</label><input type="text" id="childrenLiturgyMusic"></div>
@@ -814,6 +972,25 @@ nav .user-info strong { color: var(--gold-light); }
           <p style="font-size:11px;color:var(--gray);">Click to upload cover image</p>
         </div>
         <div id="cover-preview"></div>
+        <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px;">
+          <p style="font-size:11px;color:var(--gray);margin-bottom:6px;">Need ideas? Pick a tone and we'll suggest cover concepts and search prompts.</p>
+          <div class="fg-row" style="grid-template-columns: 1fr auto; gap: 8px;">
+            <div class="fg"><label>Tone</label>
+              <select id="coverTone">
+                <option value="reverent">Reverent &amp; traditional</option>
+                <option value="joyful">Joyful &amp; celebratory</option>
+                <option value="solemn">Solemn &amp; reflective</option>
+                <option value="hopeful">Hopeful &amp; expectant</option>
+                <option value="contemplative">Contemplative &amp; quiet</option>
+                <option value="triumphant">Triumphant &amp; glorious</option>
+              </select>
+            </div>
+            <div class="fg"><label>&nbsp;</label>
+              <button type="button" onclick="suggestCoverImages()">Suggest covers</button>
+            </div>
+          </div>
+          <div id="coverSuggestions" style="margin-top:8px;"></div>
+        </div>
       </div>
     </div>
 
@@ -856,6 +1033,20 @@ nav .user-info strong { color: var(--gold-light); }
         </div>
       </div>
     </div>
+    <div class="form-section"><div class="form-section-hdr">Cover Page — Persistent Branding</div>
+      <div class="form-section-body">
+        <p style="font-size:11px;color:var(--gray);margin-bottom:8px;">These appear on every booklet's cover. The logo (PNG/JPG, transparent background recommended) replaces the default cross. Standing tagline appears under the parish name.</p>
+        <div class="fg"><label>Parish Logo</label>
+          <div class="upload-area" onclick="document.getElementById('logoFileInput').click()">
+            <input type="file" id="logoFileInput" accept="image/png,image/jpeg" onchange="uploadLogo(this)">
+            <p style="font-size:11px;color:var(--gray);">Click to upload parish logo</p>
+          </div>
+          <div id="logo-preview" style="margin-top:6px;"></div>
+        </div>
+        <div class="fg"><label>Cover Tagline (appears under parish name)</label><input type="text" id="s_coverTagline" placeholder="e.g., A Catholic Community in the Heart of the City"></div>
+        <input type="hidden" id="s_logoPath">
+      </div>
+    </div>
     <div class="form-section"><div class="form-section-hdr">Cover Page Info Blocks</div>
       <div class="form-section-body">
         <div class="fg"><label>Connect Blurb</label><textarea id="s_connectBlurb" rows="2"></textarea></div>
@@ -875,6 +1066,16 @@ nav .user-info strong { color: var(--gold-light); }
       <div class="form-section-body">
         <div class="fg-check"><input type="checkbox" id="s_requirePastorApproval"><label for="s_requirePastorApproval">Require pastor approval before PDF export</label></div>
         <p style="font-size:11px;color:var(--gray);margin-top:4px;">When enabled, drafts must be submitted for review and approved by the pastor before they can be exported as PDF.</p>
+      </div>
+    </div>
+    <div class="form-section"><div class="form-section-hdr">Hymn Library (English only)</div>
+      <div class="form-section-body">
+        <p style="font-size:11px;color:var(--gray);margin-bottom:6px;">Music staff can search this catalog when filling in title fields. Edit as JSON; one object per hymn with fields: title, tune, composer, key, meter, source, notes.</p>
+        <div class="fg"><label>Library Entries (JSON)</label>
+          <textarea id="s_hymnLibrary" rows="14" style="font-family: monospace; font-size: 11px;"></textarea>
+        </div>
+        <button type="button" class="btn btn-outline btn-sm" onclick="saveHymnLibrary()">Save Library</button>
+        <span id="s_hymnLibraryStatus" style="font-size:11px;color:var(--gray);margin-left:8px;"></span>
       </div>
     </div>
     <button class="btn btn-gold" onclick="saveAdminSettings()" style="margin-top:12px;">Save Settings</button>
@@ -1185,6 +1386,11 @@ function populateForm(data) {
   populateMusicBlock('sun9am', data.musicSun9am);
   populateMusicBlock('sun11am', data.musicSun11am);
   sc('childrenLiturgyEnabled', data.childrenLiturgyEnabled);
+  // If the saved doc carries an explicit value, respect it; otherwise the
+  // load is a no-op and auto-defaults will run on date/season change.
+  const _clCb = document.getElementById('childrenLiturgyEnabled');
+  if (_clCb) _clCb.dataset.userSet = (data.childrenLiturgyEnabled !== undefined) ? '1' : '';
+  updateChildrenLiturgyAutoNote(data.childrenLiturgyEnabled !== undefined);
   sv('childrenLiturgyMassTime', data.childrenLiturgyMassTime);
   sv('childrenLiturgyMusic', data.childrenLiturgyMusic);
   sv('childrenLiturgyMusicComposer', data.childrenLiturgyMusicComposer);
@@ -1210,6 +1416,7 @@ async function onSeasonChange() {
     sc('includePostlude', defaults.includePostlude !== false);
     sc('adventWreath', !!defaults.adventWreath);
     updateSeasonUI();
+    applyChildrenLiturgyAutoDefault();
     toast('Season defaults applied: ' + season, 'success');
   } catch(e) { console.error(e); }
 }
@@ -1218,6 +1425,190 @@ function updateSeasonUI() {
   const season = v('liturgicalSeason');
   // Show Lenten acclamation choice only during Lent
   document.getElementById('lentenAcclamationGroup').style.display = (season === 'lent') ? '' : 'none';
+}
+
+// --- Children's Liturgy auto-defaults ---
+// School in session = Sep through May, with a break ~Dec 22-Jan 6.
+// Off during summer (Jun-Aug), Christmas season, and Easter season.
+function suggestChildrenLiturgyDefault(dateStr, season) {
+  if (!dateStr) return { enabled: false, reason: 'No date set' };
+  if (season === 'christmas') return { enabled: false, reason: 'Off during Christmas season' };
+  if (season === 'easter')    return { enabled: false, reason: 'Off during Easter season' };
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!m) return { enabled: false, reason: 'No date set' };
+  const month = parseInt(m[2], 10);
+  const day   = parseInt(m[3], 10);
+  if (month >= 6 && month <= 8) return { enabled: false, reason: 'Off — school summer break' };
+  if (month === 12 && day >= 22) return { enabled: false, reason: 'Off — school Christmas break' };
+  if (month === 1 && day <= 6)   return { enabled: false, reason: 'Off — school Christmas break' };
+  return { enabled: true, reason: 'School in session' };
+}
+
+function applyChildrenLiturgyAutoDefault(force) {
+  const cb = document.getElementById('childrenLiturgyEnabled');
+  if (!cb) return;
+  if (!force && cb.dataset.userSet === '1') {
+    updateChildrenLiturgyAutoNote(true);
+    return;
+  }
+  const sug = suggestChildrenLiturgyDefault(v('liturgicalDate'), v('liturgicalSeason'));
+  cb.checked = sug.enabled;
+  cb.dataset.userSet = '';
+  updateChildrenLiturgyAutoNote(false, sug.reason);
+}
+
+function updateChildrenLiturgyAutoNote(overridden, reason) {
+  const note = document.getElementById('childrenLiturgyAutoNote');
+  if (!note) return;
+  if (overridden) {
+    note.textContent = '(manually overridden)';
+  } else {
+    note.textContent = reason ? '(auto: ' + reason + ')' : '';
+  }
+}
+
+function onChildrenLiturgyToggle() {
+  const cb = document.getElementById('childrenLiturgyEnabled');
+  if (cb) cb.dataset.userSet = '1';
+  updateChildrenLiturgyAutoNote(true);
+}
+
+// --- Liturgical date / season auto-detection ---
+// Computus (Anonymous Gregorian) — Western Easter for a given year.
+function computeEaster(year) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const L = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * L) / 451);
+  const month = Math.floor((h + L - 7 * m + 114) / 31); // 3=Mar, 4=Apr
+  const day = ((h + L - 7 * m + 114) % 31) + 1;
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function dateOnly(y, m, d) { return new Date(Date.UTC(y, m, d)); }
+function addDaysUTC(d, days) { return new Date(d.getTime() + days * 86400000); }
+
+// Given a YYYY-MM-DD date, return the liturgical season per the General Roman
+// Calendar (US): advent / christmas / lent / easter / ordinary.
+function detectLiturgicalSeason(dateStr) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || '');
+  if (!m) return null;
+  const year = parseInt(m[1], 10);
+  const date = dateOnly(year, parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+
+  const easter = computeEaster(year);
+  const ashWed = addDaysUTC(easter, -46);
+  const pentecost = addDaysUTC(easter, 49);
+
+  // Advent: 4th Sunday before Dec 25 through Dec 24.
+  const dec25 = dateOnly(year, 11, 25);
+  const dec25Dow = dec25.getUTCDay(); // 0=Sun
+  // Sunday on/before Dec 24
+  const sundayBeforeChristmas = addDaysUTC(dec25, -((dec25Dow + 7) % 7 || 7));
+  const adventStart = addDaysUTC(sundayBeforeChristmas, -21);
+
+  // Christmas season: Dec 25 through Baptism of the Lord (Sunday after Jan 6).
+  // Use simpler rule: Dec 25 of (year or year-1) through Sunday after Jan 6.
+  const christmasStartThisYear = dateOnly(year, 11, 25);
+  const christmasStartLastYear = dateOnly(year - 1, 11, 25);
+  function baptismOfLord(yr) {
+    const jan6 = dateOnly(yr, 0, 6);
+    let d = addDaysUTC(jan6, 1);
+    while (d.getUTCDay() !== 0) d = addDaysUTC(d, 1);
+    return d;
+  }
+  const baptism = baptismOfLord(year);
+
+  if (date >= ashWed && date < easter) return 'lent';
+  if (date >= easter && date <= pentecost) return 'easter';
+  if (date >= adventStart && date < christmasStartThisYear) return 'advent';
+  if (date >= christmasStartThisYear) return 'christmas'; // late Dec
+  if (date <= baptism && date >= christmasStartLastYear) return 'christmas';
+  if (date <= baptism) return 'christmas';
+  return 'ordinary';
+}
+
+function nextSundayISO(fromDate) {
+  const d = fromDate ? new Date(fromDate) : new Date();
+  const dow = d.getDay(); // local 0=Sun
+  const daysUntilSunday = dow === 0 ? 7 : (7 - dow);
+  const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + daysUntilSunday);
+  const iso = next.getFullYear() + '-' +
+    String(next.getMonth() + 1).padStart(2, '0') + '-' +
+    String(next.getDate()).padStart(2, '0');
+  return iso;
+}
+
+function onLiturgicalDateChange() {
+  const date = v('liturgicalDate');
+  if (!date) return;
+  const detected = detectLiturgicalSeason(date);
+  const seasonSel = document.getElementById('liturgicalSeason');
+  if (detected && seasonSel && seasonSel.value !== detected) {
+    seasonSel.value = detected;
+    onSeasonChange(); // applies seasonal defaults + cascades to children's liturgy
+  } else {
+    applyChildrenLiturgyAutoDefault();
+  }
+}
+
+async function suggestCoverImages() {
+  const target = document.getElementById('coverSuggestions');
+  if (!target) return;
+  target.innerHTML = '<p style="font-size:11px;color:var(--gray);">Generating ideas…</p>';
+  try {
+    const res = await fetch('/api/cover-suggestions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        feastName: v('feastName'),
+        liturgicalSeason: v('liturgicalSeason'),
+        tone: document.getElementById('coverTone').value
+      })
+    });
+    const data = await res.json();
+    const conceptHtml = data.concepts.map(c => (
+      '<div style="border:1px solid var(--border);border-radius:3px;padding:6px 8px;margin-bottom:6px;">' +
+        '<div style="font-weight:600;font-size:12px;">' + esc(c.title) + '</div>' +
+        '<div style="font-size:11px;color:var(--gray);margin-top:2px;">' + esc(c.prompt) + '</div>' +
+        '<button type="button" style="margin-top:4px;font-size:10px;" onclick="navigator.clipboard.writeText(' + JSON.stringify(c.prompt) + ');toast(\'Prompt copied\',\'success\');">Copy prompt</button>' +
+      '</div>'
+    )).join('');
+    const linkHtml = data.searchLinks.map(s => (
+      '<div style="font-size:11px;margin-bottom:3px;">' +
+        '<strong>' + esc(s.query) + ':</strong> ' +
+        '<a href="' + s.unsplash + '" target="_blank" rel="noopener">Unsplash</a> &middot; ' +
+        '<a href="' + s.pexels + '" target="_blank" rel="noopener">Pexels</a> &middot; ' +
+        '<a href="' + s.wikimedia + '" target="_blank" rel="noopener">Wikimedia</a>' +
+      '</div>'
+    )).join('');
+    target.innerHTML =
+      '<div style="font-size:11px;color:var(--gray);margin-bottom:6px;">Tone: <em>' + esc(data.tone) + '</em> &middot; ' + esc(data.style) + '</div>' +
+      conceptHtml +
+      '<div style="margin-top:6px;font-size:11px;font-weight:600;">Stock search:</div>' +
+      linkHtml;
+  } catch (e) {
+    target.innerHTML = '<p style="font-size:11px;color:var(--burgundy);">Could not generate ideas: ' + esc(e.message) + '</p>';
+  }
+}
+
+function suggestNextLiturgicalDate() {
+  const dateInput = document.getElementById('liturgicalDate');
+  if (!dateInput || dateInput.value) return; // don't override an existing pick
+  const iso = nextSundayISO();
+  dateInput.value = iso;
+  const detected = detectLiturgicalSeason(iso);
+  const seasonSel = document.getElementById('liturgicalSeason');
+  if (detected && seasonSel) seasonSel.value = detected;
+  applyChildrenLiturgyAutoDefault();
 }
 
 // --- Image Uploads ---
@@ -1245,6 +1636,24 @@ async function loadNotationList() {
       '<div style="margin-bottom:4px;"><img src="' + f.url + '" class="image-preview" alt="notation"> <span style="font-size:10px;color:var(--gray);">' + esc(f.filename) + '</span></div>'
     ).join('');
   } catch(e) {}
+}
+
+async function uploadLogo(input) {
+  if (!input.files || !input.files[0]) return;
+  const formData = new FormData();
+  formData.append('image', input.files[0]);
+  try {
+    const res = await fetch('/api/upload/logo', {
+      method: 'POST', headers: { 'x-session-token': _sessionToken }, body: formData
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
+    sv('s_logoPath', data.url);
+    document.getElementById('logo-preview').innerHTML = '<img src="' + data.url + '" class="image-preview" style="max-height:80px;background:#fff;padding:4px;border:1px solid var(--border);" alt="logo">';
+    if (window._parishSettings) window._parishSettings.logoPath = data.url;
+    toast('Parish logo uploaded', 'success');
+  } catch(e) { toast('Upload error', 'error'); }
+  input.value = '';
 }
 
 async function uploadCover(input) {
@@ -1312,6 +1721,8 @@ async function generatePdfExport() {
   setStatus('Generating PDF...');
   try {
     const data = buildData();
+    const sel = document.getElementById('bookletSize');
+    if (sel) data.bookletSize = sel.value;
     const res = await fetch('/api/generate-pdf', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken }, body: JSON.stringify(data) });
     if (!res.ok) {
       const result = await res.json();
@@ -1427,14 +1838,48 @@ async function requestChanges(id) {
 }
 
 // --- Admin Settings ---
-const settingsFields = ['parishName','parishAddress','parishPhone','parishUrl','connectBlurb','nurseryBlurb','restroomsBlurb','prayerBlurb','onelicenseNumber','copyrightShort','copyrightFull'];
+const settingsFields = ['parishName','parishAddress','parishPhone','parishUrl','coverTagline','logoPath','connectBlurb','nurseryBlurb','restroomsBlurb','prayerBlurb','onelicenseNumber','copyrightShort','copyrightFull'];
 const settingsCheckboxes = ['requirePastorApproval'];
 async function loadAdminSettings() {
   const res = await fetch('/api/settings');
   const s = await res.json();
   settingsFields.forEach(f => sv('s_' + f, s[f]));
   settingsCheckboxes.forEach(f => sc('s_' + f, s[f]));
+  if (s.logoPath) {
+    const lp = document.getElementById('logo-preview');
+    if (lp) lp.innerHTML = '<img src="' + s.logoPath + '" class="image-preview" style="max-height:80px;background:#fff;padding:4px;border:1px solid var(--border);" alt="logo">';
+  }
   window._parishSettings = s;
+  try {
+    const hr = await fetch('/api/hymns');
+    const lib = await hr.json();
+    sv('s_hymnLibrary', JSON.stringify(lib.entries || [], null, 2));
+  } catch (e) {}
+}
+
+async function saveHymnLibrary() {
+  const status = document.getElementById('s_hymnLibraryStatus');
+  let entries;
+  try {
+    entries = JSON.parse(v('s_hymnLibrary') || '[]');
+  } catch (e) {
+    if (status) status.textContent = 'Invalid JSON: ' + e.message;
+    toast('Invalid JSON', 'error');
+    return;
+  }
+  try {
+    const res = await fetch('/api/hymns', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken },
+      body: JSON.stringify({ entries })
+    });
+    const data = await res.json();
+    if (!res.ok) { if (status) status.textContent = data.error || 'Save failed'; toast(data.error || 'Save failed', 'error'); return; }
+    if (status) status.textContent = 'Saved ' + data.entries.length + ' hymns';
+    toast('Hymn library saved', 'success');
+  } catch (e) {
+    if (status) status.textContent = 'Error: ' + e.message;
+  }
 }
 async function saveAdminSettings() {
   const s = {};
@@ -1508,6 +1953,139 @@ async function removeUser(id) {
   if (!confirm('Remove this user?')) return;
   await fetch('/api/users/' + id, { method: 'DELETE', headers: { 'x-session-token': _sessionToken } });
   loadUsers();
+}
+
+// --- Bible translations + USCCB readings lookup ---
+async function initBibleTranslations() {
+  const sel = document.getElementById('bibleTranslation');
+  if (!sel || sel.dataset.loaded) return;
+  try {
+    const res = await fetch('/api/bible-translations');
+    const list = await res.json();
+    sel.innerHTML = list.map(t =>
+      '<option value="' + esc(t.id) + '">' + esc(t.label) + '</option>'
+    ).join('');
+    sel.dataset.loaded = '1';
+  } catch (e) {
+    sel.innerHTML = '<option value="NABRE">NABRE (Lectionary, USCCB)</option>';
+  }
+}
+
+async function fetchReadingsFromUsccb() {
+  const date = v('liturgicalDate');
+  const status = document.getElementById('fetchReadingsStatus');
+  if (!date) {
+    if (status) status.textContent = 'Set a liturgical date first.';
+    toast('Set a liturgical date first', 'error');
+    return;
+  }
+  const translation = document.getElementById('bibleTranslation').value || 'NABRE';
+  const btn = document.getElementById('fetchReadingsBtn');
+  btn.disabled = true;
+  if (status) status.textContent = 'Fetching ' + translation + '…';
+  try {
+    const res = await fetch('/api/readings?date=' + encodeURIComponent(date) + '&translation=' + encodeURIComponent(translation));
+    const data = await res.json();
+    if (!res.ok) {
+      if (status) status.textContent = '';
+      toast(data.error || 'Lookup failed', 'error');
+      return;
+    }
+    sv('firstReadingCitation', data.firstReadingCitation);
+    sv('firstReadingText',     data.firstReadingText);
+    sv('psalmCitation',        data.psalmCitation);
+    sv('psalmRefrain',         data.psalmRefrain);
+    sv('psalmVerses',          data.psalmVerses);
+    sv('secondReadingCitation', data.secondReadingCitation);
+    sv('secondReadingText',     data.secondReadingText);
+    const noSecond = document.getElementById('noSecondReading');
+    if (noSecond) noSecond.checked = !!data.noSecondReading;
+    sv('gospelAcclamationReference', data.gospelAcclamationReference);
+    sv('gospelAcclamationVerse',     data.gospelAcclamationVerse);
+    sv('gospelCitation', data.gospelCitation);
+    sv('gospelText',     data.gospelText);
+    if (status) status.textContent = 'Loaded ' + (data.translation || translation) + '.';
+    toast('Readings loaded from USCCB', 'success');
+  } catch (e) {
+    if (status) status.textContent = '';
+    toast('Lookup error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+initBibleTranslations();
+suggestNextLiturgicalDate();
+initHymnAutocomplete();
+
+// --- Hymn library autocomplete ---
+// Attach a typeahead to every input flagged with [data-hymn-search="title"].
+// Results show title, tune, composer, and key so the user can choose the
+// arrangement that fits the parish.
+let _hymnDebounce;
+function initHymnAutocomplete() {
+  document.addEventListener('input', e => {
+    const t = e.target;
+    if (!t || t.dataset.hymnSearch !== 'title') return;
+    clearTimeout(_hymnDebounce);
+    const q = t.value.trim();
+    if (!q) { closeHymnDropdown(); return; }
+    _hymnDebounce = setTimeout(() => runHymnSearch(t, q), 150);
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest || !e.target.closest('.hymn-dropdown') && !(e.target.dataset && e.target.dataset.hymnSearch)) {
+      closeHymnDropdown();
+    }
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeHymnDropdown();
+  });
+}
+
+async function runHymnSearch(input, q) {
+  try {
+    const res = await fetch('/api/hymns/search?q=' + encodeURIComponent(q) + '&limit=8');
+    const data = await res.json();
+    showHymnDropdown(input, data.results || []);
+  } catch (e) { /* ignore */ }
+}
+
+function closeHymnDropdown() {
+  document.querySelectorAll('.hymn-dropdown').forEach(d => d.remove());
+}
+
+function showHymnDropdown(input, results) {
+  closeHymnDropdown();
+  if (!results.length) return;
+  const rect = input.getBoundingClientRect();
+  const dd = document.createElement('div');
+  dd.className = 'hymn-dropdown';
+  dd.style.cssText = 'position:absolute;z-index:1000;background:#fff;border:1px solid var(--border);border-radius:3px;box-shadow:0 2px 8px rgba(0,0,0,0.1);max-height:240px;overflow-y:auto;font-size:11px;width:' + Math.max(320, rect.width) + 'px;';
+  dd.style.left = (window.scrollX + rect.left) + 'px';
+  dd.style.top  = (window.scrollY + rect.bottom + 2) + 'px';
+  results.forEach(h => {
+    const row = document.createElement('div');
+    row.style.cssText = 'padding:6px 8px;border-bottom:1px solid #eee;cursor:pointer;';
+    row.onmouseover = () => row.style.background = '#f5f0e6';
+    row.onmouseout  = () => row.style.background = '';
+    row.innerHTML =
+      '<div style="font-weight:600;">' + esc(h.title) + '</div>' +
+      '<div style="color:var(--gray);">Tune: ' + esc(h.tune || '—') +
+      ' · Key: ' + esc(h.key || '—') +
+      (h.composer ? ' · ' + esc(h.composer) : '') + '</div>';
+    row.onclick = () => {
+      input.value = h.title;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const composerId = input.dataset.pairComposer;
+      if (composerId && h.composer) {
+        const cinp = document.getElementById(composerId);
+        if (cinp && !cinp.value) { cinp.value = h.composer; cinp.dispatchEvent(new Event('input', { bubbles: true })); }
+      }
+      closeHymnDropdown();
+    };
+    dd.appendChild(row);
+  });
+  document.body.appendChild(dd);
 }
 
 // --- Auto-save ---
@@ -1589,7 +2167,7 @@ function musicBlockFields(prefix) {
   ];
   return fields.map(([titleId, compId, label]) => `
     <div class="fg-row">
-      <div class="fg"><label>${label}</label><input type="text" id="${prefix}_${titleId}" placeholder="Title"></div>
+      <div class="fg" style="position:relative;"><label>${label}</label><input type="text" id="${prefix}_${titleId}" placeholder="Title" autocomplete="off" data-hymn-search="title" data-pair-composer="${prefix}_${compId}"></div>
       <div class="fg"><label>&nbsp;</label><input type="text" id="${prefix}_${compId}" placeholder="Composer"></div>
     </div>
   `).join('');
