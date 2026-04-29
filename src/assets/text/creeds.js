@@ -61,4 +61,27 @@ I confess one Baptism for the forgiveness of sins
 and I look forward to the resurrection of the dead
 and the life of the world to come. Amen.`;
 
-module.exports = { APOSTLES_CREED, NICENE_CREED };
+// Renewal of Baptismal Vows — used at the Easter Vigil and Easter Sunday in
+// place of the Creed (Roman Missal, Easter Vigil & Mass of Easter Day).
+const RENEWAL_OF_BAPTISMAL_VOWS = `Priest: Do you renounce Satan?
+All: I do.
+
+Priest: And all his works?
+All: I do.
+
+Priest: And all his empty show?
+All: I do.
+
+Priest: Do you believe in God, the Father almighty, Creator of heaven and earth?
+All: I do.
+
+Priest: Do you believe in Jesus Christ, his only Son, our Lord, who was born of the Virgin Mary, suffered death and was buried, rose again from the dead and is seated at the right hand of the Father?
+All: I do.
+
+Priest: Do you believe in the Holy Spirit, the holy catholic Church, the communion of saints, the forgiveness of sins, the resurrection of the body, and life everlasting?
+All: I do.
+
+Priest: And may almighty God, the Father of our Lord Jesus Christ, who has given us new birth by water and the Holy Spirit and bestowed on us forgiveness of our sins, keep us by his grace, in Christ Jesus our Lord, for eternal life.
+All: Amen.`;
+
+module.exports = { APOSTLES_CREED, NICENE_CREED, RENEWAL_OF_BAPTISMAL_VOWS };

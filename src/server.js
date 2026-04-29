@@ -13,6 +13,8 @@ const { getSeasonDefaults, SEASONS, LENTEN_ACCLAMATION_OPTIONS } = require('./co
 const store = require('./store/file-store');
 const userStore = require('./store/user-store');
 const { fetchReadings, TRANSLATIONS } = require('./readings-fetcher');
+const { autoCropNotation } = require('./image-utils');
+const hymnLibrary = require('./store/hymn-library');
 
 const https = require('https');
 
@@ -61,6 +63,13 @@ const coverUpload = makeUploadConfig(
   ext => `cover-${Date.now()}${ext}`,
   ['.png', '.jpg', '.jpeg'],
   10 * 1024 * 1024
+);
+
+const logoUpload = makeUploadConfig(
+  COVERS_DIR,
+  ext => `logo-${Date.now()}${ext}`,
+  ['.png', '.jpg', '.jpeg'],
+  5 * 1024 * 1024
 );
 
 app.use(express.json({ limit: '10mb' }));
@@ -281,6 +290,38 @@ app.get('/api/bible-translations', (req, res) => {
   res.json(TRANSLATIONS.map(({ id, label, source }) => ({ id, label, source })));
 });
 
+// Local hymn library — parish-managed catalog. English-only by default.
+app.get('/api/hymns/search', async (req, res) => {
+  try {
+    const lib = await hymnLibrary.loadLibrary();
+    const results = hymnLibrary.search(lib, req.query.q || '', {
+      englishOnly: req.query.includeNonEnglish !== '1',
+      limit: Math.min(parseInt(req.query.limit, 10) || 20, 100)
+    });
+    res.json({ results, total: lib.entries.length, updatedAt: lib.updatedAt });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/hymns', async (req, res) => {
+  try {
+    const lib = await hymnLibrary.loadLibrary();
+    res.json(lib);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/hymns', requireAuth, requirePermission('manage_settings'), async (req, res) => {
+  try {
+    const saved = await hymnLibrary.saveLibrary(req.body && req.body.entries);
+    res.json(saved);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // Cover image concept suggestions — derived from feast/season + tone.
 // Returns short concepts, a starter image-generation prompt, and search URLs
 // so a designer can pick a stock photo or generate an image.
@@ -369,7 +410,11 @@ app.post('/api/generate-pdf', async (req, res) => {
     const filename = buildFilename(req.body);
     const outputDir = kv.IS_NETLIFY ? '/tmp' : store.getExportsDir();
     const outputPath = path.join(outputDir, filename);
-    const result = await generatePdf(req.body, outputPath, { parishSettings: settings });
+    const bookletSize = (req.body.bookletSize || req.query.bookletSize || 'half-letter');
+    const result = await generatePdf(req.body, outputPath, {
+      parishSettings: settings,
+      bookletSize
+    });
 
     // Mark draft as exported if it has an id
     if (req.body.id) {
@@ -406,14 +451,44 @@ app.post('/api/upload/notation', requireAuth, requirePermission('upload_images')
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const ext = path.extname(req.file.originalname);
   const filename = req.file.filename || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+
+  // Auto-crop white margins so scanned sheet music doesn't waste page space.
+  let cropInfo = { skipped: true };
   if (kv.IS_NETLIFY) {
-    await kv.set('uploads-notation', filename, { data: req.file.buffer.toString('base64'), mime: req.file.mimetype });
+    const result = await autoCropNotation({ buffer: req.file.buffer, mime: req.file.mimetype });
+    const finalBuf = result.buffer || req.file.buffer;
+    await kv.set('uploads-notation', filename, { data: finalBuf.toString('base64'), mime: req.file.mimetype });
+    cropInfo = { cropped: !!result.cropped };
+  } else {
+    const filePath = path.join(NOTATION_DIR, filename);
+    cropInfo = await autoCropNotation({ filePath, mime: req.file.mimetype });
   }
+
   res.json({
     filename,
     url: kv.IS_NETLIFY ? `/api/uploads/notation/${filename}` : `/uploads/notation/${filename}`,
-    originalName: req.file.originalname
+    originalName: req.file.originalname,
+    autoCrop: cropInfo
   });
+});
+
+app.post('/api/upload/logo', requireAuth, requirePermission('manage_settings'), logoUpload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const ext = path.extname(req.file.originalname);
+  const filename = req.file.filename || `logo-${Date.now()}${ext}`;
+  if (kv.IS_NETLIFY) {
+    await kv.set('uploads-covers', filename, { data: req.file.buffer.toString('base64'), mime: req.file.mimetype });
+  }
+  const url = kv.IS_NETLIFY ? `/api/uploads/covers/${filename}` : `/uploads/covers/${filename}`;
+  // Persist as the active logo path in parish settings.
+  try {
+    const settings = await store.loadSettings();
+    settings.logoPath = url;
+    await store.saveSettings(settings);
+  } catch (e) {
+    console.warn('[logo] could not persist logoPath:', e.message);
+  }
+  res.json({ filename, url, originalName: req.file.originalname });
 });
 
 app.post('/api/upload/cover', requireAuth, requirePermission('edit_cover'), coverUpload.single('image'), async (req, res) => {
@@ -734,6 +809,10 @@ nav .user-info strong { color: var(--gold-light); }
   <span class="user-info" id="user-display"></span>
   <button class="btn btn-outline btn-sm" onclick="loadSample()">Load Sample</button>
   <button class="btn btn-outline btn-sm" onclick="saveDraft()">Save Draft</button>
+  <select id="bookletSize" class="btn-sm" style="margin-right:6px;padding:4px 6px;font-size:11px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:3px;" title="Booklet trim size">
+    <option value="half-letter">5.5×8.5 booklet</option>
+    <option value="tabloid">8.5×11 booklet (11×17)</option>
+  </select>
   <button class="btn btn-gold btn-sm" onclick="generatePreview()">Preview</button>
   <button class="btn btn-navy btn-sm" id="btn-export" onclick="generatePdfExport()">Export PDF</button>
   <button class="btn btn-outline btn-sm" onclick="doLogout()" style="color:rgba(255,255,255,0.5);">Logout</button>
@@ -770,7 +849,7 @@ nav .user-info strong { color: var(--gold-light); }
         <p class="section-lock" id="seasonal-lock-note">These are seasonally static and usually locked for several weeks.</p>
         <div class="fg-check"><input type="checkbox" id="gloria"><label for="gloria">Include Gloria</label></div>
         <div class="fg-row">
-          <div class="fg"><label>Creed</label><select id="creedType"><option value="nicene">Nicene Creed</option><option value="apostles">Apostles' Creed</option></select></div>
+          <div class="fg"><label>Creed</label><select id="creedType"><option value="nicene">Nicene Creed</option><option value="apostles">Apostles' Creed</option><option value="baptismal_vows">Renewal of Baptismal Vows</option></select></div>
           <div class="fg"><label>Entrance Type</label><select id="entranceType"><option value="processional">Processional Hymn</option><option value="antiphon">Entrance Antiphon</option></select></div>
         </div>
         <div class="fg"><label>Holy Holy Setting</label><input type="text" id="holyHolySetting" placeholder="e.g., Mass of St. Theresa"></div>
@@ -954,6 +1033,20 @@ nav .user-info strong { color: var(--gold-light); }
         </div>
       </div>
     </div>
+    <div class="form-section"><div class="form-section-hdr">Cover Page — Persistent Branding</div>
+      <div class="form-section-body">
+        <p style="font-size:11px;color:var(--gray);margin-bottom:8px;">These appear on every booklet's cover. The logo (PNG/JPG, transparent background recommended) replaces the default cross. Standing tagline appears under the parish name.</p>
+        <div class="fg"><label>Parish Logo</label>
+          <div class="upload-area" onclick="document.getElementById('logoFileInput').click()">
+            <input type="file" id="logoFileInput" accept="image/png,image/jpeg" onchange="uploadLogo(this)">
+            <p style="font-size:11px;color:var(--gray);">Click to upload parish logo</p>
+          </div>
+          <div id="logo-preview" style="margin-top:6px;"></div>
+        </div>
+        <div class="fg"><label>Cover Tagline (appears under parish name)</label><input type="text" id="s_coverTagline" placeholder="e.g., A Catholic Community in the Heart of the City"></div>
+        <input type="hidden" id="s_logoPath">
+      </div>
+    </div>
     <div class="form-section"><div class="form-section-hdr">Cover Page Info Blocks</div>
       <div class="form-section-body">
         <div class="fg"><label>Connect Blurb</label><textarea id="s_connectBlurb" rows="2"></textarea></div>
@@ -973,6 +1066,16 @@ nav .user-info strong { color: var(--gold-light); }
       <div class="form-section-body">
         <div class="fg-check"><input type="checkbox" id="s_requirePastorApproval"><label for="s_requirePastorApproval">Require pastor approval before PDF export</label></div>
         <p style="font-size:11px;color:var(--gray);margin-top:4px;">When enabled, drafts must be submitted for review and approved by the pastor before they can be exported as PDF.</p>
+      </div>
+    </div>
+    <div class="form-section"><div class="form-section-hdr">Hymn Library (English only)</div>
+      <div class="form-section-body">
+        <p style="font-size:11px;color:var(--gray);margin-bottom:6px;">Music staff can search this catalog when filling in title fields. Edit as JSON; one object per hymn with fields: title, tune, composer, key, meter, source, notes.</p>
+        <div class="fg"><label>Library Entries (JSON)</label>
+          <textarea id="s_hymnLibrary" rows="14" style="font-family: monospace; font-size: 11px;"></textarea>
+        </div>
+        <button type="button" class="btn btn-outline btn-sm" onclick="saveHymnLibrary()">Save Library</button>
+        <span id="s_hymnLibraryStatus" style="font-size:11px;color:var(--gray);margin-left:8px;"></span>
       </div>
     </div>
     <button class="btn btn-gold" onclick="saveAdminSettings()" style="margin-top:12px;">Save Settings</button>
@@ -1535,6 +1638,24 @@ async function loadNotationList() {
   } catch(e) {}
 }
 
+async function uploadLogo(input) {
+  if (!input.files || !input.files[0]) return;
+  const formData = new FormData();
+  formData.append('image', input.files[0]);
+  try {
+    const res = await fetch('/api/upload/logo', {
+      method: 'POST', headers: { 'x-session-token': _sessionToken }, body: formData
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
+    sv('s_logoPath', data.url);
+    document.getElementById('logo-preview').innerHTML = '<img src="' + data.url + '" class="image-preview" style="max-height:80px;background:#fff;padding:4px;border:1px solid var(--border);" alt="logo">';
+    if (window._parishSettings) window._parishSettings.logoPath = data.url;
+    toast('Parish logo uploaded', 'success');
+  } catch(e) { toast('Upload error', 'error'); }
+  input.value = '';
+}
+
 async function uploadCover(input) {
   if (!input.files || !input.files[0]) return;
   const formData = new FormData();
@@ -1600,6 +1721,8 @@ async function generatePdfExport() {
   setStatus('Generating PDF...');
   try {
     const data = buildData();
+    const sel = document.getElementById('bookletSize');
+    if (sel) data.bookletSize = sel.value;
     const res = await fetch('/api/generate-pdf', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken }, body: JSON.stringify(data) });
     if (!res.ok) {
       const result = await res.json();
@@ -1715,14 +1838,48 @@ async function requestChanges(id) {
 }
 
 // --- Admin Settings ---
-const settingsFields = ['parishName','parishAddress','parishPhone','parishUrl','connectBlurb','nurseryBlurb','restroomsBlurb','prayerBlurb','onelicenseNumber','copyrightShort','copyrightFull'];
+const settingsFields = ['parishName','parishAddress','parishPhone','parishUrl','coverTagline','logoPath','connectBlurb','nurseryBlurb','restroomsBlurb','prayerBlurb','onelicenseNumber','copyrightShort','copyrightFull'];
 const settingsCheckboxes = ['requirePastorApproval'];
 async function loadAdminSettings() {
   const res = await fetch('/api/settings');
   const s = await res.json();
   settingsFields.forEach(f => sv('s_' + f, s[f]));
   settingsCheckboxes.forEach(f => sc('s_' + f, s[f]));
+  if (s.logoPath) {
+    const lp = document.getElementById('logo-preview');
+    if (lp) lp.innerHTML = '<img src="' + s.logoPath + '" class="image-preview" style="max-height:80px;background:#fff;padding:4px;border:1px solid var(--border);" alt="logo">';
+  }
   window._parishSettings = s;
+  try {
+    const hr = await fetch('/api/hymns');
+    const lib = await hr.json();
+    sv('s_hymnLibrary', JSON.stringify(lib.entries || [], null, 2));
+  } catch (e) {}
+}
+
+async function saveHymnLibrary() {
+  const status = document.getElementById('s_hymnLibraryStatus');
+  let entries;
+  try {
+    entries = JSON.parse(v('s_hymnLibrary') || '[]');
+  } catch (e) {
+    if (status) status.textContent = 'Invalid JSON: ' + e.message;
+    toast('Invalid JSON', 'error');
+    return;
+  }
+  try {
+    const res = await fetch('/api/hymns', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken },
+      body: JSON.stringify({ entries })
+    });
+    const data = await res.json();
+    if (!res.ok) { if (status) status.textContent = data.error || 'Save failed'; toast(data.error || 'Save failed', 'error'); return; }
+    if (status) status.textContent = 'Saved ' + data.entries.length + ' hymns';
+    toast('Hymn library saved', 'success');
+  } catch (e) {
+    if (status) status.textContent = 'Error: ' + e.message;
+  }
 }
 async function saveAdminSettings() {
   const s = {};
@@ -1859,6 +2016,77 @@ async function fetchReadingsFromUsccb() {
 
 initBibleTranslations();
 suggestNextLiturgicalDate();
+initHymnAutocomplete();
+
+// --- Hymn library autocomplete ---
+// Attach a typeahead to every input flagged with [data-hymn-search="title"].
+// Results show title, tune, composer, and key so the user can choose the
+// arrangement that fits the parish.
+let _hymnDebounce;
+function initHymnAutocomplete() {
+  document.addEventListener('input', e => {
+    const t = e.target;
+    if (!t || t.dataset.hymnSearch !== 'title') return;
+    clearTimeout(_hymnDebounce);
+    const q = t.value.trim();
+    if (!q) { closeHymnDropdown(); return; }
+    _hymnDebounce = setTimeout(() => runHymnSearch(t, q), 150);
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest || !e.target.closest('.hymn-dropdown') && !(e.target.dataset && e.target.dataset.hymnSearch)) {
+      closeHymnDropdown();
+    }
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeHymnDropdown();
+  });
+}
+
+async function runHymnSearch(input, q) {
+  try {
+    const res = await fetch('/api/hymns/search?q=' + encodeURIComponent(q) + '&limit=8');
+    const data = await res.json();
+    showHymnDropdown(input, data.results || []);
+  } catch (e) { /* ignore */ }
+}
+
+function closeHymnDropdown() {
+  document.querySelectorAll('.hymn-dropdown').forEach(d => d.remove());
+}
+
+function showHymnDropdown(input, results) {
+  closeHymnDropdown();
+  if (!results.length) return;
+  const rect = input.getBoundingClientRect();
+  const dd = document.createElement('div');
+  dd.className = 'hymn-dropdown';
+  dd.style.cssText = 'position:absolute;z-index:1000;background:#fff;border:1px solid var(--border);border-radius:3px;box-shadow:0 2px 8px rgba(0,0,0,0.1);max-height:240px;overflow-y:auto;font-size:11px;width:' + Math.max(320, rect.width) + 'px;';
+  dd.style.left = (window.scrollX + rect.left) + 'px';
+  dd.style.top  = (window.scrollY + rect.bottom + 2) + 'px';
+  results.forEach(h => {
+    const row = document.createElement('div');
+    row.style.cssText = 'padding:6px 8px;border-bottom:1px solid #eee;cursor:pointer;';
+    row.onmouseover = () => row.style.background = '#f5f0e6';
+    row.onmouseout  = () => row.style.background = '';
+    row.innerHTML =
+      '<div style="font-weight:600;">' + esc(h.title) + '</div>' +
+      '<div style="color:var(--gray);">Tune: ' + esc(h.tune || '—') +
+      ' · Key: ' + esc(h.key || '—') +
+      (h.composer ? ' · ' + esc(h.composer) : '') + '</div>';
+    row.onclick = () => {
+      input.value = h.title;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const composerId = input.dataset.pairComposer;
+      if (composerId && h.composer) {
+        const cinp = document.getElementById(composerId);
+        if (cinp && !cinp.value) { cinp.value = h.composer; cinp.dispatchEvent(new Event('input', { bubbles: true })); }
+      }
+      closeHymnDropdown();
+    };
+    dd.appendChild(row);
+  });
+  document.body.appendChild(dd);
+}
 
 // --- Auto-save ---
 let _autoSaveTimer;
@@ -1939,7 +2167,7 @@ function musicBlockFields(prefix) {
   ];
   return fields.map(([titleId, compId, label]) => `
     <div class="fg-row">
-      <div class="fg"><label>${label}</label><input type="text" id="${prefix}_${titleId}" placeholder="Title"></div>
+      <div class="fg" style="position:relative;"><label>${label}</label><input type="text" id="${prefix}_${titleId}" placeholder="Title" autocomplete="off" data-hymn-search="title" data-pair-composer="${prefix}_${compId}"></div>
       <div class="fg"><label>&nbsp;</label><input type="text" id="${prefix}_${compId}" placeholder="Composer"></div>
     </div>
   `).join('');

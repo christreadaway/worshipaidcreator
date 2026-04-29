@@ -65,7 +65,10 @@ const SEASON_RULES = {
   },
   easter: {
     gloria: true,
-    creedType: 'apostles',      // Worksheet: Apostles' during Easter Season
+    creedType: 'apostles',      // Worksheet: Apostles' during Easter Season.
+                                // Easter Sunday/Vigil itself uses Renewal of
+                                // Baptismal Vows; the user can pick that
+                                // override from the Creed dropdown.
     entranceType: 'processional',
     holyHolySetting: 'Mass of St. Theresa',
     mysteryOfFaithSetting: 'Mass of St. Theresa',

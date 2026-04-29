@@ -1,14 +1,14 @@
 # Worship Aid Generator — Product Specification
 
-**Version:** 1.0.0
-**Last Updated:** February 28, 2026
-**Status:** Feature-Complete (v1.0)
+**Version:** 1.1.0
+**Last Updated:** April 29, 2026
+**Status:** Active development — replacing Microsoft Publisher in fall 2026
 
 ---
 
 ## Overview
 
-A Node.js web application that automates weekly creation of 8-page Catholic Mass worship booklet PDFs (5.5" x 8.5" half-letter, saddle-stitched). Staff enters readings + music selections via a web form, the app validates layout constraints, and generates a print-ready PDF — reducing a multi-hour manual process to under 30 minutes.
+A Node.js web application that automates weekly creation of Catholic Mass worship booklet PDFs at two trim sizes (5.5" × 8.5" half-letter or 8.5" × 11" tabloid-folded), saddle-stitched. Staff enters readings + music selections via a web form, the app validates layout constraints, auto-fetches Sunday and daily readings from USCCB, applies seasonal defaults, and generates a print-ready PDF — replacing the previous Microsoft Publisher workflow.
 
 ---
 
@@ -33,9 +33,11 @@ A Node.js web application that automates weekly creation of 8-page Catholic Mass
 
 ```
 src/
-  server.js               Express server + embedded SPA (~720 lines)
-  template-renderer.js    HTML booklet renderer for live preview (~540 lines)
-  pdf-generator.js        PDFKit-based PDF generator (~476 lines)
+  server.js               Express server + embedded SPA
+  template-renderer.js    HTML booklet renderer for live preview
+  pdf-generator.js        PDFKit-based PDF generator (half-letter + tabloid)
+  readings-fetcher.js     USCCB scraping + bible-api.com translation client
+  image-utils.js          Sharp-based notation auto-crop
   validator.js            AJV validation + overflow detection
   schema.js               JSON Schema for worship aid input
   music-formatter.js      Per-mass-time music consolidation logic
@@ -47,9 +49,10 @@ src/
     kv.js                 KV storage abstraction (filesystem or Netlify Blobs)
     file-store.js         Async persistence (drafts, settings)
     user-store.js         User management, sessions, role-based access
+    hymn-library.js       Parish-managed hymn catalog (English-only by default)
   assets/
     logo/jerusalem-cross.svg
-    text/creeds.js        Nicene & Apostles' Creed
+    text/creeds.js        Nicene, Apostles' Creed, Renewal of Baptismal Vows
     text/mass-texts.js    Confiteor, Lord's Prayer, rubrics, etc.
     text/copyright.js     Default copyright boilerplate
   tests/
@@ -57,6 +60,7 @@ src/
     seasons.test.js       8 tests — 5 seasons + applySeasonDefaults
     template-renderer.test.js  28 tests — 8 pages, seasons, creed, readings, music
     pdf-generator.test.js      9 tests — filename, file creation, headers, creed, settings
+    pdf-layout.test.js         12 tests — layout correctness for both booklet sizes
     server.test.js        14 tests — API endpoints, drafts CRUD, settings
 data/
   drafts/                 Saved worship aid drafts (UUID.json)
@@ -131,11 +135,15 @@ Line estimation: character count / 65 chars per line. Overflow warnings identify
 
 ### 7. PDF Export
 
-- **Format:** 5.5" x 8.5" half-letter (396x612pt)
-- **Engine:** PDFKit (direct page construction, no headless browser)
-- **Filename convention:** `YYYY_MM_DD__Feast_Name.pdf`
-- **Metadata:** Title, Author, Subject, CreationDate embedded in PDF info dict
-- **Typography:** Helvetica family (PDF-native), navy/burgundy/gold color scheme
+- **Trim sizes:**
+  - `half-letter` — 5.5" × 8.5" (396×612pt). 0.5" margins (3.5×7.5 content). Print on letter (8.5×11), saddle-stitched.
+  - `tabloid` — 8.5" × 11" (612×792pt). 1" margins (6.5×9 content). Print on 11×17, saddle-stitched. Fonts and spacing scale by 1.294× for readability at the larger trim.
+- **Imposition:** Output is the finished booklet pages in reading order. Saddle-stitch imposition is delegated to the printer driver's "booklet print" / "fold booklet" mode (Acrobat, macOS Print, modern Windows print dialogs handle this natively).
+- **Engine:** PDFKit (direct page construction, no headless browser).
+- **Filename convention:** `YYYY_MM_DD__Feast_Name.pdf`.
+- **Metadata:** Title, Author, Subject, CreationDate embedded in PDF info dict.
+- **Typography:** Helvetica family (PDF-native), navy/burgundy/gold color scheme.
+- **Persistent cover branding:** Parish logo (uploaded under Settings) replaces the default cross on every cover; parish name and tagline appear above the feast name.
 
 ### 8. HTML Preview
 
@@ -157,10 +165,46 @@ Line estimation: character count / 65 chars per line. Overflow warnings identify
 
 Admin-editable fields stored in `data/settings/parish-settings.json`:
 - Parish name, address, phone, URL
+- Cover persistent branding: logo (PNG/JPG upload), cover tagline
 - 4 info blurbs (Connect, Nursery, Restrooms, Prayer)
 - OneLicense number
 - Short copyright (Page 7) and full copyright (Page 8)
 - Font and minimum font size preferences
+
+### 11. USCCB Readings Auto-Fetch
+
+- `/api/readings?date=YYYY-MM-DD&translation=NABRE` scrapes `bible.usccb.org/bible/readings/MMDDYY.cfm` and returns parsed first/second readings, psalm (refrain split from verses), gospel acclamation verse, and gospel.
+- Bible translation dropdown: NABRE (Lectionary, default, from USCCB), Douay-Rheims, KJV, World English Bible, Bible in Basic English, ASV. Non-NABRE picks re-fetch the citations from bible-api.com but keep Lectionary-only items (psalm refrain, acclamation verse) intact.
+- "Fetch from USCCB" button populates all reading fields from the liturgical date in one click.
+
+### 12. Liturgical Calendar Automation
+
+- Date input defaults to the next upcoming Sunday on page load.
+- Changing the date auto-detects the season using a Computus-based Easter calculator and Lent/Easter/Advent/Christmas/Ordinary windows; seasonal defaults are then applied automatically.
+- Children's Liturgy of the Word: ON during the school year, OFF for summer (Jun–Aug), school Christmas break (Dec 22–Jan 6), and the Christmas/Easter seasons themselves. Manual toggle becomes a sticky override; loading a saved draft respects the stored value.
+
+### 13. Cover Image Suggestions
+
+- Tone dropdown (reverent, joyful, solemn, hopeful, contemplative, triumphant) plus a "Suggest covers" button.
+- Returns four seasonal concept ideas with copy-ready image-generation prompts and links to stock searches (Unsplash, Pexels, Wikimedia Commons).
+
+### 14. Hymn Library (English Only)
+
+- Parish-managed catalog stored in KV (`hymn-library/parish-default`). Fields per entry: title, tune name, composer, key, meter, source/hymnal, notes, language (defaults to `en`).
+- Seeded with 20 common English Catholic hymns covering Public Domain + GIA/OCP/Hope etc. Editable as JSON in the Settings page.
+- Title fields in every Music block carry a typeahead that searches the library and shows tune name and key signature inline so the user can pick the arrangement that fits the parish. Selecting an entry auto-fills the composer field if blank.
+- API: `GET /api/hymns/search?q=…` (English by default; pass `includeNonEnglish=1` to include other languages), `GET /api/hymns`, `PUT /api/hymns` (admin only).
+
+### 15. Notation Auto-Crop
+
+- Uploaded notation scans (PNG/JPG) are automatically trimmed of surrounding white space using Sharp's `.trim()` so the rendered booklet stays tight around the music.
+- SVGs and any image Sharp cannot process are passed through unchanged.
+
+### 16. Creed — Three Options
+
+- Nicene Creed (default, Ordinary/Christmas)
+- Apostles' Creed (Advent, Lent, Easter Season per parish worksheet)
+- Renewal of Baptismal Vows (Easter Vigil and Easter Sunday Mass — full priest/all dialogue text)
 
 ---
 
@@ -172,16 +216,29 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 | GET | `/history` | Serve SPA (history view) |
 | GET | `/admin` | Serve SPA (settings view) |
 | GET | `/api/season-defaults/:season` | Season auto-rules |
+| GET | `/api/lenten-acclamations` | Lenten acclamation options |
+| GET | `/api/bible-translations` | Translations for the readings dropdown |
+| GET | `/api/readings?date&translation` | USCCB readings auto-fetch |
+| POST | `/api/cover-suggestions` | Cover image concept ideas + search links |
 | POST | `/api/validate` | Validate input + return overflow warnings |
 | POST | `/api/preview` | Generate HTML preview |
-| POST | `/api/generate-pdf` | Generate PDF, return download URL |
+| POST | `/api/generate-pdf` | Generate PDF (accepts `bookletSize`), return download URL |
 | POST | `/api/drafts` | Save draft |
 | GET | `/api/drafts` | List all drafts |
 | GET | `/api/drafts/:id` | Load draft by ID |
 | DELETE | `/api/drafts/:id` | Delete draft |
 | POST | `/api/drafts/:id/duplicate` | Duplicate draft |
+| POST | `/api/drafts/:id/submit-for-review` | Move draft to `review` |
+| POST | `/api/drafts/:id/approve` | Pastor approval |
+| POST | `/api/drafts/:id/request-changes` | Pastor requests changes |
 | GET | `/api/settings` | Load parish settings |
 | PUT | `/api/settings` | Save parish settings |
+| POST | `/api/upload/notation` | Upload notation scan (auto-cropped) |
+| POST | `/api/upload/cover` | Upload cover image |
+| POST | `/api/upload/logo` | Upload parish logo (admin only) |
+| GET | `/api/hymns` | Get hymn library |
+| GET | `/api/hymns/search?q&limit&includeNonEnglish` | Typeahead search |
+| PUT | `/api/hymns` | Save hymn library (admin only) |
 | GET | `/api/sample` | Load sample data |
 | GET | `/exports/:filename` | Static file serving for exported PDFs |
 
@@ -189,7 +246,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 
 ## Test Coverage
 
-**115 tests across 6 test files. All passing.**
+**127 tests across 7 test files. All passing (one pre-existing user-store flaky timestamp test occasionally collides between consecutive runs).**
 
 | Suite | Tests | What It Covers |
 |---|---|---|
@@ -282,14 +339,43 @@ Failed logins show available usernames instead of a generic error.
 
 ---
 
-## Not Yet Implemented (Deferred to v1.1+)
+## Future Build Requirements (Backlog)
 
-- Saddle-stitch PDF imposition (booklet page ordering for printer)
-- Puppeteer-based HTML-to-PDF rendering (for pixel-perfect font matching)
-- Auto-populate readings from USCCB lectionary API
-- React + Tailwind frontend rebuild
-- Mobile-optimized input form
-- Multi-parish support
-- Email delivery to printer
-- Bilingual output (English/Spanish)
-- Special liturgies (Holy Week, weddings, funerals)
+Captured during the Publisher-replacement pass; not yet implemented.
+
+### Music & Licensing
+- **OneLicense automation** — OneLicense.net publishes no public API and the site is Cloudflare-protected (returns 403 to any non-browser request). Recommended path:
+  1. Build a **Hymnary.org client** (free public API at `hymnary.org/data_api`, no auth, JSON; returns title, tune, meter, composer, scripture refs, hymnal instances). Cache aggressively; respect attribution.
+  2. Extend the local hymn library to a parish-managed `arrangements` table (per-tune × hymnal × key × accompaniment file) so the user can pick a specific arrangement.
+  3. Generate a **OneLicense reporting CSV exporter** that lists every hymn used in a published booklet, ready for upload into OneLicense's reporting tool.
+- **Version picker** — when OneLicense or Hymnary returns multiple versions of the same song (different keys, arrangements, accompaniments), surface them in a comparison panel showing key, hymnal, page number, and any notes so the user can choose the one to use.
+- **Longer hymns overflow handling** — when a hymn's notation is too long to fit a single page, automatically split across pages or auto-scale.
+- **Per-arrangement key display** — already shown in v1 hymn library; needs to integrate with OneLicense/Hymnary lookup once those land.
+
+### PDF Output
+- **True booklet imposition** built into the app (4-up sheets in saddle-stitch order) so the file is print-ready without a printer-driver "fold booklet" step. Currently delegated to print dialog.
+- **Auto-fit** — when content overflows the standard 8 pages, automatically push to 12 or 16 pages (multiples of 4 for saddle stitch) rather than letting PDFKit add unnumbered pages.
+- **Side-by-side Publisher comparison** to verify pixel parity for parishes migrating from Publisher.
+
+### Wedding / Funeral / Memorial Variants
+- Distinct booklet template with these features:
+  - Parish-defined option lists for hymns and readings (couple/family chooses from approved menus).
+  - Cover photo of the deceased / couple.
+  - Back-page obituary or biography.
+  - **Ritual-book introductions** — text from the Order of Christian Funerals / Order of Celebrating Matrimony (general introduction to the rite, etc.) with editable fill-in blocks for the lead to add context about what's happening in the Mass.
+  - **Communion etiquette note** for non-Catholic attendees (what to do at communion, when to come forward for a blessing, posture cues, etc.) — boilerplate parish text editable per booklet.
+
+### Workflow
+- **Proofing/review process** — currently a draft is "approved or not." Need a richer round-trip where the proof is shared, marked up with comments, and revised before finalization. Worth a design session.
+- **Pastor approval round-trip** comments / changelog (already partial via `request-changes` endpoint).
+- **Email delivery to printer**.
+- **Multi-parish support** with per-parish settings, libraries, logos.
+
+### Internationalization (Deferred)
+- App is English-only for v1. Spanish hymns and readings are out of scope; the hymn library filters to `language === 'en'` by default.
+
+### Other Backlog
+- Saddle-stitch imposition built-in.
+- Puppeteer-based HTML-to-PDF for pixel-perfect font matching.
+- React + Tailwind frontend rebuild.
+- Mobile-optimized input form.
