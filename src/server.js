@@ -1579,7 +1579,7 @@ async function suggestCoverImages() {
       '<div style="border:1px solid var(--border);border-radius:3px;padding:6px 8px;margin-bottom:6px;">' +
         '<div style="font-weight:600;font-size:12px;">' + esc(c.title) + '</div>' +
         '<div style="font-size:11px;color:var(--gray);margin-top:2px;">' + esc(c.prompt) + '</div>' +
-        '<button type="button" style="margin-top:4px;font-size:10px;" onclick="navigator.clipboard.writeText(' + JSON.stringify(c.prompt) + ');toast(\'Prompt copied\',\'success\');">Copy prompt</button>' +
+        '<button type="button" style="margin-top:4px;font-size:10px;" onclick="navigator.clipboard.writeText(' + JSON.stringify(c.prompt) + ');toast(\\'Prompt copied\\',\\'success\\');">Copy prompt</button>' +
       '</div>'
     )).join('');
     const linkHtml = data.searchLinks.map(s => (
