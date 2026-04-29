@@ -276,8 +276,10 @@ app.delete('/api/users/:id', requireAuth, requirePermission('manage_users'), asy
 
 // Season defaults
 app.get('/api/season-defaults/:season', (req, res) => {
-  const defaults = getSeasonDefaults(req.params.season);
-  res.json(defaults);
+  if (!SEASONS.includes(req.params.season)) {
+    return res.status(400).json({ error: 'Unknown season: ' + req.params.season + '. Must be one of: ' + SEASONS.join(', ') });
+  }
+  res.json(getSeasonDefaults(req.params.season));
 });
 
 // Lenten acclamation options
