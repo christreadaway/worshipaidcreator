@@ -58,17 +58,24 @@ async function saveLibrary(entries) {
   return record;
 }
 
+function normalize(s) {
+  // Lowercase + collapse curly/straight quotes so "eagle's" matches "eagle’s"
+  return String(s || '').toLowerCase()
+    .replace(/[‘’ʼ]/g, "'")
+    .replace(/[“”]/g, '"');
+}
+
 function search(library, query, opts = {}) {
-  const q = String(query || '').trim().toLowerCase();
+  const q = normalize(query).trim();
   const englishOnly = opts.englishOnly !== false;
   const limit = opts.limit || 20;
   const entries = (library.entries || []).filter(e => englishOnly ? (e.language || 'en') === 'en' : true);
   if (!q) return entries.slice(0, limit);
   const results = [];
   for (const e of entries) {
-    const title = (e.title || '').toLowerCase();
-    const tune  = (e.tune || '').toLowerCase();
-    const composer = (e.composer || '').toLowerCase();
+    const title = normalize(e.title);
+    const tune  = normalize(e.tune);
+    const composer = normalize(e.composer);
     let score = 0;
     if (title.startsWith(q))       score += 100;
     else if (title.includes(q))    score += 50;

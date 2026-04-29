@@ -11,4 +11,6 @@ data/exports/
 .DS_Store
 .env
 data/settings/
+data/hymn-library/
+data/hymn-library-local.json
 public/

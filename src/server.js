@@ -2151,13 +2151,14 @@ function invalidateHymnCache() { _hymnCache = null; _hymnCachePromise = null; }
 
 function searchHymnsLocal(q, limit) {
   const entries = _hymnCache || [];
-  const query = String(q || '').trim().toLowerCase();
+  const norm = s => String(s || '').toLowerCase().replace(/[‘’ʼ]/g, "'").replace(/[“”]/g, '"');
+  const query = norm(q).trim();
   if (!query) return entries.slice(0, limit);
   const scored = [];
   for (const e of entries) {
-    const title = (e.title || '').toLowerCase();
-    const tune  = (e.tune || '').toLowerCase();
-    const composer = (e.composer || '').toLowerCase();
+    const title = norm(e.title);
+    const tune  = norm(e.tune);
+    const composer = norm(e.composer);
     let score = 0;
     if (title.startsWith(query))    score += 100;
     else if (title.includes(query)) score += 50;
