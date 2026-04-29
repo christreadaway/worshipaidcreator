@@ -1877,6 +1877,8 @@ async function saveHymnLibrary() {
     if (!res.ok) { if (status) status.textContent = data.error || 'Save failed'; toast(data.error || 'Save failed', 'error'); return; }
     if (status) status.textContent = 'Saved ' + data.entries.length + ' hymns';
     toast('Hymn library saved', 'success');
+    invalidateHymnCache();
+    getHymnCache();
   } catch (e) {
     if (status) status.textContent = 'Error: ' + e.message;
   }
@@ -2022,15 +2024,57 @@ initHymnAutocomplete();
 // Attach a typeahead to every input flagged with [data-hymn-search="title"].
 // Results show title, tune, composer, and key so the user can choose the
 // arrangement that fits the parish.
-let _hymnDebounce;
+//
+// The library is fetched ONCE at startup and cached in memory. Every keystroke
+// filters the cache synchronously — no debounce, no network call, instant.
+let _hymnCache = null;
+let _hymnCachePromise = null;
+
+function getHymnCache() {
+  if (_hymnCache) return Promise.resolve(_hymnCache);
+  if (_hymnCachePromise) return _hymnCachePromise;
+  _hymnCachePromise = fetch('/api/hymns')
+    .then(r => r.ok ? r.json() : { entries: [] })
+    .then(lib => {
+      _hymnCache = (lib && Array.isArray(lib.entries)) ? lib.entries.filter(e => (e.language || 'en') === 'en') : [];
+      return _hymnCache;
+    })
+    .catch(() => { _hymnCache = []; return _hymnCache; });
+  return _hymnCachePromise;
+}
+
+function invalidateHymnCache() { _hymnCache = null; _hymnCachePromise = null; }
+
+function searchHymnsLocal(q, limit) {
+  const entries = _hymnCache || [];
+  const query = String(q || '').trim().toLowerCase();
+  if (!query) return entries.slice(0, limit);
+  const scored = [];
+  for (const e of entries) {
+    const title = (e.title || '').toLowerCase();
+    const tune  = (e.tune || '').toLowerCase();
+    const composer = (e.composer || '').toLowerCase();
+    let score = 0;
+    if (title.startsWith(query))    score += 100;
+    else if (title.includes(query)) score += 50;
+    if (tune.startsWith(query))     score += 80;
+    else if (tune.includes(query))  score += 40;
+    if (composer.includes(query))   score += 10;
+    if (score > 0) scored.push({ e, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map(r => r.e);
+}
+
 function initHymnAutocomplete() {
+  // Pre-warm the cache so the first keystroke is instant
+  getHymnCache();
   document.addEventListener('input', e => {
     const t = e.target;
     if (!t || t.dataset.hymnSearch !== 'title') return;
-    clearTimeout(_hymnDebounce);
     const q = t.value.trim();
     if (!q) { closeHymnDropdown(); return; }
-    _hymnDebounce = setTimeout(() => runHymnSearch(t, q), 150);
+    runHymnSearch(t, q);
   });
   document.addEventListener('click', e => {
     if (!e.target.closest || !e.target.closest('.hymn-dropdown') && !(e.target.dataset && e.target.dataset.hymnSearch)) {
@@ -2043,11 +2087,16 @@ function initHymnAutocomplete() {
 }
 
 async function runHymnSearch(input, q) {
-  try {
-    const res = await fetch('/api/hymns/search?q=' + encodeURIComponent(q) + '&limit=8');
-    const data = await res.json();
-    showHymnDropdown(input, data.results || []);
-  } catch (e) { /* ignore */ }
+  if (_hymnCache) {
+    showHymnDropdown(input, searchHymnsLocal(q, 8));
+    return;
+  }
+  // Cache still loading on first keystroke — wait, then filter
+  await getHymnCache();
+  // The user may have kept typing; re-read the input value
+  const latestQ = input.value.trim();
+  if (!latestQ) { closeHymnDropdown(); return; }
+  showHymnDropdown(input, searchHymnsLocal(latestQ, 8));
 }
 
 function closeHymnDropdown() {
