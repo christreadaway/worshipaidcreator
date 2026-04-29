@@ -185,3 +185,73 @@ Breakdown:
 4. **Deploy to Netlify** — Connect repo, configure custom domain (worshipaid.modernizecatholic.com), set up GoDaddy CNAME.
 5. **Puppeteer integration** — For pixel-perfect PDF output matching the HTML preview exactly.
 6. **Re-enable security for production** — See Production Readiness Checklist above.
+
+---
+
+## Session 3 (April 29, 2026): Publisher-Replacement Pass
+
+**Branch:** `claude/document-run-instructions-gIv6n`
+
+**Context:** Microsoft is discontinuing Publisher in fall 2026. This session expanded the app to replace it: USCCB integration, additional booklet size, parish branding, hymn library, and a long list of captured future requirements.
+
+### Shipped (committed and pushed)
+
+Commits on this branch:
+- `9d6f4a8` Add USCCB readings auto-fetch with Bible translation dropdown
+- `f09e0bf` Auto-defaults for liturgical date, season, Children's Liturgy + cover image suggestions
+- `d29febe` Add tabloid booklet size, parish branding, hymn library, notation auto-crop, third creed option
+
+Feature summary:
+1. **USCCB readings auto-fetch** — `src/readings-fetcher.js` scrapes `bible.usccb.org/bible/readings/MMDDYY.cfm` and parses first/second readings, psalm (refrain split from verses), gospel acclamation verse, and gospel. `/api/readings?date&translation` endpoint. "Fetch from USCCB" button in the Readings section.
+2. **Bible translation dropdown** — NABRE (default), Douay-Rheims, KJV, World English Bible, Bible in Basic English, ASV. Non-NABRE picks re-fetch citations from bible-api.com but keep Lectionary-only items intact.
+3. **Liturgical date / season automation** — Date defaults to next Sunday on load; changing the date detects season via Computus-based Easter calculator and applies seasonal defaults.
+4. **Children's Liturgy auto-defaults** — ON during the school year; OFF for summer (Jun–Aug), school Christmas break (Dec 22–Jan 6), and Christmas/Easter seasons. Manual toggle is a sticky override; saved drafts respect stored value.
+5. **Cover image suggestions** — Tone dropdown (reverent / joyful / solemn / hopeful / contemplative / triumphant) returns four seasonal concept ideas with copy-ready image-generation prompts and stock-search links (Unsplash, Pexels, Wikimedia Commons).
+6. **Tabloid booklet size** — `/api/generate-pdf` now accepts `bookletSize`. Half-letter (5.5×8.5, 0.5" margins) and tabloid (8.5×11, 1" margins, fonts scaled 1.294×). Tabloid prints on 11×17 saddle-stitched. Imposition is delegated to printer driver booklet-print mode.
+7. **PDF generator refactor** — Layout values are now instance properties keyed off `bookletSize`. Generator returns `pageMaxY[]` and `pageCount` for layout introspection.
+8. **PDF layout test suite** — `src/tests/pdf-layout.test.js` (12 tests) verifies page count, dimensions, content bounds, and long-content stress for both sizes.
+9. **`.fg-row` alignment fix** — Wrapped labels (e.g. "Choral Anthem (Concluding)") no longer push the right-column input out of line.
+10. **Persistent cover branding** — Parish logo upload (admin only) replaces default cross on every cover. Cover tagline appears under parish name. Settings are persisted as part of parish settings (`logoPath`, `coverTagline`).
+11. **Hymn library v1** — Parish-managed catalog (`src/store/hymn-library.js`) seeded with 20 English Catholic hymns. Fields: title, tune, composer, key, meter, source, language. `/api/hymns`, `/api/hymns/search`, `PUT /api/hymns`. Title fields in every Music block carry a typeahead surfacing tune name and key signature so the user can pick the right arrangement; selecting auto-fills composer when blank. Editable as JSON in Settings.
+12. **Notation auto-crop** — Sharp-based `src/image-utils.js` trims whitespace from uploaded notation scans. Wired into `/api/upload/notation` for both local and Netlify Blobs storage paths.
+13. **Renewal of Baptismal Vows** — Third creed option for Easter Vigil and Easter Sunday. Schema enum, UI dropdown, and PDF generator updated.
+14. **OneLicense investigation** — Confirmed no public API exists (Cloudflare-blocked, no developer portal, no GitHub integrations). Recommended path captured in `product_spec.md` Future Build Requirements: Hymnary.org client + arrangements table + OneLicense reporting CSV exporter.
+15. **Documentation** — `product_spec.md` and `worship_aid_generator_PRD.md` bumped to v1.1. New "Future Build Requirements" section captures every backlog item that surfaced.
+
+### Test status at end of session
+- 127 total tests, 126 passing.
+- The single failing test (`user-store.test.js > "should authenticate by display name first word"`) is a **pre-existing flaky timestamp collision** between consecutive runs. Not related to this session's changes. Worth fixing — likely needs a unique-id generator that doesn't rely on `Date.now()`.
+
+### Outstanding work (NOT shipped — pick up here in next chat)
+
+The following were requested in this session but **not implemented**. They should be the first work in the next session.
+
+1. **Expand hymn library to 50 pre-1962 entries with lyrics** — Put the seed catalog in `src/assets/hymns/seed.json`. Each entry: `title`, `tune`, `composer`, `lyricist`, `year`, `key`, `meter`, `source`, `tradition` (Latin chant / Lutheran / Anglican / American / Irish / etc.), `language: 'en'`, `lyrics` (at least the first verse, public domain), `referenceUrls` (Hymnary.org, CPDL, OpenHymnal links). Update `src/store/hymn-library.js` to load this JSON instead of the hardcoded 20-entry array. **All entries must be composed before 1962.**
+
+2. **Make hymn search instant** — Replace the debounced server-call autocomplete (`initHymnAutocomplete` / `runHymnSearch` in `src/server.js`) with a one-time `/api/hymns` fetch on page load that caches the entire library client-side, then filter in-memory on every keystroke (no debounce, zero network latency). User reported the current 150ms debounce isn't responsive enough.
+
+3. **Hymnary fetch script for local caching** — `scripts/fetch-hymns.js` that reads the seed library, calls Hymnary.org's `data_api` (free, no auth) for each `tune` and `title`, enriches entries with metadata Hymnary returns (meter, scripture references, hymnal instances), and writes a cached `data/hymn-library-local.json`. Add `npm run fetch-hymns` to `package.json`. Respect ≤1 req/sec rate limit and Hymnary attribution.
+
+4. **Hymn usage stats page (clickable for ALL users)** — New `/api/stats/hymns` endpoint that walks every saved draft in `data/drafts/` and aggregates how often each hymn title appears across the calendar year, by month, and by liturgical season. Add a "Stats" nav link visible to **all roles** (no permission gate) plus a `#page-stats` view in the SPA showing the frequency table.
+
+### Future Build Requirements captured in `product_spec.md` (also untouched)
+
+These are documented in the Future Build Requirements section of `product_spec.md` but not implemented:
+
+- **Wedding/funeral/memorial booklet variants** — parish-defined option lists for hymns and readings, cover photo of the deceased, back-page obituary, **ritual-book introductions** (general introduction to the rite, etc., from the Order of Christian Funerals / Order of Celebrating Matrimony with editable fill-in blocks), **communion etiquette note for non-Catholic attendees**.
+- **Proofing/review round-trip workflow** — richer than current draft → approve. Marked-up comments and revisions before finalization. Worth a design session.
+- **OneLicense version-picker UI** — when OneLicense or Hymnary returns multiple versions of the same song (different keys, arrangements), surface them in a comparison panel showing key + hymnal + page so the user can choose.
+- **True saddle-stitch imposition built in** — currently delegated to printer driver.
+- **Longer-hymn overflow handling** — auto-split or auto-scale when a hymn's notation is too long for one page.
+- **Auto-fit to multiples of 4 pages** — when content overflows 8 pages, push to 12 or 16 (multiples of 4 for saddle stitch).
+- **Email delivery to printer**.
+- **Multi-parish support** with per-parish settings, libraries, logos.
+- **Mobile-optimized form**, **React + Tailwind rebuild**, **Puppeteer-based HTML-to-PDF**.
+
+### Branch state for next session
+
+- Branch: `claude/document-run-instructions-gIv6n`
+- HEAD: `d29febe`
+- Pushed: yes (origin matches)
+- Working tree: clean (verified before writing this note)
+

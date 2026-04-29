@@ -4,6 +4,8 @@
 **Last Updated:** April 29, 2026
 **Status:** Active development — replacing Microsoft Publisher in fall 2026
 
+> **Pick-up note for next session:** see `session_notes.md` § "Session 3 (April 29, 2026)" for the full list of what shipped and what's open. The four items requested at end-of-session and **not yet implemented** are: (1) expand hymn library to 50 pre-1962 entries with lyrics in `src/assets/hymns/seed.json`, (2) make hymn-title autocomplete instant (preload + in-memory filter), (3) `scripts/fetch-hymns.js` Hymnary cache builder + `npm run fetch-hymns`, (4) `/api/stats/hymns` + Stats nav page visible to all users. Branch `claude/document-run-instructions-gIv6n`, HEAD `d29febe`.
+
 ---
 
 ## Overview
@@ -342,6 +344,15 @@ Failed logins show available usernames instead of a generic error.
 ## Future Build Requirements (Backlog)
 
 Captured during the Publisher-replacement pass; not yet implemented.
+
+### Open Tasks — Next Session (Top Priority)
+
+These four were requested at the end of Session 3 and should be the first work in the next chat:
+
+1. **Expand hymn library to 50 pre-1962 entries with lyrics** — write `src/assets/hymns/seed.json` with 50 hymns composed before 1962. Per entry: `title`, `tune`, `composer`, `lyricist`, `year`, `key`, `meter`, `source`, `tradition` (Latin chant / Lutheran / Anglican / American / Irish / etc.), `language: 'en'`, `lyrics` (≥ first verse, public domain), `referenceUrls` (Hymnary / CPDL / OpenHymnal). Update `src/store/hymn-library.js` to load this JSON in place of the hardcoded 20-entry array.
+2. **Instant hymn-title search** — replace the debounced server-call autocomplete (`initHymnAutocomplete` / `runHymnSearch` in `src/server.js`) with a one-time `/api/hymns` fetch on page load that caches the entire library client-side, then filter in-memory on every keystroke (no debounce).
+3. **Hymnary fetch script** — `scripts/fetch-hymns.js` that reads the seed library, calls `hymnary.org/data_api` for each tune/title, enriches with returned metadata (meter, scripture refs, hymnal instances), and writes a cached `data/hymn-library-local.json`. Wire as `npm run fetch-hymns`. Respect ≤ 1 req/sec and Hymnary attribution.
+4. **Hymn usage stats page** — `/api/stats/hymns` walks every draft in `data/drafts/` and aggregates per-hymn frequency by month and by liturgical season. Add a "Stats" nav link visible to **all roles** (no permission gate) plus a `#page-stats` view in the SPA showing the frequency table.
 
 ### Music & Licensing
 - **OneLicense automation** — OneLicense.net publishes no public API and the site is Cloudflare-protected (returns 403 to any non-browser request). Recommended path:
