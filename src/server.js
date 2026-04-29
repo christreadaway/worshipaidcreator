@@ -12,6 +12,7 @@ const { renderBookletHtml } = require('./template-renderer');
 const { getSeasonDefaults, SEASONS, LENTEN_ACCLAMATION_OPTIONS } = require('./config/seasons');
 const store = require('./store/file-store');
 const userStore = require('./store/user-store');
+const { fetchReadings, TRANSLATIONS } = require('./readings-fetcher');
 
 const https = require('https');
 
@@ -273,6 +274,27 @@ app.get('/api/season-defaults/:season', (req, res) => {
 // Lenten acclamation options
 app.get('/api/lenten-acclamations', (req, res) => {
   res.json(LENTEN_ACCLAMATION_OPTIONS);
+});
+
+// Bible translations available for the readings dropdown
+app.get('/api/bible-translations', (req, res) => {
+  res.json(TRANSLATIONS.map(({ id, label, source }) => ({ id, label, source })));
+});
+
+// Fetch Mass readings from USCCB (NABRE Lectionary), optionally re-translated
+app.get('/api/readings', async (req, res) => {
+  const date = String(req.query.date || '');
+  const translation = String(req.query.translation || 'NABRE');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  }
+  try {
+    const readings = await fetchReadings(date, translation);
+    res.json(readings);
+  } catch (e) {
+    console.error('[readings] fetch failed:', e.message);
+    res.status(502).json({ error: 'Failed to fetch readings: ' + e.message });
+  }
 });
 
 // Validate
@@ -583,7 +605,7 @@ nav .user-info strong { color: var(--gold-light); }
 .fg-check { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .fg-check input { width: auto; }
 .fg-check label { margin: 0; text-transform: none; font-size: 12px; }
-.fg-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.fg-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; align-items: end; }
 
 /* Music block per mass time */
 .mass-time-block { background: var(--parchment); border: 1px solid var(--border); border-radius: 4px; padding: 8px; margin-bottom: 8px; }
@@ -730,6 +752,17 @@ nav .user-info strong { color: var(--gold-light); }
     <div class="form-section" id="section-readings">
       <div class="form-section-hdr" onclick="toggle(this)">Readings <span>&#9660;</span></div>
       <div class="form-section-body">
+        <div class="fg-row" style="grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end;">
+          <div class="fg"><label>Bible Translation</label>
+            <select id="bibleTranslation"></select>
+          </div>
+          <div class="fg"><label>USCCB lookup</label>
+            <button type="button" id="fetchReadingsBtn" onclick="fetchReadingsFromUsccb()">Fetch from USCCB</button>
+          </div>
+          <div class="fg"><label>&nbsp;</label>
+            <span id="fetchReadingsStatus" style="font-size: 11px; color: var(--gray);"></span>
+          </div>
+        </div>
         <div class="fg"><label>First Reading — Citation</label><input type="text" id="firstReadingCitation" placeholder="e.g., Genesis 15:5-12, 17-18"></div>
         <div class="fg"><label>First Reading — Text</label><textarea id="firstReadingText" rows="5"></textarea></div>
         <div class="fg"><label>Responsorial Psalm — Citation</label><input type="text" id="psalmCitation"></div>
@@ -1509,6 +1542,67 @@ async function removeUser(id) {
   await fetch('/api/users/' + id, { method: 'DELETE', headers: { 'x-session-token': _sessionToken } });
   loadUsers();
 }
+
+// --- Bible translations + USCCB readings lookup ---
+async function initBibleTranslations() {
+  const sel = document.getElementById('bibleTranslation');
+  if (!sel || sel.dataset.loaded) return;
+  try {
+    const res = await fetch('/api/bible-translations');
+    const list = await res.json();
+    sel.innerHTML = list.map(t =>
+      '<option value="' + esc(t.id) + '">' + esc(t.label) + '</option>'
+    ).join('');
+    sel.dataset.loaded = '1';
+  } catch (e) {
+    sel.innerHTML = '<option value="NABRE">NABRE (Lectionary, USCCB)</option>';
+  }
+}
+
+async function fetchReadingsFromUsccb() {
+  const date = v('liturgicalDate');
+  const status = document.getElementById('fetchReadingsStatus');
+  if (!date) {
+    if (status) status.textContent = 'Set a liturgical date first.';
+    toast('Set a liturgical date first', 'error');
+    return;
+  }
+  const translation = document.getElementById('bibleTranslation').value || 'NABRE';
+  const btn = document.getElementById('fetchReadingsBtn');
+  btn.disabled = true;
+  if (status) status.textContent = 'Fetching ' + translation + '…';
+  try {
+    const res = await fetch('/api/readings?date=' + encodeURIComponent(date) + '&translation=' + encodeURIComponent(translation));
+    const data = await res.json();
+    if (!res.ok) {
+      if (status) status.textContent = '';
+      toast(data.error || 'Lookup failed', 'error');
+      return;
+    }
+    sv('firstReadingCitation', data.firstReadingCitation);
+    sv('firstReadingText',     data.firstReadingText);
+    sv('psalmCitation',        data.psalmCitation);
+    sv('psalmRefrain',         data.psalmRefrain);
+    sv('psalmVerses',          data.psalmVerses);
+    sv('secondReadingCitation', data.secondReadingCitation);
+    sv('secondReadingText',     data.secondReadingText);
+    const noSecond = document.getElementById('noSecondReading');
+    if (noSecond) noSecond.checked = !!data.noSecondReading;
+    sv('gospelAcclamationReference', data.gospelAcclamationReference);
+    sv('gospelAcclamationVerse',     data.gospelAcclamationVerse);
+    sv('gospelCitation', data.gospelCitation);
+    sv('gospelText',     data.gospelText);
+    if (status) status.textContent = 'Loaded ' + (data.translation || translation) + '.';
+    toast('Readings loaded from USCCB', 'success');
+  } catch (e) {
+    if (status) status.textContent = '';
+    toast('Lookup error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+initBibleTranslations();
 
 // --- Auto-save ---
 let _autoSaveTimer;
