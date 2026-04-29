@@ -11,7 +11,8 @@
     "generate": "node src/cli.js",
     "test": "node --test src/tests/*.test.js",
     "build": "node scripts/extract-html.js",
-    "dev": "node src/server.js"
+    "dev": "node src/server.js",
+    "fetch-hymns": "node scripts/fetch-hymns.js"
   },
   "keywords": [
     "worship",
