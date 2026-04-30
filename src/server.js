@@ -1616,6 +1616,20 @@ function onLiturgicalDateChange() {
   } else {
     applyChildrenLiturgyAutoDefault();
   }
+  autoFetchReadingsIfEmpty();
+}
+
+// If the readings fields are still empty for this date (i.e. user hasn't
+// typed a manual override), kick off a USCCB fetch automatically. Manual
+// edits are never overwritten — the function bails as soon as it finds any
+// reading content. The Fetch button stays available for re-runs and for
+// translation switches.
+function autoFetchReadingsIfEmpty() {
+  const fields = ['firstReadingCitation','firstReadingText','psalmCitation','psalmRefrain','psalmVerses','secondReadingCitation','secondReadingText','gospelAcclamationVerse','gospelCitation','gospelText'];
+  const anyFilled = fields.some(id => v(id));
+  if (anyFilled) return;
+  if (!v('liturgicalDate')) return;
+  fetchReadingsFromUsccb({ silent: true });
 }
 
 async function suggestCoverImages() {
@@ -1667,6 +1681,10 @@ function suggestNextLiturgicalDate() {
   const seasonSel = document.getElementById('liturgicalSeason');
   if (detected && seasonSel) seasonSel.value = detected;
   applyChildrenLiturgyAutoDefault();
+  // Auto-populate readings for the suggested date — manual edits are
+  // never overwritten because autoFetchReadingsIfEmpty() bails out the
+  // moment any reading field has content.
+  autoFetchReadingsIfEmpty();
 }
 
 // --- Image Uploads ---
@@ -2079,24 +2097,28 @@ async function initBibleTranslations() {
   }
 }
 
-async function fetchReadingsFromUsccb() {
+async function fetchReadingsFromUsccb(opts) {
+  opts = opts || {};
+  const silent = !!opts.silent;
   const date = v('liturgicalDate');
   const status = document.getElementById('fetchReadingsStatus');
   if (!date) {
+    if (silent) return;
     if (status) status.textContent = 'Set a liturgical date first.';
     toast('Set a liturgical date first', 'error');
     return;
   }
-  const translation = document.getElementById('bibleTranslation').value || 'NABRE';
+  const transSel = document.getElementById('bibleTranslation');
+  const translation = (transSel && transSel.value) || 'NABRE';
   const btn = document.getElementById('fetchReadingsBtn');
-  btn.disabled = true;
-  if (status) status.textContent = 'Fetching ' + translation + '…';
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = (silent ? 'Auto-fetching ' : 'Fetching ') + translation + '…';
   try {
     const res = await fetch('/api/readings?date=' + encodeURIComponent(date) + '&translation=' + encodeURIComponent(translation));
     const data = await res.json();
     if (!res.ok) {
       if (status) status.textContent = '';
-      toast(data.error || 'Lookup failed', 'error');
+      if (!silent) toast(data.error || 'Lookup failed', 'error');
       return;
     }
     sv('firstReadingCitation', data.firstReadingCitation);
@@ -2112,13 +2134,13 @@ async function fetchReadingsFromUsccb() {
     sv('gospelAcclamationVerse',     data.gospelAcclamationVerse);
     sv('gospelCitation', data.gospelCitation);
     sv('gospelText',     data.gospelText);
-    if (status) status.textContent = 'Loaded ' + (data.translation || translation) + '.';
-    toast('Readings loaded from USCCB', 'success');
+    if (status) status.textContent = (silent ? 'Auto-loaded ' : 'Loaded ') + (data.translation || translation) + ' (you can edit any field).';
+    if (!silent) toast('Readings loaded from USCCB', 'success');
   } catch (e) {
     if (status) status.textContent = '';
-    toast('Lookup error: ' + e.message, 'error');
+    if (!silent) toast('Lookup error: ' + e.message, 'error');
   } finally {
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
   }
 }
 
