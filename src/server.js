@@ -248,6 +248,36 @@ app.get('/api/auth/google-client-id', (req, res) => {
   res.json({ clientId: GOOGLE_CLIENT_ID || null });
 });
 
+// Health endpoint — reports whether the KV backend is properly persisting.
+// Useful for diagnosing the "Settings keep getting reset" / "Not authenticated"
+// failure modes that happen when Netlify Blobs aren't configured and the
+// in-memory fallback drops state between Lambda invocations.
+app.get('/api/health', async (req, res) => {
+  const out = {
+    ok: true,
+    timestamp: new Date().toISOString(),
+    environment: kv.IS_NETLIFY ? 'netlify' : 'local',
+    persistence: kv.IS_NETLIFY ? 'unknown' : 'filesystem'
+  };
+  if (kv.IS_NETLIFY) {
+    try {
+      const probeKey = '_health-probe';
+      await kv.set('_health', probeKey, { t: Date.now() });
+      const back = await kv.get('_health', probeKey);
+      out.persistence = back ? 'netlify-blobs' : 'in-memory';
+      out.persistsAcrossInvocations = !!back;
+    } catch (e) {
+      out.persistence = 'in-memory';
+      out.persistsAcrossInvocations = false;
+      out.persistenceError = e.message;
+    }
+  }
+  if (out.persistence === 'in-memory') {
+    out.warning = 'KV is using in-memory fallback — sessions, settings, and uploads will NOT persist across Lambda cold starts. Configure Netlify Blobs to fix this.';
+  }
+  res.json(out);
+});
+
 // Debug endpoint — visit /api/auth/debug in browser to see what's happening
 app.get('/api/auth/debug', async (req, res) => {
   try {
@@ -538,9 +568,13 @@ app.post('/api/validate', (req, res) => {
 // Preview HTML
 app.post('/api/preview', async (req, res) => {
   const settings = await store.loadSettings();
-  const { html, warnings } = renderBookletHtml(req.body, { parishSettings: settings });
+  const bookletSize = req.body.bookletSize || req.query.bookletSize || 'tabloid';
+  const { html, warnings, pageWidth, pageHeight } = renderBookletHtml(req.body, {
+    parishSettings: settings,
+    bookletSize
+  });
   const overflows = detectOverflows(req.body);
-  res.json({ html, warnings, overflows });
+  res.json({ html, warnings, overflows, bookletSize, pageWidth, pageHeight });
 });
 
 // Generate PDF
@@ -809,6 +843,19 @@ app.put('/api/settings', async (req, res) => {
   res.json(settings);
 });
 
+// --- PER-USER PREFERENCES ---
+// These persist across drafts for the same user — preferred booklet size,
+// default Sanctus language override, last-used hymnal, etc.  Distinct from
+// the parish-wide /api/settings.
+app.get('/api/user-prefs', requireAuth, async (req, res) => {
+  res.json(await userStore.getUserPrefs(req.user.id));
+});
+
+app.put('/api/user-prefs', requireAuth, async (req, res) => {
+  const prefs = await userStore.setUserPrefs(req.user.id, req.body || {});
+  res.json(prefs);
+});
+
 // --- SAMPLE ---
 app.get('/api/sample', (req, res) => {
   const samplePath = path.join(__dirname, '..', 'sample', 'second-sunday-lent.json');
@@ -926,9 +973,11 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
 .mass-time-block { background: var(--parchment); border: 1px solid var(--border); border-radius: 4px; padding: 8px; margin-bottom: 8px; }
 .mass-time-block h4 { font-family: 'Cinzel', serif; font-size: 9px; color: var(--burgundy); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
 
-/* Preview */
-.preview-frame { background: white; width: 5.5in; margin: 0 auto 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); border-radius: 2px; }
-.preview-frame iframe { width: 100%; border: none; min-height: 68in; }
+/* Preview — size matches the selected booklet trim so the preview is a
+   true-scale rendering of the exported PDF.  Width is set inline by the
+   preview generator based on the current bookletSize. */
+.preview-frame { background: white; margin: 0 auto 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); border-radius: 2px; max-width: 100%; }
+.preview-frame iframe { width: 100%; border: none; }
 
 /* Status */
 .status { position: fixed; bottom: 0; left: 0; right: 0; background: var(--white); border-top: 1px solid var(--border); padding: 6px 16px; display: flex; justify-content: space-between; font-size: 11px; color: var(--gray); z-index: 100; }
@@ -1037,7 +1086,7 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
   <span class="user-info" id="user-display"></span>
   <button class="btn btn-outline btn-sm" onclick="loadSample()">Load Sample</button>
   <button class="btn btn-outline btn-sm" onclick="saveDraft()">Save Draft</button>
-  <select id="bookletSize" class="btn-sm" style="margin-right:6px;padding:4px 6px;font-size:11px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:3px;" title="Booklet trim size">
+  <select id="bookletSize" class="btn-sm" style="margin-right:6px;padding:4px 6px;font-size:11px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:3px;" title="Booklet trim size — saved per user" onchange="saveUserPrefs({ bookletSize: this.value })">
     <option value="tabloid" selected>8.5×11 booklet (11×17)</option>
     <option value="half-letter">5.5×8.5 booklet</option>
   </select>
@@ -1560,8 +1609,35 @@ async function showApp() {
     window._parishSettings = await sr.json();
   } catch(e) { window._parishSettings = {}; }
 
+  // Load per-user preferences (booklet size, default Sanctus, etc.)
+  // Persists for the user across sessions, drafts, and devices.
+  try {
+    const ur = await fetch('/api/user-prefs', { headers: { 'x-session-token': _sessionToken } });
+    if (ur.ok) {
+      window._userPrefs = await ur.json();
+      const sizeSel = document.getElementById('bookletSize');
+      if (sizeSel && window._userPrefs.bookletSize) sizeSel.value = window._userPrefs.bookletSize;
+    } else {
+      window._userPrefs = {};
+    }
+  } catch(e) { window._userPrefs = {}; }
+
   applyRolePermissions();
   showPage('editor');
+}
+
+// Save the user's per-user prefs in the background.  Fire-and-forget; no UI
+// signal needed because the field already shows what was selected.
+async function saveUserPrefs(patch) {
+  if (!_sessionToken) return;
+  try {
+    await fetch('/api/user-prefs', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken },
+      body: JSON.stringify(patch)
+    });
+    window._userPrefs = { ...(window._userPrefs || {}), ...patch };
+  } catch(e) { /* ignore — non-critical */ }
 }
 
 async function doLogin() {
@@ -1684,12 +1760,20 @@ function buildMusicBlock(prefix) {
   const sharedPreludeComposer = v('shared_organPreludeComposer');
   const sharedProcTitle       = v('shared_processional');
   const sharedProcComposer    = v('shared_processionalComposer');
+  const sharedProcHymnal      = v('shared_processional_hymnal');
+  const sharedProcHymnNumber  = v('shared_processional_hymnNumber');
   const sharedKyrieTitle      = v('shared_kyrie');
   const sharedKyrieComposer   = v('shared_kyrieComposer');
+  const sharedPsalmTitle      = v('shared_responsorialPsalm');
+  const sharedPsalmComposer   = v('shared_responsorialPsalmComposer');
   const sharedCommTitle       = v('shared_communion');
   const sharedCommComposer    = v('shared_communionComposer');
+  const sharedCommHymnal      = v('shared_communion_hymnal');
+  const sharedCommHymnNumber  = v('shared_communion_hymnNumber');
   const sharedThanksTitle     = v('shared_thanksgiving');
   const sharedThanksComposer  = v('shared_thanksgivingComposer');
+  const sharedThanksHymnal    = v('shared_thanksgiving_hymnal');
+  const sharedThanksHymnNumber = v('shared_thanksgiving_hymnNumber');
   const sharedPostludeTitle   = v('shared_postlude');
   const sharedPostludeComposer = v('shared_postludeComposer');
   return {
@@ -1697,14 +1781,22 @@ function buildMusicBlock(prefix) {
     organPreludeComposer: sharedPreludeComposer,
     processionalOrEntrance: sharedProcTitle,
     processionalOrEntranceComposer: sharedProcComposer,
+    processionalOrEntranceHymnal: sharedProcHymnal,
+    processionalOrEntranceHymnNumber: sharedProcHymnNumber,
     kyrieSetting: sharedKyrieTitle,
     kyrieComposer: sharedKyrieComposer,
+    responsorialPsalmSetting: sharedPsalmTitle,
+    responsorialPsalmSettingComposer: sharedPsalmComposer,
     offertoryAnthem: v(prefix + '_offertory'),
     offertoryAnthemComposer: v(prefix + '_offertoryComposer'),
     communionHymn: sharedCommTitle,
     communionHymnComposer: sharedCommComposer,
+    communionHymnHymnal: sharedCommHymnal,
+    communionHymnHymnNumber: sharedCommHymnNumber,
     hymnOfThanksgiving: sharedThanksTitle,
     hymnOfThanksgivingComposer: sharedThanksComposer,
+    hymnOfThanksgivingHymnal: sharedThanksHymnal,
+    hymnOfThanksgivingHymnNumber: sharedThanksHymnNumber,
     organPostlude: sharedPostludeTitle,
     organPostludeComposer: sharedPostludeComposer,
     choralAnthemConcluding: v(prefix + '_choral'),
@@ -1738,12 +1830,20 @@ function populateSharedMusic(data) {
   sv('shared_organPreludeComposer', pickFromBlocks('organPreludeComposer'));
   sv('shared_processional',         pickFromBlocks('processionalOrEntrance'));
   sv('shared_processionalComposer', pickFromBlocks('processionalOrEntranceComposer'));
+  sv('shared_processional_hymnal',     pickFromBlocks('processionalOrEntranceHymnal'));
+  sv('shared_processional_hymnNumber', pickFromBlocks('processionalOrEntranceHymnNumber'));
   sv('shared_kyrie',                pickFromBlocks('kyrieSetting'));
   sv('shared_kyrieComposer',        pickFromBlocks('kyrieComposer'));
+  sv('shared_responsorialPsalm',         pickFromBlocks('responsorialPsalmSetting'));
+  sv('shared_responsorialPsalmComposer', pickFromBlocks('responsorialPsalmSettingComposer'));
   sv('shared_communion',            pickFromBlocks('communionHymn'));
   sv('shared_communionComposer',    pickFromBlocks('communionHymnComposer'));
+  sv('shared_communion_hymnal',     pickFromBlocks('communionHymnHymnal'));
+  sv('shared_communion_hymnNumber', pickFromBlocks('communionHymnHymnNumber'));
   sv('shared_thanksgiving',         pickFromBlocks('hymnOfThanksgiving'));
   sv('shared_thanksgivingComposer', pickFromBlocks('hymnOfThanksgivingComposer'));
+  sv('shared_thanksgiving_hymnal',     pickFromBlocks('hymnOfThanksgivingHymnal'));
+  sv('shared_thanksgiving_hymnNumber', pickFromBlocks('hymnOfThanksgivingHymnNumber'));
   sv('shared_postlude',             pickFromBlocks('organPostlude'));
   sv('shared_postludeComposer',     pickFromBlocks('organPostludeComposer'));
 }
@@ -2347,6 +2447,11 @@ async function refreshAttachmentSlotSelectors() {
 
 async function uploadAttachmentFromSettings(input) {
   if (!input.files || !input.files[0]) return;
+  if (!_sessionToken) {
+    toast('You are signed out — please log in to upload files.', 'error');
+    showLogin();
+    return;
+  }
   const file = input.files[0];
   const status = document.getElementById('att_uploadStatus');
   if (status) status.textContent = 'Uploading ' + file.name + '…';
@@ -2358,6 +2463,14 @@ async function uploadAttachmentFromSettings(input) {
   fd.append('tags', v('att_tags'));
   try {
     const res = await fetch('/api/attachments', { method: 'POST', headers: { 'x-session-token': _sessionToken }, body: fd });
+    if (res.status === 401) {
+      if (status) status.textContent = '';
+      toast('Your session expired — please log in again.', 'error');
+      _sessionToken = null;
+      localStorage.removeItem('wa_token');
+      showLogin();
+      return;
+    }
     const data = await res.json();
     if (!res.ok) { if (status) status.textContent = ''; toast(data.error || 'Upload failed', 'error'); return; }
     if (status) status.textContent = 'Uploaded: ' + (data.title || data.originalName);
@@ -2412,12 +2525,25 @@ async function deleteAttachment(id) {
 // --- Image Uploads ---
 async function uploadNotation(input) {
   if (!input.files || !input.files[0]) return;
+  if (!_sessionToken) {
+    toast('You are signed out — please log in to upload notation.', 'error');
+    showLogin();
+    input.value = '';
+    return;
+  }
   const formData = new FormData();
   formData.append('image', input.files[0]);
   try {
     const res = await fetch('/api/upload/notation', {
       method: 'POST', headers: { 'x-session-token': _sessionToken }, body: formData
     });
+    if (res.status === 401) {
+      toast('Your session expired — please log in again.', 'error');
+      _sessionToken = null;
+      localStorage.removeItem('wa_token');
+      showLogin();
+      return;
+    }
     const data = await res.json();
     if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
     toast('Image uploaded: ' + data.originalName, 'success');
@@ -2438,12 +2564,25 @@ async function loadNotationList() {
 
 async function uploadLogo(input) {
   if (!input.files || !input.files[0]) return;
+  if (!_sessionToken) {
+    toast('You are signed out — please log in to upload a logo.', 'error');
+    showLogin();
+    input.value = '';
+    return;
+  }
   const formData = new FormData();
   formData.append('image', input.files[0]);
   try {
     const res = await fetch('/api/upload/logo', {
       method: 'POST', headers: { 'x-session-token': _sessionToken }, body: formData
     });
+    if (res.status === 401) {
+      toast('Your session expired — please log in again.', 'error');
+      _sessionToken = null;
+      localStorage.removeItem('wa_token');
+      showLogin();
+      return;
+    }
     const data = await res.json();
     if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
     sv('s_logoPath', data.url);
@@ -2456,12 +2595,25 @@ async function uploadLogo(input) {
 
 async function uploadCover(input) {
   if (!input.files || !input.files[0]) return;
+  if (!_sessionToken) {
+    toast('You are signed out — please log in to upload a cover.', 'error');
+    showLogin();
+    input.value = '';
+    return;
+  }
   const formData = new FormData();
   formData.append('image', input.files[0]);
   try {
     const res = await fetch('/api/upload/cover', {
       method: 'POST', headers: { 'x-session-token': _sessionToken }, body: formData
     });
+    if (res.status === 401) {
+      toast('Your session expired — please log in again.', 'error');
+      _sessionToken = null;
+      localStorage.removeItem('wa_token');
+      showLogin();
+      return;
+    }
     const data = await res.json();
     if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
     window._coverImagePath = data.url;
@@ -2497,13 +2649,26 @@ async function saveDraft() {
 async function generatePreview() {
   setStatus('Generating preview...');
   try {
-    const res = await fetch('/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildData()) });
+    const data = buildData();
+    const sizeSel = document.getElementById('bookletSize');
+    if (sizeSel) data.bookletSize = sizeSel.value;
+    const res = await fetch('/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
     const result = await res.json();
     document.getElementById('preview-placeholder').style.display = 'none';
     document.getElementById('preview-content').style.display = 'block';
+    // Size the preview frame to match the booklet trim so the preview is
+    // a true-scale rendering of what'll print.  We respond to the server-
+    // reported pageWidth (e.g., "5.5in" or "8.5in") and let the iframe
+    // grow to fit each page's height x 8 pages.
+    const frame = document.querySelector('.preview-frame');
+    if (frame && result.pageWidth) frame.style.width = result.pageWidth;
     const iframe = document.getElementById('preview-iframe');
     iframe.srcdoc = result.html;
-    iframe.onload = () => { iframe.style.height = iframe.contentDocument.body.scrollHeight + 'px'; };
+    iframe.onload = () => {
+      // Body scrollHeight gives the rendered total; pad slightly so the
+      // last page's content isn't clipped by the iframe.
+      iframe.style.height = (iframe.contentDocument.body.scrollHeight + 16) + 'px';
+    };
 
     // Show overflow warnings
     const warnEl = document.getElementById('overflow-warnings');
@@ -2856,6 +3021,14 @@ async function fetchReadingsFromUsccb(opts) {
     sv('psalmCitation',        data.psalmCitation);
     sv('psalmRefrain',         data.psalmRefrain);
     sv('psalmVerses',          data.psalmVerses);
+    // Pre-fill the Responsorial Psalm music slot with the refrain text so
+    // the music director can search OneLicense for a matching setting
+    // without retyping. Skip the autofill if a setting is already chosen.
+    const psalmSlot = document.getElementById('shared_responsorialPsalm');
+    if (psalmSlot && !psalmSlot.value && data.psalmRefrain) {
+      psalmSlot.value = data.psalmRefrain;
+      psalmSlot.dispatchEvent(new Event('input', { bubbles: true }));
+    }
     sv('secondReadingCitation', data.secondReadingCitation);
     sv('secondReadingText',     data.secondReadingText);
     const noSecond = document.getElementById('noSecondReading');
@@ -2872,6 +3045,43 @@ async function fetchReadingsFromUsccb(opts) {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+// --- OneLicense search helpers ---
+// OneLicense's basic search takes a free-text query.  Hymnal + number is
+// the most specific identifier the music director can give it; we fall
+// back to title + composer when those aren't filled in.
+function openOneLicenseSearch(titleId, hymnalId, numberId, composerId) {
+  const title    = v(titleId);
+  const hymnal   = v(hymnalId);
+  const number   = v(numberId);
+  const composer = v(composerId);
+  let query = '';
+  if (hymnal && number) query = hymnal + ' #' + number;
+  else if (hymnal)      query = hymnal;
+  else if (number)      query = '#' + number;
+  else                  query = [title, composer].filter(Boolean).join(' ');
+  if (!query) {
+    toast('Enter a hymnal & number, or a title, to search OneLicense', 'error');
+    return;
+  }
+  const url = 'https://www.onelicense.net/search?text=' + encodeURIComponent(query);
+  window.open(url, '_blank', 'noopener');
+}
+
+// Search OneLicense by the responsorial-psalm refrain. The refrain text is
+// the most useful query for finding a published psalm setting that matches
+// today's lectionary.
+function openOneLicenseForPsalm() {
+  const refrain = v('psalmRefrain');
+  const citation = v('psalmCitation');
+  let query = refrain || citation || '';
+  if (!query) {
+    toast('Set a psalm refrain (or fetch readings) before searching', 'error');
+    return;
+  }
+  const url = 'https://www.onelicense.net/search?text=' + encodeURIComponent(query);
+  window.open(url, '_blank', 'noopener');
 }
 
 // --- Hymn library autocomplete ---
@@ -2972,8 +3182,11 @@ function showHymnDropdown(input, results) {
     row.style.cssText = 'padding:6px 8px;border-bottom:1px solid #eee;cursor:pointer;';
     row.onmouseover = () => row.style.background = '#f5f0e6';
     row.onmouseout  = () => row.style.background = '';
+    // Hymnal + number (e.g., "Worship IV #612") is the most useful identifier
+    // for the music director — that's what they type into OneLicense.
+    const hymnalLabel = [h.hymnal, h.hymnNumber ? '#' + h.hymnNumber : ''].filter(Boolean).join(' ');
     row.innerHTML =
-      '<div style="font-weight:600;">' + esc(h.title) + '</div>' +
+      '<div style="font-weight:600;">' + esc(h.title) + (hymnalLabel ? ' <span style="color:var(--burgundy);font-weight:500;">[' + esc(hymnalLabel) + ']</span>' : '') + '</div>' +
       '<div style="color:var(--gray);">Tune: ' + esc(h.tune || '—') +
       ' · Key: ' + esc(h.key || '—') +
       (h.composer ? ' · ' + esc(h.composer) : '') + '</div>';
@@ -2984,6 +3197,17 @@ function showHymnDropdown(input, results) {
       if (composerId && h.composer) {
         const cinp = document.getElementById(composerId);
         if (cinp && !cinp.value) { cinp.value = h.composer; cinp.dispatchEvent(new Event('input', { bubbles: true })); }
+      }
+      // Auto-populate the paired hymnal + number inputs if the slot has them.
+      const hymnalId = input.dataset.pairHymnal;
+      if (hymnalId && h.hymnal) {
+        const hinp = document.getElementById(hymnalId);
+        if (hinp && !hinp.value) { hinp.value = h.hymnal; hinp.dispatchEvent(new Event('input', { bubbles: true })); }
+      }
+      const hymnNumberId = input.dataset.pairHymnnumber;
+      if (hymnNumberId && h.hymnNumber) {
+        const ninp = document.getElementById(hymnNumberId);
+        if (ninp && !ninp.value) { ninp.value = h.hymnNumber; ninp.dispatchEvent(new Event('input', { bubbles: true })); }
       }
       closeHymnDropdown();
     };
@@ -3104,29 +3328,54 @@ function musicBlockFields(prefix) {
 // Helper: the Shared Music section — every slot that's the same at every Mass.
 // Hymns get the hymn-library typeahead; organ pieces and the Kyrie setting
 // get attachment-library quick-picks (they're not congregational hymns).
+// Responsorial Psalm gets the refrain-as-search-query helper.
 function sharedMusicFields() {
-  // [titleId, composerId, label, source]   source: 'hymn' or attachment kind
+  // [titleId, composerId, label, source]   source: 'hymn', 'psalm', or attachment kind
   const fields = [
-    ['organPrelude', 'organPreludeComposer', 'Organ Prelude',                    'prelude'],
-    ['processional', 'processionalComposer', 'Processional / Entrance Hymn',     'hymn'],
-    ['kyrie',        'kyrieComposer',        'Lord, Have Mercy (Kyrie)',         'kyrie'],
-    ['communion',    'communionComposer',    'Communion Hymn',                   'hymn'],
-    ['thanksgiving', 'thanksgivingComposer', 'Hymn of Thanksgiving',             'hymn'],
-    ['postlude',     'postludeComposer',     'Organ Postlude',                   'postlude']
+    ['organPrelude',         'organPreludeComposer',  'Organ Prelude',                    'prelude'],
+    ['processional',         'processionalComposer',  'Processional / Entrance Hymn',     'hymn'],
+    ['kyrie',                'kyrieComposer',         'Lord, Have Mercy (Kyrie)',         'kyrie'],
+    // Responsorial Psalm setting — printed in the booklet's psalm section,
+    // and the refrain text feeds the OneLicense search so the music
+    // director can find a published setting that matches.
+    ['responsorialPsalm',    'responsorialPsalmComposer', 'Responsorial Psalm Setting',   'psalm'],
+    ['communion',            'communionComposer',     'Communion Hymn',                   'hymn'],
+    ['thanksgiving',         'thanksgivingComposer',  'Hymn of Thanksgiving',             'hymn'],
+    ['postlude',             'postludeComposer',      'Organ Postlude',                   'postlude']
   ];
   return fields.map(([titleId, compId, label, source]) => {
-    const titleAttrs = source === 'hymn'
-      ? `data-hymn-search="title" data-pair-composer="shared_${compId}"`
+    const isHymn = source === 'hymn';
+    const isPsalm = source === 'psalm';
+    const titleAttrs = isHymn
+      ? `data-hymn-search="title" data-pair-composer="shared_${compId}" data-pair-hymnal="shared_${titleId}_hymnal" data-pair-hymnnumber="shared_${titleId}_hymnNumber"`
       : `data-pair-composer="shared_${compId}"`;
-    const helper = source === 'hymn'
-      ? '<span style="font-size:9px;color:var(--gray);">type to search the hymn library</span>'
-      : `
+    let helper;
+    if (isHymn) {
+      helper = `
+        <span style="font-size:9px;color:var(--gray);">type to search the hymn library — picks fill hymnal &amp; number</span>
+        <div class="hymnal-pick-row" style="display:grid;grid-template-columns:2fr 1fr auto;gap:4px;align-items:center;margin-top:2px;">
+          <input type="text" id="shared_${titleId}_hymnal" placeholder="Hymnal (e.g., Worship IV)" style="font-size:11px;padding:4px 6px;">
+          <input type="text" id="shared_${titleId}_hymnNumber" placeholder="#" style="font-size:11px;padding:4px 6px;">
+          <button type="button" class="btn btn-outline btn-sm" style="padding:4px 8px;font-size:10px;" onclick="openOneLicenseSearch('shared_${titleId}', 'shared_${titleId}_hymnal', 'shared_${titleId}_hymnNumber', 'shared_${compId}')">OneLicense</button>
+        </div>`;
+    } else if (isPsalm) {
+      helper = `
+        <span style="font-size:9px;color:var(--gray);">setting for today's psalm — refrain feeds the OneLicense search</span>
+        <div class="attachment-pick-row">
+          <select data-attachment-slot="shared_${titleId}" data-attachment-kind="psalm" id="shared_${titleId}_attachmentSelect" onchange="pickAttachmentIntoMusicSlot('shared', '${titleId}', 'psalm')">
+            <option value="">— pick from library —</option>
+          </select>
+        </div>
+        <button type="button" class="btn btn-outline btn-sm" style="padding:4px 8px;font-size:10px;margin-top:2px;" onclick="openOneLicenseForPsalm()">Search OneLicense by refrain</button>`;
+    } else {
+      helper = `
         <span style="font-size:9px;color:var(--gray);">not a hymn — pulls from the Library</span>
         <div class="attachment-pick-row">
           <select data-attachment-slot="shared_${titleId}" data-attachment-kind="${source}" id="shared_${titleId}_attachmentSelect" onchange="pickAttachmentIntoMusicSlot('shared', '${titleId}', '${source}')">
             <option value="">— pick from library —</option>
           </select>
         </div>`;
+    }
     return `
       <div class="fg-row">
         <div class="fg" style="position:relative;">

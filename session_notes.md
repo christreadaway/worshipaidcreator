@@ -806,3 +806,138 @@ Smoke verified on a clean server boot:
   different offertory anthems each render on their own Mass-time
   lines; the choral anthem appears in the Communion Rite page (6).
 
+---
+
+## Session 6 (April 30, 2026): Colleague Pilot Feedback Pass
+
+**Branch:** `claude/reformat-readings-layout-vPijN`
+**Tests:** 240/240 passing (was 210/210 at start of session — +30 net new)
+
+Pilot feedback after a music director and admin tested the editor:
+
+> Readings: it pulled the right ones but they're in lectionary
+> sense-line layout, not paragraphs.  Psalm refrain needs to be in
+> the music search.  Music: it didn't pull anything (no login?), and
+> hymnal+number would be more useful than title+composer for OneLicense.
+> File uploads in Editor and Library kept saying "Not authenticated."
+> Settings I filled out didn't carry over to other drafts.  Preview
+> doesn't match the document format.
+
+**Shipped (one item per piece of feedback, plus tests):**
+
+1. **Readings paragraph reflow** — `src/readings-fetcher.js#reflowAsParagraphs`
+   collapses single line breaks within a paragraph into spaces while
+   preserving paragraph breaks (double newlines).  Applied to first /
+   second / gospel readings and the gospel-acclamation verse.  Psalm
+   verses keep their original stanza structure.  Also runs over
+   `bible-api.com` output for non-NABRE translations.
+
+2. **Hymnal + number on hymn library entries** — `src/store/hymn-library.js`
+   now persists `hymnal` (e.g. "Worship IV") and `hymnNumber` (e.g. "612").
+   Search ranks exact-number matches highest (90 points) and hymnal-name
+   matches at 60 points so a user typing "612" or "worship" lands on the
+   right entry.  `oneLicenseSearchUrl(entry)` helper builds the right URL
+   with hymnal+number precedence over title+composer.
+
+3. **OneLicense search buttons** in the editor's three shared hymn slots
+   (processional, communion, thanksgiving). Click → opens
+   `https://www.onelicense.net/search?text=<hymnal+#number>` in a new tab.
+   `openOneLicenseSearch()` in the SPA.
+
+4. **Responsorial Psalm music slot** — new shared slot with title +
+   composer + a "Search OneLicense by refrain" button.  Renderer prints
+   it on page 3 between the citation and the refrain.  When readings
+   are fetched, the refrain text is auto-prefilled into the slot's
+   title input as a search starting point.
+
+5. **Hymnal citation in rendered output** — music-formatter now carries
+   `hymnal` + `hymnNumber` per item and renders them as
+   `Title [Hymnal #N], Composer` in both HTML and PDFKit output, so the
+   printed booklet shows what to look up in the pew rack.  CSS class
+   `.hymnal-cite`.
+
+6. **Stateless HMAC session tokens** — replaces the prior server-stored
+   sessions which were the root cause of the "Not authenticated" upload
+   failure on Netlify when the in-memory blob fallback dropped state
+   between Lambda invocations.  Token format: `<userId>.<issuedAtMs>.<sig>`,
+   signed with `SESSION_SECRET` env var.  30-day expiry.  Logout writes
+   to a small revocation list (capped at 500 most-recent entries).
+   Exclusive-login-per-role policy preserved via per-user `revokedBefore`
+   timestamp.  **Set `SESSION_SECRET` in production** — there's a default
+   dev secret for local use only.
+
+7. **Frontend 401 recovery** — every upload (notation, attachment, logo,
+   cover) now (a) checks `_sessionToken` before sending and (b) treats a
+   401 response as "session expired", clears the cached token, and
+   redirects to login instead of silently failing.
+
+8. **Per-user preferences** — `GET/PUT /api/user-prefs` (auth required),
+   stored on `user.prefs`.  Currently persists `bookletSize`; the Editor
+   nav-bar selector saves the user's choice on change and restores it on
+   next sign-in.  Distinct from parish-wide `/api/settings`.
+
+9. **Preview matches selected booklet size** — template-renderer now
+   accepts a `bookletSize` option and emits the matching `@page` size,
+   page width/height, and proportional fonts.  The Editor's preview
+   iframe width is set from the server-reported `pageWidth`, so the
+   preview is true-scale to the export PDF.  Default is tabloid (8.5×11)
+   to match the export default.
+
+10. **`GET /api/health` endpoint** — reports the actual KV backend
+    (`filesystem` / `netlify-blobs` / `in-memory`).  Lets ops verify a
+    Netlify deploy is using Blobs (and not the lossy in-memory fallback)
+    without grepping logs.
+
+**Tests added (30 total):**
+- `src/tests/readings-fetcher.test.js` — 13 tests on reflow + USCCB
+  parser + psalm/acclamation splitters.  Also locks in "psalm verses
+  must NOT be reflowed" to prevent future regressions.
+- `src/tests/feedback-fixes.test.js` — 17 tests across 9 suites:
+  hymnal/number on hymn entries, OneLicense URL helper,
+  music-formatter hymnal rendering, Responsorial Psalm slot in
+  HTML+SPA, OneLicense buttons, stateless HMAC tokens (survive
+  store wipe + tampering + logout-revocation), per-user prefs API
+  (auth gate + merge semantics), `/api/health` shape, preview
+  pageWidth/pageHeight per booklet size, settings round-trip.
+
+**Smoke-verified end-to-end (PORT=4055 local server):**
+- Login as `morris` (music_director) → token issued, validates against
+  `/api/auth/me`.
+- POST `/api/attachments` as music_director with multipart upload →
+  200, file saved.  This was the original failure mode the colleague
+  reported.
+- POST `/api/preview` with `bookletSize: 'tabloid'` → returns
+  `pageWidth: '8.5in'`, `pageHeight: '11in'`.
+- PUT `/api/user-prefs` with `{ bookletSize: 'half-letter' }` →
+  GET returns the same value.
+- GET `/api/health` → `environment: local, persistence: filesystem`.
+
+**Files touched:**
+- `src/readings-fetcher.js` — reflow function + apply to first/second/
+  gospel + accl. verse.
+- `src/store/hymn-library.js` — hymnal/hymnNumber fields + search +
+  OneLicense URL helper.
+- `src/music-formatter.js` — carry hymnal/hymnNumber through formatMusicSlot
+  + render `[Hymnal #N]` in HTML and text output.
+- `src/template-renderer.js` — page geometry per booklet size; psalm
+  setting on page 3; expose `pageWidth`/`pageHeight`/`bookletSize`.
+- `src/pdf-generator.js` — render psalm setting on page 3.
+- `src/schema.js` — new music-block fields (hymnal, hymnNumber,
+  responsorialPsalmSetting + composer).
+- `src/store/user-store.js` — stateless HMAC tokens, per-user prefs,
+  exclusive-login enforcement via revokedBefore.
+- `src/server.js` — preview accepts bookletSize, OneLicense JS helpers,
+  user-prefs routes, health route, frontend 401 handling for uploads,
+  hymnal+number inputs in shared hymn slots, psalm slot, prefill on
+  fetch readings, save bookletSize to prefs on selector change.
+- `product_spec.md`, `worship_aid_generator_PRD.md` — documented v1.3.
+
+**Known followups (deferred):**
+- Hymn library starter entries don't carry hymnal/hymnNumber yet.  When
+  the parish stocks the library, the music director can fill those in.
+- Add a server-side rate limit on `/api/auth/login` (no abuse vector
+  today, but stateless tokens make a brute-force attempt plausible
+  given enough users).
+- Consider a similar 401-recovery in the editor's draft-save path
+  (currently the auto-save endpoint doesn't require auth).
+

@@ -43,6 +43,18 @@ function renderMusicSection(data, titleField, composerField, label) {
   return html;
 }
 
+// Page geometry for the preview/print HTML, mirrored from the PDF generator.
+// half-letter: 5.5"x8.5" (booklet folded from 8.5x11 sheets)
+// tabloid:     8.5"x11"  (booklet folded from 11x17 sheets)
+const PAGE_GEOMETRY = {
+  'half-letter': { width: '5.5in', height: '8.5in', padding: '0.4in 0.4in', fontSize: '9.5pt', headerSize: '12pt' },
+  tabloid:       { width: '8.5in', height: '11in',  padding: '0.6in 0.6in', fontSize: '12pt', headerSize: '14pt' }
+};
+
+function resolvePageGeometry(bookletSize) {
+  return PAGE_GEOMETRY[bookletSize] || PAGE_GEOMETRY['half-letter'];
+}
+
 function renderBookletHtml(data, options = {}) {
   const warnings = [];
 
@@ -51,6 +63,10 @@ function renderBookletHtml(data, options = {}) {
   const ss = d.seasonalSettings || {};
   const r = d.readings || {};
   const settings = options.parishSettings || {};
+  // Honor the caller-selected booklet size so the preview matches the
+  // exported PDF.  Default is tabloid (matches the editor's default).
+  const bookletSize = options.bookletSize || data.bookletSize || 'tabloid';
+  const geom = resolvePageGeometry(bookletSize);
 
   const isLenten = d.liturgicalSeason === 'lent';
   const isAdvent = d.liturgicalSeason === 'advent';
@@ -114,11 +130,11 @@ function renderBookletHtml(data, options = {}) {
 <title>Worship Aid — ${escapeHtml(d.feastName)} — ${escapeHtml(d.liturgicalDate)}</title>
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Cinzel:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
-  @page { size: 5.5in 8.5in; margin: 0; }
+  @page { size: ${geom.width} ${geom.height}; margin: 0; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     font-family: 'EB Garamond', Georgia, 'Times New Roman', serif;
-    font-size: 9.5pt;
+    font-size: ${geom.fontSize};
     line-height: 1.35;
     color: #1C1C1C;
     background: white;
@@ -126,11 +142,11 @@ function renderBookletHtml(data, options = {}) {
     print-color-adjust: exact;
   }
 
-  /* --- Page container: 5.5in x 8.5in booklet page --- */
+  /* --- Page container: ${geom.width} x ${geom.height} booklet page --- */
   .page {
-    width: 5.5in;
-    height: 8.5in;
-    padding: 0.35in 0.4in;
+    width: ${geom.width};
+    height: ${geom.height};
+    padding: ${geom.padding};
     page-break-after: always;
     position: relative;
     overflow: hidden;
@@ -141,7 +157,7 @@ function renderBookletHtml(data, options = {}) {
   /* --- Typography --- */
   .section-header {
     font-family: 'Cinzel', serif;
-    font-size: 12pt;
+    font-size: ${geom.headerSize};
     font-weight: 600;
     text-align: center;
     color: #1A2E4A;
@@ -151,6 +167,8 @@ function renderBookletHtml(data, options = {}) {
     padding-bottom: 4pt;
     border-bottom: 0.75pt solid #B8922A;
   }
+  /* Hymnal/number citation, e.g. "[Worship IV #612]" */
+  .hymnal-cite { font-style: normal; font-size: 0.85em; color: #6B1A1A; }
   .sub-heading {
     font-family: 'Cinzel', serif;
     font-size: 8.5pt;
@@ -440,6 +458,7 @@ function renderBookletHtml(data, options = {}) {
 
   <div class="sub-heading">Responsorial Psalm</div>
   <p class="citation">${escapeHtml(r.psalmCitation)}</p>
+  ${renderMusicSection(d, 'responsorialPsalmSetting', 'responsorialPsalmSettingComposer', 'Setting')}
   ${r.psalmRefrain ? `<p class="psalm-refrain">R. ${escapeHtml(r.psalmRefrain)}</p>` : ''}
   ${r.psalmVerses ? r.psalmVerses.split('\n\n').map(v => `<p class="psalm-verse">${nl2br(v)}</p>`).join('') : ''}
 
@@ -596,7 +615,7 @@ function renderBookletHtml(data, options = {}) {
 </body>
 </html>`;
 
-  return { html, warnings };
+  return { html, warnings, bookletSize, pageWidth: geom.width, pageHeight: geom.height };
 }
 
-module.exports = { renderBookletHtml, escapeHtml, nl2br, formatDate };
+module.exports = { renderBookletHtml, escapeHtml, nl2br, formatDate, PAGE_GEOMETRY, resolvePageGeometry };

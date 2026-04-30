@@ -81,10 +81,20 @@ describe('renderBookletHtml', () => {
     }
   });
 
-  it('should use 5.5in x 8.5in page size', () => {
-    const { html } = renderBookletHtml(sampleData);
+  it('should use 5.5in x 8.5in page size when half-letter is requested', () => {
+    const { html, pageWidth, pageHeight } = renderBookletHtml(sampleData, { bookletSize: 'half-letter' });
     assert.ok(html.includes('5.5in'));
     assert.ok(html.includes('8.5in'));
+    assert.equal(pageWidth, '5.5in');
+    assert.equal(pageHeight, '8.5in');
+  });
+
+  it('should use 8.5in x 11in page size when tabloid is requested (default)', () => {
+    const { html, pageWidth, pageHeight } = renderBookletHtml(sampleData);
+    assert.ok(html.includes('8.5in'));
+    assert.ok(html.includes('11in'));
+    assert.equal(pageWidth, '8.5in');
+    assert.equal(pageHeight, '11in');
   });
 
   it('should include feast name and date', () => {

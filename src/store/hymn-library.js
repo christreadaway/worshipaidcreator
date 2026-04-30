@@ -50,12 +50,34 @@ async function saveLibrary(entries) {
     key:      String(e.key || '').trim(),
     meter:    String(e.meter || '').trim(),
     source:   String(e.source || '').trim(),
+    // Hymnal name (e.g. "Worship IV", "Gather III") + number within it.
+    // Music directors search OneLicense by hymnal + number, not title; the
+    // OneLicense URL helper below uses these fields when present.
+    hymnal:       String(e.hymnal || '').trim(),
+    hymnNumber:   String(e.hymnNumber || '').trim(),
     language: (String(e.language || 'en').toLowerCase().slice(0, 2)) || 'en',
     notes:    String(e.notes || '').trim()
   })).filter(e => e.title);
   const record = { entries: cleaned, updatedAt: new Date().toISOString() };
   await kv.set(KEY_NS, PARISH_KEY, record);
   return record;
+}
+
+// Build a OneLicense search URL.  OneLicense's basic search accepts a free-text
+// query in the `keyword` parameter.  Hymnal + number is the most specific
+// query a music director can make; falls back to title + composer.
+function oneLicenseSearchUrl(entry) {
+  if (!entry) return '';
+  const parts = [];
+  if (entry.hymnal)     parts.push(entry.hymnal);
+  if (entry.hymnNumber) parts.push('#' + entry.hymnNumber);
+  if (!parts.length) {
+    if (entry.title)    parts.push(entry.title);
+    if (entry.composer) parts.push(entry.composer);
+  }
+  const q = parts.join(' ').trim();
+  if (!q) return '';
+  return 'https://www.onelicense.net/search?text=' + encodeURIComponent(q);
 }
 
 function normalize(s) {
@@ -76,16 +98,23 @@ function search(library, query, opts = {}) {
     const title = normalize(e.title);
     const tune  = normalize(e.tune);
     const composer = normalize(e.composer);
+    const hymnal = normalize(e.hymnal);
+    const hymnNumber = normalize(e.hymnNumber);
     let score = 0;
     if (title.startsWith(q))       score += 100;
     else if (title.includes(q))    score += 50;
     if (tune.startsWith(q))        score += 80;
     else if (tune.includes(q))     score += 40;
     if (composer.includes(q))      score += 10;
+    // Hymnal-name and -number matches are strong: a director typing
+    // "Worship 612" should land on entry #612 in Worship hymnal.
+    if (hymnal.includes(q))        score += 60;
+    if (hymnNumber === q)          score += 90;
+    else if (hymnNumber.includes(q)) score += 30;
     if (score > 0) results.push({ entry: e, score });
   }
   results.sort((a, b) => b.score - a.score);
   return results.slice(0, limit).map(r => r.entry);
 }
 
-module.exports = { loadLibrary, saveLibrary, search, STARTER_LIBRARY };
+module.exports = { loadLibrary, saveLibrary, search, oneLicenseSearchUrl, STARTER_LIBRARY };

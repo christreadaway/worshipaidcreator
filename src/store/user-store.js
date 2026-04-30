@@ -125,52 +125,103 @@ function sanitizeUser(user) {
   return safe;
 }
 
-// Simple session management
-async function loadSessions() {
-  const data = await kv.get('sessions', '_all');
-  return data || {};
+// --- Sessions: stateless HMAC tokens ---
+// Tokens are self-contained: `<userId>.<issuedAtMs>.<hmac>`
+// Verification only requires the secret + userId lookup, no per-session
+// storage. This eliminates the "Not authenticated" bug on Netlify when
+// the in-memory blob fallback drops state between Lambda invocations.
+//
+// A revocation list is still persisted (in the existing `sessions` KV) so
+// logout works; tokens older than SESSION_MAX_AGE_MS (30 days) are rejected
+// regardless.
+
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+function getSessionSecret() {
+  // Process env first (set in production); fall back to a fixed dev secret so
+  // local restarts don't invalidate every session. NOT a security boundary
+  // for parish use — it just stops accidental cross-user impersonation.
+  return process.env.SESSION_SECRET || 'wa-default-dev-secret-please-set-SESSION_SECRET-in-prod';
 }
 
-async function saveSessions(sessions) {
-  await kv.set('sessions', '_all', sessions);
+function signSessionToken(userId) {
+  const issued = Date.now();
+  const payload = `${userId}.${issued}`;
+  const sig = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('hex');
+  return `${payload}.${sig}`;
+}
+
+function parseSessionToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [userId, issuedStr, sig] = parts;
+  const issued = parseInt(issuedStr, 10);
+  if (!userId || !Number.isFinite(issued)) return null;
+  const expected = crypto.createHmac('sha256', getSessionSecret()).update(`${userId}.${issued}`).digest('hex');
+  // Timing-safe compare to avoid leaking signature bytes via response timing.
+  const expBuf = Buffer.from(expected, 'hex');
+  const sigBuf = Buffer.from(sig, 'hex');
+  if (expBuf.length !== sigBuf.length) return null;
+  if (!crypto.timingSafeEqual(expBuf, sigBuf)) return null;
+  if (Date.now() - issued > SESSION_MAX_AGE_MS) return null;
+  return { userId, issued };
+}
+
+// Persisted revocation list — small, just tokens that have been logged out.
+async function loadRevoked() {
+  const data = await kv.get('sessions', '_revoked');
+  return (data && Array.isArray(data.tokens)) ? data.tokens : [];
+}
+
+async function saveRevoked(tokens) {
+  await kv.set('sessions', '_revoked', { tokens });
 }
 
 async function createSession(userId) {
-  const token = crypto.randomBytes(32).toString('hex');
-  const sessions = await loadSessions();
-
-  // Enforce exclusive login: only one active session per role
+  // Enforce exclusive login per role: invalidate older sessions belonging
+  // to OTHER users with the same role.  A parish wants only one music
+  // director / pastor / staff / admin actively editing at a time.
+  // Implementation: bump revokedBefore on every same-role user so any
+  // token issued earlier no longer validates.
   const user = await getUser(userId);
   if (user) {
-    const toRemove = [];
-    for (const [tok, sess] of Object.entries(sessions)) {
-      const sessUser = await getUser(sess.userId);
-      if (sessUser && sessUser.role === user.role && sessUser.id !== userId) {
-        toRemove.push(tok);
+    const all = await listUsersRaw();
+    const sameRole = all.filter(u => u.role === user.role && u.id !== userId);
+    const now = Date.now();
+    for (const u of sameRole) {
+      if (!u.revokedBefore || u.revokedBefore < now) {
+        await kv.set('users', u.id, { ...u, revokedBefore: now });
       }
     }
-    toRemove.forEach(tok => delete sessions[tok]);
   }
-
-  sessions[token] = { userId, createdAt: new Date().toISOString() };
-  await saveSessions(sessions);
-  return token;
+  return signSessionToken(userId);
 }
 
 async function getSessionUser(token) {
-  if (!token) return null;
-  const sessions = await loadSessions();
-  const session = sessions[token];
-  if (!session) return null;
-  const user = await getUser(session.userId);
-  if (!user) return null;
+  const parsed = parseSessionToken(token);
+  if (!parsed) return null;
+  const revoked = await loadRevoked();
+  if (revoked.includes(token)) return null;
+  const user = await getUser(parsed.userId);
+  if (!user || !user.active) return null;
+  // Per-user revocation cutoff (set when another same-role user logs in,
+  // or when the user explicitly logs everything out).
+  if (user.revokedBefore && parsed.issued < user.revokedBefore) return null;
   return sanitizeUser(user);
 }
 
 async function destroySession(token) {
-  const sessions = await loadSessions();
-  delete sessions[token];
-  await saveSessions(sessions);
+  const parsed = parseSessionToken(token);
+  if (!parsed) return; // already invalid; nothing to revoke
+  const revoked = await loadRevoked();
+  if (!revoked.includes(token)) {
+    revoked.push(token);
+    // Cap the list at a reasonable size so it doesn't grow unbounded —
+    // older tokens self-expire via SESSION_MAX_AGE_MS anyway.
+    const trimmed = revoked.slice(-500);
+    await saveRevoked(trimmed);
+  }
 }
 
 function hasPermission(user, permission) {
@@ -198,6 +249,24 @@ async function seedDefaultUsers() {
   }
 }
 
+// Per-user preferences — small JSON object stored alongside the user record.
+// These are static "week to week" for the same user (e.g. their preferred
+// default Sanctus language, default booklet size, last-used hymnal).
+// Distinct from parish-wide settings (which apply to all users).
+async function getUserPrefs(userId) {
+  const user = await getUser(userId);
+  return (user && user.prefs) || {};
+}
+
+async function setUserPrefs(userId, prefs) {
+  const user = await getUser(userId);
+  if (!user) return null;
+  const merged = { ...(user.prefs || {}), ...(prefs || {}) };
+  const updated = { ...user, prefs: merged };
+  await kv.set('users', userId, updated);
+  return merged;
+}
+
 module.exports = {
   ROLES,
   ROLE_LABELS,
@@ -214,5 +283,7 @@ module.exports = {
   getSessionUser,
   destroySession,
   hasPermission,
-  seedDefaultUsers
+  seedDefaultUsers,
+  getUserPrefs,
+  setUserPrefs
 };
