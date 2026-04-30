@@ -46,15 +46,16 @@ A structured form with clearly labeled sections for all variable content. Organi
   - Second Reading: citation + full text area (toggle "No Second Reading" for some feasts)
   - Gospel Acclamation verse: text field + scripture reference
   - Gospel: citation + full text area
-- **Music Selections** — Three sub-forms, one per Mass time (Sat 5PM, Sun 9AM, Sun 11AM):
-  - Organ Prelude (title, composer) — **NOT a hymn**; quick-pick from the parish attachments library (preludes)
-  - Processional Hymn OR Entrance Antiphon (toggle by season) — typeahead from the hymn library
-  - Lord Have Mercy / Kyrie setting (text + composer) — **NOT a hymn**; quick-pick from the kyrie library
-  - Offertory Anthem (title + composer) — **NOT a hymn**; quick-pick from the offertory-anthem library
+- **Shared Hymns** — sung by the assembly, identical at every Mass.  Entered ONCE.
+  - Processional / Entrance Hymn (title + composer) — typeahead from the hymn library
   - Communion Hymn (title + composer) — typeahead from the hymn library
   - Hymn of Thanksgiving (title + composer) — typeahead from the hymn library
-  - Organ Postlude (title + composer) — **NOT a hymn**; quick-pick from the postlude library
-  - Choral Anthem at Concluding Rites (title + composer, optional) — **NOT a hymn**; quick-pick from the choral-anthem library
+- **Music Per Mass** — three sub-forms (Sat 5PM, Sun 9AM, Sun 11AM), each with the slots that legitimately vary per Mass (organist's choice, choir scheduling).  Each slot gets a "pick from library" dropdown sourced from the parish attachments library — anthems can differ per Mass.
+  - Organ Prelude (title, composer)
+  - Lord Have Mercy / Kyrie setting (text + composer)
+  - Offertory Anthem (title + composer) — typically differs per Mass
+  - Organ Postlude (title + composer)
+  - Choral Anthem at Concluding Rites (title + composer, optional)
 - **Files Referenced** — The aid carries a list of attachments (audio / PDF / score / image) selected from the parish library, either via per-music-slot quick-pick or the "Files Referenced" picker.
 - **Seasonal Overrides** — Auto-populated based on season selector, but editable:
   - Gloria: Yes / No
@@ -65,9 +66,9 @@ A structured form with clearly labeled sections for all variable content. Organi
   - Lamb of God setting: same options
   - Penitential Act: Confiteor (I confess) / Kyrie only
   - Postlude include / omit
-  - Advent Wreath lighting include / omit
+  - **Lighting of the Advent Wreath** — checkbox is shown ONLY when the season is Advent; hidden the rest of the year so it can never sneak into a non-Advent booklet
   - Lenten acclamation choice (when in Lent)
-- **Children's Liturgy Block** — Toggle on/off; if on: **Mass times (checkboxes — any subset of the parish's Masses, plus a free-form "Other" comma list, since Children's Liturgy can run at any number of Masses)**, **Leader (optional)**, music title + composer, **Notes** (printed under the entry)
+- **Children's Liturgy Block** — Toggle on/off; if on: **Mass times (checkboxes — any subset of the parish's Masses, plus a free-form "Other" comma list, since Children's Liturgy can run at any number of Masses)**, **Leader (optional)**, music title + composer, **Notes** (printed under the entry).  Auto-default: ON when school is in session; OFF on **Easter Sunday and Christmas Day themselves** (not the whole Easter / Christmas seasons), during the **summer break** (June–August, kids out of town), and during the **school Christmas break** (Dec 22–Jan 6).
 - **Announcements** — Free text area (optional)
 - **Special Notes** — Free text for any one-off variations (optional)
 
@@ -140,7 +141,8 @@ Based on analysis of existing worship aids (952×1260px JPEG renders = 5.5"×8.5
 - Formatting matches current pattern exactly: Title first (italics), then composer, then Mass times in parentheses
 
 ### 5.5 Readings Sourcing
-- **Default behavior (v1.2):** readings auto-pull from `bible.usccb.org/bible/readings/MMDDYY.cfm` the moment a liturgical date is set. NABRE Lectionary text is the source of truth; alternate translations re-fetch the citations from `bible-api.com` while preserving Lectionary-only items (psalm refrain, gospel acclamation verse).
+- **Auto-fetch is the default behavior.** The moment a liturgical date is set, the readings are pulled — there's no "Fetch" button required for normal use.  NABRE comes from `bible.usccb.org/bible/readings/MMDDYY.cfm` (the U.S. Lectionary); alternate translations come from `bible-api.com` using the same citations, while Lectionary-only items (psalm refrain, gospel acclamation verse) are preserved.
+- A **Refresh readings** button is available for manual re-fetch (e.g. after editing a citation by hand).  Switching the Bible Translation dropdown also re-fetches automatically.
 - All fields stay editable so the user can clean up scraping quirks or swap a long reading for the Lectionary's "shorter form."
 - The Bible Translation dropdown defaults to **NABRE (Lectionary, USCCB)**.
 

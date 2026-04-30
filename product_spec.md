@@ -101,7 +101,8 @@ sample/
 | Liturgical Date & Season | Feast name (auto-fills from date when empty), date picker (auto-detects season + feast), season selector (5 seasons) |
 | Seasonal Settings | Gloria toggle, creed type, entrance type, Holy Holy setting + **language toggle (English / Latin)**, Mystery of Faith setting, Lamb of God setting, penitential act, postlude toggle, Advent wreath toggle, Lenten acclamation choice |
 | Readings | Bible Translation dropdown (defaults to NABRE/USCCB), Fetch-from-USCCB button, First Reading (citation + text), Psalm (citation + refrain + verses), Second Reading (citation + text, with "No Second Reading" toggle), Gospel Acclamation (reference + verse), Gospel (citation + text). Auto-fetched from USCCB the moment a date is set. |
-| Music (x3 mass times) | 8 fields each: Organ Prelude, Processional/Entrance, Kyrie, Offertory, Communion, Thanksgiving, Postlude, Choral Anthem — each with title + composer. **Hymn-library autocomplete is wired only on processional / communion / thanksgiving (true congregational hymns); the other slots get a "pick from library" dropdown drawing from the new attachments library.** |
+| **Shared Hymns** (single set, sung by the assembly at every Mass) | Processional / Entrance, Communion, Thanksgiving — title + composer. Hymn-library autocomplete is wired here. |
+| **Music — per Mass** (x3 mass times) | Organ Prelude, Kyrie, Offertory Anthem, Organ Postlude, Choral Anthem — title + composer per Mass.  Each non-hymn slot gets a "pick from library" dropdown drawing from the parish attachments library so anthems and organ pieces can differ per Mass. |
 | Files Referenced | Editor-side picker for the parish attachments library; per-music-slot quick-pick dropdowns auto-add the chosen file. |
 | Children's Liturgy | Enable toggle, **Mass times (checkboxes — any subset of Sat 5:00 PM / Sun 9:00 AM / Sun 11:00 AM, plus free-form "Other" comma list)**, leader name (optional), music title + composer, notes (printed under the entry) |
 | Notation Images | Upload music notation scans (auto-cropped on upload). |
@@ -363,7 +364,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 
 ## Test Coverage
 
-**184 tests across 9 test files. All passing.**
+**197 tests across 9 test files. All passing.**
 
 | Suite | What It Covers |
 |---|---|

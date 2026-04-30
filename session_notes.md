@@ -666,3 +666,97 @@ After Session 5 went live, three more issues surfaced:
 - PDF generation for a no-`bookletSize` request still succeeds
   (now defaults to tabloid).
 
+### Session 5 follow-up #5: Music restructure + UI cleanups
+
+User feedback batch:
+1. "The masses will share the same hymns, not be different per mass."
+2. "There may be different anthems performed at different masses."
+3. "Lighting of the advent wreath should only be made possible during advent."
+4. "Not sure why there's a 'fetch from USCCB' button. that should be
+   happening by default. if fetching another type of bible, that would
+   fetch from the appropriate source. So maybe that button should be
+   labeled differently."
+5. "I didn't say to turn childrens liturgy of the word OFF for easter
+   season. It's just not happening on Christmas and Easter those days
+   themselves. It also doesn't happen during summer when kids are out
+   of town."
+6. "Stock search links are worthless."
+
+**Shipped:**
+
+- **Music section restructured.** New `Shared Hymns` section
+  (processional, communion, thanksgiving) in the editor — entered
+  ONCE because the assembly sings the same hymn at every Mass.  The
+  three per-Mass blocks now show only the slots that legitimately
+  vary per Mass (Organ Prelude, Kyrie, Offertory Anthem, Organ
+  Postlude, Choral Anthem).  Saved-draft data shape is unchanged —
+  `buildMusicBlock` copies the shared hymn values into every per-Mass
+  block at save time, so the renderer's consolidation logic keeps
+  producing one hymn line and per-Mass anthem lines as before.
+  Loading a legacy draft pulls the shared values from whichever
+  per-Mass block has them filled (prefers `musicSat5pm`).
+  - Hymn-library typeahead now fires only on the shared-hymn inputs.
+  - Each per-Mass block still gets its own attachments quick-pick
+    for prelude/kyrie/offertory/postlude/choral so anthems can
+    differ per Mass without the hymn library getting in the way.
+
+- **Advent Wreath checkbox hidden outside Advent.** The
+  `adventWreathRow` element is created with `display:none`;
+  `updateSeasonUI()` toggles visibility on every season change and
+  also resets the checkbox when leaving Advent so a stale check
+  can't sneak into the booklet.
+
+- **"Fetch from USCCB" → "Refresh readings".** Auto-fetch already
+  fires on every date change, so a manual button labeled with the
+  source was confusing.  The button now just refreshes whatever
+  translation is selected.  Translation `<select>` got an
+  `onchange="fetchReadingsFromUsccb()"` handler so switching
+  translations re-fetches automatically.  Section copy clarifies
+  the dual-source behavior: NABRE comes from USCCB, the other
+  translations come from `bible-api.com` using the same citations.
+
+- **Children's Liturgy auto-rule fixed.**  No more "off during the
+  whole Easter season" — Easter Sunday itself is computed from the
+  date (via `computeEaster(year)`) and only that day suppresses
+  Children's Liturgy.  Christmas Day is similarly explicit.  The
+  summer-break (June–August) and school-Christmas-break
+  (Dec 22–Jan 6) rules are unchanged.
+
+- **Cover-suggestion search links swapped to art sources.**
+  Unsplash and Pexels are gone.  Replaced with Catholic-friendly
+  collections that have substantial sacred-art holdings:
+  `Wikimedia Commons`, `Web Gallery of Art`,
+  `The Met (Open Access)`, and `Vatican Museums`.
+
+**Tests added (13 new; suite is now 197/197 passing):**
+
+- Editor exposes shared-hymn inputs (processional, communion,
+  thanksgiving + composers).
+- Per-Mass blocks contain no hymn inputs.
+- Per-Mass blocks still contain prelude/kyrie/offertory/postlude/
+  choral.
+- Hymn-search typeahead is wired only to shared-hymn fields.
+- `adventWreathRow` defaults to `display:none`.
+- `updateSeasonUI` sets row visibility based on season===advent.
+- "Refresh readings" button label; old "Fetch from USCCB" gone.
+- Section copy mentions both `bible.usccb.org` and `bible-api.com`.
+- Translation `<select>` triggers re-fetch on change.
+- Children's Liturgy: explicit Easter-Sunday and Christmas-Day
+  off-rules; whole-season off-rules removed.
+- Children's Liturgy: summer-break and Christmas-break rules
+  preserved.
+- Cover-suggestions API returns Wikimedia/WGA/Met/Vatican links
+  (no Unsplash/Pexels).
+- SPA renders the new Catholic-friendly source labels.
+
+**Smoke test on a clean server boot:**
+- jd login OK.
+- Editor markup: Shared Hymns section present, per-Mass
+  processional inputs absent, advent wreath row hidden,
+  "Refresh readings" button visible.
+- `POST /api/cover-suggestions` returns Wikimedia + WGA + Met +
+  Vatican links.
+- Saved-draft round-trip: same processional hymn across three
+  Masses renders ONCE on the booklet; three different offertory
+  anthems all render on their respective Mass-time lines.
+
