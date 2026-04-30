@@ -151,9 +151,9 @@ Based on analysis of existing worship aids (952×1260px JPEG renders = 5.5"×8.5
 
 ### 5.7 Date-Driven Liturgical Calendar
 - A built-in liturgical calendar (`src/liturgical-calendar.js`, US General Roman Calendar) computes both the season and the feast / Sunday name for any date.
-- On every date change, the editor calls `/api/liturgical-info?date=YYYY-MM-DD` and:
-  - Auto-selects the season unless the user already picked a different one.
-  - Fills the **Feast / Sunday Name** field — but only if it is currently empty. A typed override is preserved; clearing the field then changing the date re-fills it.
+- On every date change AND on saved-draft load, the editor calls `/api/liturgical-info?date=YYYY-MM-DD` and:
+  - **Always sets the season to match the date — even if the field already has a value.** The selector is the source of truth for "what season is this aid in," but the date determines that season; a stale or wrong season on a saved draft is auto-corrected on load. Manual overrides of the *seasonal sub-settings* (Gloria, creed, Holy Holy setting, etc.) are preserved because the season-defaults cascade only fires when the season actually changes.
+  - Fills the **Feast / Sunday Name** field only if it is currently empty. A typed override is preserved; clearing the field then changing the date re-fills it.
 - Coverage: Sundays of Advent / Lent / Easter (numbered), Triduum, Easter Sunday, Divine Mercy, Ascension, Pentecost, Trinity, Corpus Christi, Sacred Heart, Christ the King, Holy Family, Baptism of the Lord, Epiphany, Nicene fixed feasts (Annunciation, Assumption, All Saints, Immaculate Conception, etc.), and numbered Sundays in Ordinary Time anchored so Christ the King = 34th Sunday.
 
 ### 5.8 Sanctus Language Toggle

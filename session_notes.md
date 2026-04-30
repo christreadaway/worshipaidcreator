@@ -515,5 +515,45 @@ Feature summary:
 - Branch: `claude/add-file-uploads-yxr13`
 - Pushed: yes (origin matches)
 - Working tree: clean
-- Tests: 168/168 passing
+- Tests: 170/170 passing
+
+### Session 5 follow-up commits (April 30, 2026, same branch)
+
+After the initial session shipped, two follow-up issues surfaced and
+were fixed in `claude/add-file-uploads-yxr13`:
+
+1. **Readings panel layout collapse.** The 3-column toolbar grid
+   (translation / button / status) overflowed the 380px sidebar and
+   crushed every reading input below it into a 1-character vertical
+   strip on the right edge. Restructured as a 2-column grid
+   (`minmax(0, 1fr) auto`) for translation + button, with the status
+   message on its own line below. Regression test in
+   `attachments-and-calendar.test.js` asserts the new markup.
+
+2. **Liturgical season didn't track the date when loading a saved
+   draft.** The date-change handler already auto-detected the season,
+   but loading a draft via `populateForm()` set the season directly
+   from saved data and never reconciled it against the date.
+   Introduced `reconcileSeasonAndFeastFromDate({ feastFillIfEmpty })`,
+   which fetches `/api/liturgical-info` and forces the season selector
+   to match the date — without clobbering the saved seasonal
+   sub-settings (Gloria, creed, music settings) because we only run
+   `onSeasonChange()` when the season actually changes. Called from
+   both `populateForm` (after a draft loads) and the date-change
+   handler. Regression test asserts the function is wired up.
+
+Manual smoke test against a fresh server boot:
+- All six default users (`jd`, `morris`, `vincent`, `frlarry`, `kari`,
+  `donna`) authenticate.
+- 20 calendar dates from Christmas 2025 through Immaculate Conception
+  2026 return the correct feast name + season (Christmas, Mary Mother
+  of God, Epiphany, Ash Wednesday, every Sunday of Lent, Triduum,
+  Easter, Divine Mercy, Pentecost, Trinity, Corpus Christi,
+  Assumption, All Saints, Christ the King, First Sunday of Advent,
+  Immaculate Conception).
+- Attachments full CRUD round-trip (upload → list → download →
+  update → delete) with disk file removed.
+- Preview rendering with parish default `defaultSanctusLanguage=latin`
+  + per-aid override `holyHolyLanguage=english` correctly produces
+  English Sanctus (per-aid > parish precedence verified).
 

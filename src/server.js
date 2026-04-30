@@ -1761,6 +1761,45 @@ function populateForm(data) {
   window._attachmentRefs = Array.isArray(data.attachmentRefs) ? data.attachmentRefs.slice() : [];
   renderAttachmentRefList();
   updateSeasonUI();
+  // After loading a saved draft, force the liturgical season to track the
+  // saved date.  The date is the source of truth — if a draft was saved
+  // with a stale or incorrect season, loading it should fix the field
+  // automatically.  This runs async; it does NOT clobber the user's
+  // saved seasonal sub-settings (Gloria, creed, settings names) because
+  // we only call onSeasonChange() if the season selector value actually
+  // changes, which preserves manual overrides.
+  if (data.liturgicalDate) {
+    reconcileSeasonAndFeastFromDate({ feastFillIfEmpty: true });
+  }
+}
+
+// Re-derive the liturgical season + feast name from the current date and
+// apply them.  Used both when the user changes the date and when loading
+// a saved draft.  By default the feast name is filled only when empty,
+// matching the date-change behavior.
+async function reconcileSeasonAndFeastFromDate(opts) {
+  const date = v('liturgicalDate');
+  if (!date) return;
+  let info = null;
+  try {
+    const r = await fetch('/api/liturgical-info?date=' + encodeURIComponent(date));
+    if (r.ok) info = await r.json();
+  } catch (e) { /* network blip — leave fields alone */ }
+  if (!info) return;
+  const seasonSel = document.getElementById('liturgicalSeason');
+  if (info.liturgicalSeason && seasonSel && seasonSel.value !== info.liturgicalSeason) {
+    seasonSel.value = info.liturgicalSeason;
+    // Don't run onSeasonChange here — we don't want to overwrite the
+    // user's saved seasonal sub-settings on draft load.  The season
+    // selector itself reflects the date; the rest is preserved.
+    updateSeasonUI();
+  }
+  if (opts && opts.feastFillIfEmpty) {
+    const feastEl = document.getElementById('feastName');
+    if (info.feastName && feastEl && !feastEl.value.trim()) {
+      feastEl.value = info.feastName;
+    }
+  }
 }
 
 // --- Season auto-rules ---
@@ -1926,11 +1965,20 @@ async function onLiturgicalDateChange() {
   } catch (e) { /* fall back to local season detection */ }
   const detected = (info && info.liturgicalSeason) || detectLiturgicalSeason(date);
   const seasonSel = document.getElementById('liturgicalSeason');
-  if (detected && seasonSel && seasonSel.value !== detected) {
-    seasonSel.value = detected;
-    await onSeasonChange(); // applies seasonal defaults + cascades to children's liturgy
-  } else {
-    applyChildrenLiturgyAutoDefault();
+  // Liturgical season ALWAYS tracks the date — even if the field already
+  // has a value.  We still only run onSeasonChange (which resets seasonal
+  // defaults) when the season actually changes, so manual seasonal
+  // overrides aren't clobbered on every date tweak.
+  if (detected && seasonSel) {
+    if (seasonSel.value !== detected) {
+      seasonSel.value = detected;
+      await onSeasonChange(); // applies seasonal defaults + cascades to children's liturgy
+    } else {
+      // Same season — but make sure the selector is visibly correct and
+      // re-run the children's-liturgy school-calendar check.
+      seasonSel.value = detected;
+      applyChildrenLiturgyAutoDefault();
+    }
   }
   // Fill the feast/Sunday name only when the field is empty.  This way a
   // manually-typed override is preserved, but starting fresh (or clearing the

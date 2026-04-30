@@ -277,9 +277,16 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
     = 34th Sunday).
   - Fallback: weekday + month/day if no rule matches.
 - `GET /api/liturgical-info?date=YYYY-MM-DD` returns
-  `{date, liturgicalSeason, feastName}`. Editor calls this on every
-  date change and fills the Feast / Sunday Name input only if it's
-  empty (manual overrides preserved).
+  `{date, liturgicalSeason, feastName}`.
+- **Liturgical season ALWAYS tracks the date.** When the user changes
+  the date — and when a saved draft loads — the season selector is
+  set to the date-derived value. Manual overrides of the seasonal
+  sub-settings (Gloria, creed, Holy Holy setting, etc.) are preserved
+  because `onSeasonChange()` only runs when the season actually
+  changes. The reconciliation helper is `reconcileSeasonAndFeastFromDate({ feastFillIfEmpty })` in `src/server.js`.
+- **Feast / Sunday Name auto-fills only when empty** — a manually
+  typed override is preserved; clearing the field then changing the
+  date refills it.
 
 ### 20. Sanctus / Holy, Holy, Holy Language Toggle
 
@@ -350,7 +357,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 
 ## Test Coverage
 
-**168 tests across 9 test files. All passing.**
+**170 tests across 9 test files. All passing.**
 
 | Suite | What It Covers |
 |---|---|

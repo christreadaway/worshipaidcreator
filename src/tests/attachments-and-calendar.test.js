@@ -319,4 +319,26 @@ describe('Editor HTML smoke', () => {
     assert.ok(html.includes('id="childrenLiturgyLeader"'));
     assert.ok(html.includes('id="childrenLiturgyNotes"'));
   });
+
+  it('readings toolbar uses the simplified 2-col layout + status row', async () => {
+    const html = (await fetch('/')).text();
+    // Toolbar div exists and contains the dropdown + button
+    assert.ok(html.includes('class="readings-toolbar"'));
+    assert.ok(html.includes('id="bibleTranslation"'));
+    assert.ok(html.includes('id="fetchReadingsBtn"'));
+    // Status moved to its own paragraph below
+    assert.ok(/<p class="readings-status" id="fetchReadingsStatus">/.test(html));
+    // CSS no longer references the old 3-column layout
+    assert.ok(!html.includes('readings-status-cell'));
+    assert.ok(html.includes('grid-template-columns: minmax(0, 1fr) auto'));
+  });
+
+  it('exposes reconcileSeasonAndFeastFromDate for draft loads', async () => {
+    const html = (await fetch('/')).text();
+    // Function defined in the SPA so populateForm can call it on draft load.
+    assert.ok(/function reconcileSeasonAndFeastFromDate/.test(html));
+    // populateForm calls it after setting the date so the season tracks
+    // the date even when the field is full.
+    assert.ok(html.includes('reconcileSeasonAndFeastFromDate({ feastFillIfEmpty: true })'));
+  });
 });
