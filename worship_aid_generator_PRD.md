@@ -46,16 +46,17 @@ A structured form with clearly labeled sections for all variable content. Organi
   - Second Reading: citation + full text area (toggle "No Second Reading" for some feasts)
   - Gospel Acclamation verse: text field + scripture reference
   - Gospel: citation + full text area
-- **Shared Hymns** — sung by the assembly, identical at every Mass.  Entered ONCE.
-  - Processional / Entrance Hymn (title + composer) — typeahead from the hymn library
-  - Communion Hymn (title + composer) — typeahead from the hymn library
-  - Hymn of Thanksgiving (title + composer) — typeahead from the hymn library
-- **Music Per Mass** — three sub-forms (Sat 5PM, Sun 9AM, Sun 11AM), each with the slots that legitimately vary per Mass (organist's choice, choir scheduling).  Each slot gets a "pick from library" dropdown sourced from the parish attachments library — anthems can differ per Mass.
+- **Shared Music** — same at every Mass, entered ONCE.  Per the music director, the only slots that legitimately differ per Mass are the two anthems (below); everything else is shared.
   - Organ Prelude (title, composer)
+  - Processional / Entrance Hymn (title + composer) — hymn-library typeahead
   - Lord Have Mercy / Kyrie setting (text + composer)
-  - Offertory Anthem (title + composer) — typically differs per Mass
+  - Communion Hymn (title + composer) — hymn-library typeahead
+  - Hymn of Thanksgiving (title + composer) — hymn-library typeahead
   - Organ Postlude (title + composer)
-  - Choral Anthem at Concluding Rites (title + composer, optional)
+- **Per-Mass Anthems** — three sub-forms (Sat 5PM, Sun 9AM, Sun 11AM), each holding only the two slots that may be scheduled differently per Mass:
+  - **Offertory Anthem** (title + composer)
+  - **Choral Anthem at Communion** (title + composer) — performed by the choir during Communion (NOT during Concluding Rites; that was a layout error in the original PRD).
+  Each slot gets a "pick from library" dropdown sourced from the parish attachments library.
 - **Files Referenced** — The aid carries a list of attachments (audio / PDF / score / image) selected from the parish library, either via per-music-slot quick-pick or the "Files Referenced" picker.
 - **Seasonal Overrides** — Auto-populated based on season selector, but editable:
   - Gloria: Yes / No
@@ -394,8 +395,8 @@ Based on analysis of 10 existing worship aids (Christmas Eve 2025 through 2nd Su
 | 3 | Liturgy of the Word | First Reading (full text), Psalm (verses + refrain), Second Reading (full text), Gospel Acclamation verse | Section header, reading labels, psalm refrain label |
 | 4 | Gospel + Creed | Gospel (full text), Creed (full text) | Homily cue, Prayer of the Faithful cue, Creed text (from template) |
 | 5 | Liturgy of the Eucharist | Offertory anthem (per mass time), Holy Holy setting | Section header, Invitation to Prayer dialogue (fixed), Mystery of Faith cue, Great Amen cue |
-| 6 | Communion Rite | Communion hymn, Lamb of God setting | Section header, Lord's Prayer cue, Sign of Peace cue, Communion Antiphon cue |
-| 7 | Concluding Rites | Hymn of Thanksgiving, Choral Anthem (optional), Organ Postlude | Blessing & Dismissal cue, short copyright block |
+| 6 | Communion Rite | Communion hymn, Lamb of God setting, **Choral Anthem at Communion** (per-Mass) | Section header, Lord's Prayer cue, Sign of Peace cue, Communion Antiphon cue |
+| 7 | Concluding Rites | Hymn of Thanksgiving, Organ Postlude | Blessing & Dismissal cue, short copyright block |
 | 8 | Back Cover | (sometimes hymn lyrics for Christmas) | Full copyright block |
 
 ---

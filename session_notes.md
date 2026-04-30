@@ -760,3 +760,49 @@ User feedback batch:
   Masses renders ONCE on the booklet; three different offertory
   anthems all render on their respective Mass-time lines.
 
+### Session 5 follow-up #6: Music expert correction
+
+Music director feedback after seeing the previous restructure:
+"The only items that differ are the offertory anthem and the choral
+anthem.  Also, the choral anthem happens at Communion, not 'Concluding.'"
+
+**Shipped:**
+
+- **Shared Music** now covers everything except the two anthems:
+  Organ Prelude, Processional / Entrance Hymn, Kyrie setting,
+  Communion Hymn, Hymn of Thanksgiving, and Organ Postlude.  Entered
+  ONCE because they're identical at every Mass.
+- **Per-Mass blocks** now contain only Offertory Anthem and Choral
+  Anthem at Communion — the two slots a music director may schedule
+  differently per Mass (different choirs / ensembles).
+- **Choral Anthem moved from page 7 (Concluding Rites) to page 6
+  (Communion Rite).** Both the HTML template and the PDFKit
+  generator now render it after the Communion Hymn, where the music
+  director says it actually happens liturgically.  The PRD's old
+  layout (anthem on page 7) was wrong.
+- Schema field name `choralAnthemConcluding` is preserved for back-
+  compat with saved drafts; only the rendering position and label
+  changed.  UI label is now "Choral Anthem (Communion)".
+- buildMusicBlock copies all six shared values (prelude / processional
+  / kyrie / communion / thanksgiving / postlude) into every per-Mass
+  block at save time, so the renderer's same-across-Masses
+  consolidation keeps producing one line per shared slot.
+  populateSharedMusic does the inverse on draft load.
+
+**Tests updated (4 in this round; suite still 197/197 passing):**
+
+- "Shared Music" section exposes inputs for prelude/processional/
+  kyrie/communion/thanksgiving/postlude.
+- Per-Mass blocks contain ONLY offertory + choral; prelude/kyrie/
+  postlude/processional/communion/thanksgiving are absent from
+  per-Mass blocks.
+- Hymn typeahead is wired to processional/communion/thanksgiving
+  shared inputs, not to the organ/kyrie shared inputs.
+- Choral Anthem renders on page 6 (Communion Rite), NOT on page 7.
+
+Smoke verified on a clean server boot:
+- POST /api/preview with a draft where the same prelude/Kyrie/
+  postlude play at all three Masses renders each ONCE; three
+  different offertory anthems each render on their own Mass-time
+  lines; the choral anthem appears in the Communion Rite page (6).
+

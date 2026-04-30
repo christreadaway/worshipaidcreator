@@ -1135,38 +1135,38 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
       </div>
     </div>
 
-    <!-- SHARED HYMNS — sung by the assembly, identical at every Mass -->
-    <div class="form-section" id="section-shared-hymns">
-      <div class="form-section-hdr" onclick="toggle(this)">Shared Hymns (sung by the assembly) <span>&#9660;</span></div>
+    <!-- SHARED MUSIC — same at every Mass -->
+    <div class="form-section" id="section-shared-music">
+      <div class="form-section-hdr" onclick="toggle(this)">Shared Music (same at every Mass) <span>&#9660;</span></div>
       <div class="form-section-body">
-        <p class="section-lock">Hymns are sung by the whole assembly, so they're identical at every Mass — enter once here.  Per-Mass differences (organ pieces, the Kyrie setting, anthems) live in the three blocks below.</p>
-        ${sharedHymnFields()}
+        <p class="section-lock">Organ prelude/postlude, Kyrie setting, processional hymn, communion hymn, and the hymn of thanksgiving are the same at every Mass — enter them once here.  The only items that legitimately differ per Mass are the Offertory Anthem and the Choral Anthem at Communion (different choirs / ensembles).</p>
+        ${sharedMusicFields()}
       </div>
     </div>
 
     <!-- MUSIC: SAT 5PM -->
     <div class="form-section" id="section-music-sat5pm">
-      <div class="form-section-hdr" onclick="toggle(this)">Music — Sat 5:00 PM <span>&#9660;</span></div>
+      <div class="form-section-hdr" onclick="toggle(this)">Music — Sat 5:00 PM (anthems) <span>&#9660;</span></div>
       <div class="form-section-body" id="music-sat5pm-body">
-        <p class="section-lock">Organ pieces, Kyrie setting, and anthems may differ at this Mass — fill in only what's specific to it.</p>
+        <p class="section-lock">Anthems may differ at this Mass — fill in only what's specific to it. Leave blank to inherit nothing (the offertory + choral-anthem slots are optional).</p>
         ${musicBlockFields('sat5pm')}
       </div>
     </div>
 
     <!-- MUSIC: SUN 9AM -->
     <div class="form-section" id="section-music-sun9am">
-      <div class="form-section-hdr" onclick="toggle(this)">Music — Sun 9:00 AM <span>&#9660;</span></div>
+      <div class="form-section-hdr" onclick="toggle(this)">Music — Sun 9:00 AM (anthems) <span>&#9660;</span></div>
       <div class="form-section-body" id="music-sun9am-body">
-        <p class="section-lock">Organ pieces, Kyrie setting, and anthems may differ at this Mass — fill in only what's specific to it.</p>
+        <p class="section-lock">Anthems may differ at this Mass — fill in only what's specific to it.</p>
         ${musicBlockFields('sun9am')}
       </div>
     </div>
 
     <!-- MUSIC: SUN 11AM -->
     <div class="form-section" id="section-music-sun11am">
-      <div class="form-section-hdr" onclick="toggle(this)">Music — Sun 11:00 AM <span>&#9660;</span></div>
+      <div class="form-section-hdr" onclick="toggle(this)">Music — Sun 11:00 AM (anthems) <span>&#9660;</span></div>
       <div class="form-section-body" id="music-sun11am-body">
-        <p class="section-lock">Organ pieces, Kyrie setting, and anthems may differ at this Mass — fill in only what's specific to it.</p>
+        <p class="section-lock">Anthems may differ at this Mass — fill in only what's specific to it.</p>
         ${musicBlockFields('sun11am')}
       </div>
     </div>
@@ -1676,31 +1676,37 @@ function sv(id, val) { const el = document.getElementById(id); if (el) el.value 
 function sc(id, val) { const el = document.getElementById(id); if (el) el.checked = !!val; }
 
 function buildMusicBlock(prefix) {
-  // Hymns (processional, communion, thanksgiving) are sung by the assembly
-  // and shared across every Mass — they're entered ONCE in the Shared Hymns
-  // section and copied into every per-Mass block here, so the renderer's
-  // consolidation logic still produces a single line per hymn slot.
-  const sharedProcTitle    = v('shared_processional');
-  const sharedProcComposer = v('shared_processionalComposer');
-  const sharedCommTitle    = v('shared_communion');
-  const sharedCommComposer = v('shared_communionComposer');
-  const sharedThanksTitle  = v('shared_thanksgiving');
-  const sharedThanksComposer = v('shared_thanksgivingComposer');
+  // All shared values come from the Shared Music section and are copied into
+  // every per-Mass block here so the saved-draft schema (musicSat5pm /
+  // musicSun9am / musicSun11am) stays the same — this keeps the renderer's
+  // consolidation logic happy and means legacy drafts open cleanly.
+  const sharedPreludeTitle    = v('shared_organPrelude');
+  const sharedPreludeComposer = v('shared_organPreludeComposer');
+  const sharedProcTitle       = v('shared_processional');
+  const sharedProcComposer    = v('shared_processionalComposer');
+  const sharedKyrieTitle      = v('shared_kyrie');
+  const sharedKyrieComposer   = v('shared_kyrieComposer');
+  const sharedCommTitle       = v('shared_communion');
+  const sharedCommComposer    = v('shared_communionComposer');
+  const sharedThanksTitle     = v('shared_thanksgiving');
+  const sharedThanksComposer  = v('shared_thanksgivingComposer');
+  const sharedPostludeTitle   = v('shared_postlude');
+  const sharedPostludeComposer = v('shared_postludeComposer');
   return {
-    organPrelude: v(prefix + '_organPrelude'),
-    organPreludeComposer: v(prefix + '_organPreludeComposer'),
+    organPrelude: sharedPreludeTitle,
+    organPreludeComposer: sharedPreludeComposer,
     processionalOrEntrance: sharedProcTitle,
     processionalOrEntranceComposer: sharedProcComposer,
-    kyrieSetting: v(prefix + '_kyrie'),
-    kyrieComposer: v(prefix + '_kyrieComposer'),
+    kyrieSetting: sharedKyrieTitle,
+    kyrieComposer: sharedKyrieComposer,
     offertoryAnthem: v(prefix + '_offertory'),
     offertoryAnthemComposer: v(prefix + '_offertoryComposer'),
     communionHymn: sharedCommTitle,
     communionHymnComposer: sharedCommComposer,
     hymnOfThanksgiving: sharedThanksTitle,
     hymnOfThanksgivingComposer: sharedThanksComposer,
-    organPostlude: v(prefix + '_postlude'),
-    organPostludeComposer: v(prefix + '_postludeComposer'),
+    organPostlude: sharedPostludeTitle,
+    organPostludeComposer: sharedPostludeComposer,
     choralAnthemConcluding: v(prefix + '_choral'),
     choralAnthemConcludingComposer: v(prefix + '_choralComposer')
   };
@@ -1708,37 +1714,38 @@ function buildMusicBlock(prefix) {
 
 function populateMusicBlock(prefix, block) {
   if (!block) return;
-  // Per-Mass non-hymn slots only.  Hymn fields are populated separately
-  // via populateSharedHymns() so the value lives in one place in the UI.
-  sv(prefix + '_organPrelude', block.organPrelude);
-  sv(prefix + '_organPreludeComposer', block.organPreludeComposer);
-  sv(prefix + '_kyrie', block.kyrieSetting);
-  sv(prefix + '_kyrieComposer', block.kyrieComposer);
+  // Per-Mass slots only — offertory anthem + choral anthem.  The shared
+  // slots (organ pieces, Kyrie, hymns) are populated by populateSharedMusic()
+  // so the value lives in one place in the UI.
   sv(prefix + '_offertory', block.offertoryAnthem);
   sv(prefix + '_offertoryComposer', block.offertoryAnthemComposer);
-  sv(prefix + '_postlude', block.organPostlude);
-  sv(prefix + '_postludeComposer', block.organPostludeComposer);
   sv(prefix + '_choral', block.choralAnthemConcluding);
   sv(prefix + '_choralComposer', block.choralAnthemConcludingComposer);
 }
 
-// Pull the shared hymn values out of a saved draft.  Prefer Sat 5pm if its
-// hymn fields are filled; fall back to whichever block has a value (legacy
-// drafts may have the same hymn in all blocks).
-function populateSharedHymns(data) {
+// Pull the shared values out of a saved draft.  We look at every per-Mass
+// block and use the first non-empty value found (legacy drafts have the same
+// value across blocks for shared slots; new drafts will have it on Sat).
+function populateSharedMusic(data) {
   function pickFromBlocks(field) {
     for (const key of ['musicSat5pm', 'musicSun9am', 'musicSun11am']) {
-      const v = data && data[key] && data[key][field];
-      if (v) return v;
+      const value = data && data[key] && data[key][field];
+      if (value) return value;
     }
     return '';
   }
+  sv('shared_organPrelude',         pickFromBlocks('organPrelude'));
+  sv('shared_organPreludeComposer', pickFromBlocks('organPreludeComposer'));
   sv('shared_processional',         pickFromBlocks('processionalOrEntrance'));
   sv('shared_processionalComposer', pickFromBlocks('processionalOrEntranceComposer'));
+  sv('shared_kyrie',                pickFromBlocks('kyrieSetting'));
+  sv('shared_kyrieComposer',        pickFromBlocks('kyrieComposer'));
   sv('shared_communion',            pickFromBlocks('communionHymn'));
   sv('shared_communionComposer',    pickFromBlocks('communionHymnComposer'));
   sv('shared_thanksgiving',         pickFromBlocks('hymnOfThanksgiving'));
   sv('shared_thanksgivingComposer', pickFromBlocks('hymnOfThanksgivingComposer'));
+  sv('shared_postlude',             pickFromBlocks('organPostlude'));
+  sv('shared_postludeComposer',     pickFromBlocks('organPostludeComposer'));
 }
 
 function buildData() {
@@ -1824,7 +1831,7 @@ function populateForm(data) {
   populateMusicBlock('sat5pm', data.musicSat5pm);
   populateMusicBlock('sun9am', data.musicSun9am);
   populateMusicBlock('sun11am', data.musicSun11am);
-  populateSharedHymns(data);
+  populateSharedMusic(data);
   sc('childrenLiturgyEnabled', data.childrenLiturgyEnabled);
   // If the saved doc carries an explicit value, respect it; otherwise the
   // load is a no-op and auto-defaults will run on date/season change.
@@ -3061,20 +3068,17 @@ setTimeout(initGoogleSignIn, 500);
 </html>`;
 }
 
-// Helper: per-Mass music fields (non-hymn slots only).  Hymns
-// (processional, communion, thanksgiving) are sung by the assembly so they
-// must be the same at every Mass — they live in the shared-hymns section
-// above this, not inside per-Mass blocks.  These slots can legitimately
-// vary per Mass (organist's choice, choir scheduling, ensemble availability),
-// so each Mass keeps its own inputs:
+// Helper: per-Mass music fields (offertory anthem + choral anthem only).
+// Per the music director's input, the ONLY slots that legitimately vary by
+// Mass are the Offertory Anthem and the Choral Anthem (Communion).  Everything
+// else — organ prelude, processional, Kyrie setting, communion hymn, hymn of
+// thanksgiving, organ postlude — is the same at every Mass and lives in the
+// Shared Music section above the per-Mass blocks.
 function musicBlockFields(prefix) {
   const fields = [
-    // [titleId, composerId, label, source]
-    ['organPrelude',  'organPreludeComposer',  'Organ Prelude',                  'prelude'],
-    ['kyrie',         'kyrieComposer',         'Lord, Have Mercy (Kyrie)',       'kyrie'],
-    ['offertory',     'offertoryComposer',     'Offertory Anthem',               'offertory_anthem'],
-    ['postlude',      'postludeComposer',      'Organ Postlude',                 'postlude'],
-    ['choral',        'choralComposer',        'Choral Anthem (Concluding)',     'choral_anthem']
+    // [titleId, composerId, label, attachment-kind]
+    ['offertory', 'offertoryComposer', 'Offertory Anthem',          'offertory_anthem'],
+    ['choral',    'choralComposer',    'Choral Anthem (Communion)', 'choral_anthem']
   ];
   return fields.map(([titleId, compId, label, source]) => {
     const helper = `
@@ -3088,7 +3092,7 @@ function musicBlockFields(prefix) {
         <div class="fg" style="position:relative;">
           <label>${label}</label>
           <input type="text" id="${prefix}_${titleId}" placeholder="Title" autocomplete="off" data-pair-composer="${prefix}_${compId}">
-          <span style="font-size:9px;color:var(--gray);">not a hymn — pulls from the Library</span>
+          <span style="font-size:9px;color:var(--gray);">may differ at this Mass — pulls from the Library</span>
           ${helper}
         </div>
         <div class="fg"><label>&nbsp;</label><input type="text" id="${prefix}_${compId}" placeholder="Composer"></div>
@@ -3097,24 +3101,43 @@ function musicBlockFields(prefix) {
   }).join('');
 }
 
-// Helper: shared-hymn fields — sung by the assembly, identical across every
-// Mass.  Wired to the hymn-library typeahead.
-function sharedHymnFields() {
+// Helper: the Shared Music section — every slot that's the same at every Mass.
+// Hymns get the hymn-library typeahead; organ pieces and the Kyrie setting
+// get attachment-library quick-picks (they're not congregational hymns).
+function sharedMusicFields() {
+  // [titleId, composerId, label, source]   source: 'hymn' or attachment kind
   const fields = [
-    ['processional', 'processionalComposer', 'Processional / Entrance Hymn'],
-    ['communion',    'communionComposer',    'Communion Hymn'],
-    ['thanksgiving', 'thanksgivingComposer', 'Hymn of Thanksgiving']
+    ['organPrelude', 'organPreludeComposer', 'Organ Prelude',                    'prelude'],
+    ['processional', 'processionalComposer', 'Processional / Entrance Hymn',     'hymn'],
+    ['kyrie',        'kyrieComposer',        'Lord, Have Mercy (Kyrie)',         'kyrie'],
+    ['communion',    'communionComposer',    'Communion Hymn',                   'hymn'],
+    ['thanksgiving', 'thanksgivingComposer', 'Hymn of Thanksgiving',             'hymn'],
+    ['postlude',     'postludeComposer',     'Organ Postlude',                   'postlude']
   ];
-  return fields.map(([titleId, compId, label]) => `
-    <div class="fg-row">
-      <div class="fg" style="position:relative;">
-        <label>${label}</label>
-        <input type="text" id="shared_${titleId}" placeholder="Title" autocomplete="off" data-hymn-search="title" data-pair-composer="shared_${compId}">
-        <span style="font-size:9px;color:var(--gray);">type to search the hymn library</span>
+  return fields.map(([titleId, compId, label, source]) => {
+    const titleAttrs = source === 'hymn'
+      ? `data-hymn-search="title" data-pair-composer="shared_${compId}"`
+      : `data-pair-composer="shared_${compId}"`;
+    const helper = source === 'hymn'
+      ? '<span style="font-size:9px;color:var(--gray);">type to search the hymn library</span>'
+      : `
+        <span style="font-size:9px;color:var(--gray);">not a hymn — pulls from the Library</span>
+        <div class="attachment-pick-row">
+          <select data-attachment-slot="shared_${titleId}" data-attachment-kind="${source}" id="shared_${titleId}_attachmentSelect" onchange="pickAttachmentIntoMusicSlot('shared', '${titleId}', '${source}')">
+            <option value="">— pick from library —</option>
+          </select>
+        </div>`;
+    return `
+      <div class="fg-row">
+        <div class="fg" style="position:relative;">
+          <label>${label}</label>
+          <input type="text" id="shared_${titleId}" placeholder="Title" autocomplete="off" ${titleAttrs}>
+          ${helper}
+        </div>
+        <div class="fg"><label>&nbsp;</label><input type="text" id="shared_${compId}" placeholder="Composer"></div>
       </div>
-      <div class="fg"><label>&nbsp;</label><input type="text" id="shared_${compId}" placeholder="Composer"></div>
-    </div>
-  `).join('');
+    `;
+  }).join('');
 }
 
 module.exports = app;

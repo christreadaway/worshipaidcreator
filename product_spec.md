@@ -101,8 +101,8 @@ sample/
 | Liturgical Date & Season | Feast name (auto-fills from date when empty), date picker (auto-detects season + feast), season selector (5 seasons) |
 | Seasonal Settings | Gloria toggle, creed type, entrance type, Holy Holy setting + **language toggle (English / Latin)**, Mystery of Faith setting, Lamb of God setting, penitential act, postlude toggle, Advent wreath toggle, Lenten acclamation choice |
 | Readings | Bible Translation dropdown (defaults to NABRE/USCCB), Fetch-from-USCCB button, First Reading (citation + text), Psalm (citation + refrain + verses), Second Reading (citation + text, with "No Second Reading" toggle), Gospel Acclamation (reference + verse), Gospel (citation + text). Auto-fetched from USCCB the moment a date is set. |
-| **Shared Hymns** (single set, sung by the assembly at every Mass) | Processional / Entrance, Communion, Thanksgiving — title + composer. Hymn-library autocomplete is wired here. |
-| **Music — per Mass** (x3 mass times) | Organ Prelude, Kyrie, Offertory Anthem, Organ Postlude, Choral Anthem — title + composer per Mass.  Each non-hymn slot gets a "pick from library" dropdown drawing from the parish attachments library so anthems and organ pieces can differ per Mass. |
+| **Shared Music** (single set; every slot that's the same at every Mass) | Organ Prelude, Processional / Entrance Hymn, Kyrie setting, Communion Hymn, Hymn of Thanksgiving, Organ Postlude — title + composer. Hymn-library typeahead on the three congregational hymns; attachments-library quick-pick on the organ pieces and the Kyrie setting. |
+| **Music — per Mass** (x3 mass times) | Offertory Anthem and Choral Anthem (at Communion) — title + composer.  These are the only two slots a music director may schedule differently per Mass (different choirs / ensembles).  Each gets its own attachments-library quick-pick. |
 | Files Referenced | Editor-side picker for the parish attachments library; per-music-slot quick-pick dropdowns auto-add the chosen file. |
 | Children's Liturgy | Enable toggle, **Mass times (checkboxes — any subset of Sat 5:00 PM / Sun 9:00 AM / Sun 11:00 AM, plus free-form "Other" comma list)**, leader name (optional), music title + composer, notes (printed under the entry) |
 | Notation Images | Upload music notation scans (auto-cropped on upload). |
@@ -147,8 +147,8 @@ Line estimation: character count / 65 chars per line. Overflow warnings identify
 | 3 | Liturgy of the Word | First Reading, Psalm, Second Reading, Gospel Acclamation |
 | 4 | Gospel + Creed | Gospel text, Homily cue, Creed (Nicene or Apostles'), Prayer of the Faithful |
 | 5 | Liturgy of the Eucharist | Offertory, Children's Liturgy (conditional), Invitation to Prayer, Holy Holy, Mystery of Faith, Great Amen |
-| 6 | Communion Rite | Lord's Prayer, Sign of Peace, Lamb of God, Communion Hymn |
-| 7 | Concluding Rites | Thanksgiving, Choral Anthem, Blessing & Dismissal, Postlude, Announcements (conditional), short copyright |
+| 6 | Communion Rite | Lord's Prayer, Sign of Peace, Lamb of God, Communion Hymn, **Choral Anthem (per-Mass)** |
+| 7 | Concluding Rites | Thanksgiving, Blessing & Dismissal, Postlude, Announcements (conditional), short copyright |
 | 8 | Back Cover | Cross, feast name, date, special notes (optional), full copyright block |
 
 ### 7. PDF Export
