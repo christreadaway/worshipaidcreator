@@ -355,7 +355,7 @@ app.get('/api/attachments', async (req, res) => {
   }
 });
 
-app.post('/api/attachments', requireAuth, requirePermission('manage_settings'), attachmentUpload.single('file'), async (req, res) => {
+app.post('/api/attachments', requireAuth, requirePermission('manage_attachments'), attachmentUpload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const ext = path.extname(req.file.originalname);
   const filename = req.file.filename || `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
@@ -383,7 +383,7 @@ app.post('/api/attachments', requireAuth, requirePermission('manage_settings'), 
   res.json(meta);
 });
 
-app.put('/api/attachments/:id', requireAuth, requirePermission('manage_settings'), async (req, res) => {
+app.put('/api/attachments/:id', requireAuth, requirePermission('manage_attachments'), async (req, res) => {
   const patch = {};
   ['title', 'composer', 'kind', 'notes'].forEach(k => {
     if (req.body[k] !== undefined) patch[k] = String(req.body[k] || '').trim();
@@ -398,7 +398,7 @@ app.put('/api/attachments/:id', requireAuth, requirePermission('manage_settings'
   res.json(updated);
 });
 
-app.delete('/api/attachments/:id', requireAuth, requirePermission('manage_settings'), async (req, res) => {
+app.delete('/api/attachments/:id', requireAuth, requirePermission('manage_attachments'), async (req, res) => {
   // Look up the metadata first so we can delete the on-disk binary too.
   // (kv's namespace path doesn't line up with multer's diskStorage path,
   // so attachmentsStore.deleteAttachment can't reach the local file alone.)
@@ -549,7 +549,7 @@ app.post('/api/generate-pdf', async (req, res) => {
     const filename = buildFilename(req.body);
     const outputDir = kv.IS_NETLIFY ? '/tmp' : store.getExportsDir();
     const outputPath = path.join(outputDir, filename);
-    const bookletSize = (req.body.bookletSize || req.query.bookletSize || 'half-letter');
+    const bookletSize = (req.body.bookletSize || req.query.bookletSize || 'tabloid');
     const result = await generatePdf(req.body, outputPath, {
       parishSettings: settings,
       bookletSize
@@ -814,6 +814,7 @@ app.get('/', (req, res) => res.send(getAppHtml()));
 app.get('/login', (req, res) => res.send(getAppHtml()));
 app.get('/admin', (req, res) => res.send(getAppHtml()));
 app.get('/history', (req, res) => res.send(getAppHtml()));
+app.get('/library', (req, res) => res.send(getAppHtml()));
 app.get('/users', (req, res) => res.send(getAppHtml()));
 app.get('/stats', (req, res) => res.send(getAppHtml()));
 
@@ -864,6 +865,11 @@ nav .user-info strong { color: var(--gold-light); }
 .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--gray); }
 .btn-sm { padding: 4px 10px; font-size: 11px; }
 .btn-danger { background: var(--error); color: var(--white); }
+
+/* Outline buttons sitting in the dark navy nav need light text + a visible
+   border so they don't disappear ("Load Sample", "Save Draft", "Logout"). */
+nav .btn-outline { color: rgba(255,255,255,0.92); border-color: rgba(255,255,255,0.55); background: rgba(255,255,255,0.04); }
+nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); background: rgba(255,255,255,0.12); }
 
 /* LOGIN */
 .login-view { max-width: 360px; margin: 80px auto; padding: 30px; background: white; border-radius: 8px; border: 1px solid var(--border); box-shadow: 0 4px 20px rgba(0,0,0,0.06); text-align: center; }
@@ -1013,6 +1019,7 @@ nav .user-info strong { color: var(--gold-light); }
   <span class="brand">&#x271E; Worship Aid Generator</span>
   <a href="/" class="nav-link active" data-page="editor">Editor</a>
   <a href="/history" class="nav-link" data-page="history">History</a>
+  <a href="/library" class="nav-link" data-page="library" id="nav-library" style="display:none;">Library</a>
   <a href="/stats" class="nav-link" data-page="stats">Stats</a>
   <a href="/admin" class="nav-link" data-page="admin" id="nav-admin">Settings</a>
   <a href="/users" class="nav-link" data-page="users" id="nav-users" style="display:none;">Users</a>
@@ -1021,12 +1028,12 @@ nav .user-info strong { color: var(--gold-light); }
   <button class="btn btn-outline btn-sm" onclick="loadSample()">Load Sample</button>
   <button class="btn btn-outline btn-sm" onclick="saveDraft()">Save Draft</button>
   <select id="bookletSize" class="btn-sm" style="margin-right:6px;padding:4px 6px;font-size:11px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:3px;" title="Booklet trim size">
+    <option value="tabloid" selected>8.5×11 booklet (11×17)</option>
     <option value="half-letter">5.5×8.5 booklet</option>
-    <option value="tabloid">8.5×11 booklet (11×17)</option>
   </select>
   <button class="btn btn-gold btn-sm" onclick="generatePreview()">Preview</button>
   <button class="btn btn-navy btn-sm" id="btn-export" onclick="generatePdfExport()">Export PDF</button>
-  <button class="btn btn-outline btn-sm" onclick="doLogout()" style="color:rgba(255,255,255,0.5);">Logout</button>
+  <button class="btn btn-outline btn-sm" onclick="doLogout()">Logout</button>
 </nav>
 
 <!-- EDITOR PAGE -->
@@ -1187,7 +1194,7 @@ nav .user-info strong { color: var(--gold-light); }
     <div class="form-section">
       <div class="form-section-hdr" onclick="toggle(this)">Files Referenced (preludes, postludes, anthems…) <span>&#9660;</span></div>
       <div class="form-section-body">
-        <p class="section-lock">Pick from the parish library. Add new files in <em>Settings → Music &amp; Document Library</em>. They'll show up here for any worship aid.</p>
+        <p class="section-lock">Pick from the parish library. Upload new files on the <em>Library</em> page (top nav). They'll show up here for any worship aid.</p>
         <div class="fg"><label>Add a file</label>
           <select id="attachmentPicker" onchange="addAttachmentRefFromPicker(this)">
             <option value="">— pick from library —</option>
@@ -1260,6 +1267,85 @@ nav .user-info strong { color: var(--gold-light); }
   <div class="history-view">
     <h2>Worship Aid History</h2>
     <div id="history-list"></div>
+  </div>
+</div>
+
+<!-- LIBRARY PAGE -->
+<div id="page-library" style="display:none;">
+  <div class="history-view">
+    <h2>Music &amp; Document Library</h2>
+    <p style="font-size:12px;color:var(--gray);margin-bottom:14px;">Upload mass settings, preludes, postludes, anthems, kyries, and any other audio / PDF / image / score files referenced in worship aids. Files are reusable across every booklet — just pick them in the Editor's <em>Files Referenced</em> section or from any non-hymn music slot.</p>
+
+    <div class="form-section">
+      <div class="form-section-hdr">Upload a New File</div>
+      <div class="form-section-body">
+        <div class="upload-area" onclick="document.getElementById('attachmentFileInput').click()">
+          <input type="file" id="attachmentFileInput" onchange="uploadAttachmentFromSettings(this)">
+          <p style="font-size:12px;color:var(--gray);">Click to upload a file (audio, PDF, image, MusicXML, MIDI, doc — up to 50&nbsp;MB)</p>
+        </div>
+        <div class="fg-row" style="grid-template-columns: 1fr 1fr;">
+          <div class="fg"><label>Title</label><input type="text" id="att_title" placeholder="Toccata in D Minor"></div>
+          <div class="fg"><label>Composer</label><input type="text" id="att_composer" placeholder="J.S. Bach"></div>
+        </div>
+        <div class="fg-row" style="grid-template-columns: 1fr 1fr;">
+          <div class="fg"><label>Kind</label>
+            <select id="att_kind">
+              <option value="prelude">Organ Prelude</option>
+              <option value="postlude">Organ Postlude</option>
+              <option value="processional">Processional / Entrance</option>
+              <option value="kyrie">Kyrie / Lord Have Mercy</option>
+              <option value="gloria">Gloria</option>
+              <option value="sanctus">Sanctus / Holy, Holy</option>
+              <option value="mystery_of_faith">Mystery of Faith</option>
+              <option value="agnus_dei">Lamb of God</option>
+              <option value="psalm">Responsorial Psalm</option>
+              <option value="gospel_acclamation">Gospel Acclamation</option>
+              <option value="offertory_anthem">Offertory Anthem</option>
+              <option value="communion">Communion</option>
+              <option value="thanksgiving">Hymn of Thanksgiving</option>
+              <option value="choral_anthem">Choral Anthem</option>
+              <option value="mass_setting">Full Mass Setting</option>
+              <option value="general">General / Other</option>
+            </select>
+          </div>
+          <div class="fg"><label>Tags (comma-separated)</label><input type="text" id="att_tags" placeholder="advent, organ"></div>
+        </div>
+        <p id="att_uploadStatus" style="font-size:11px;color:var(--gray);margin:4px 0;"></p>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section-hdr">Library Contents</div>
+      <div class="form-section-body">
+        <div class="fg-row" style="grid-template-columns: 1fr auto;">
+          <div class="fg"><label>Filter by kind</label>
+            <select id="att_filter_kind" onchange="loadAttachmentList()">
+              <option value="">All kinds</option>
+              <option value="prelude">Preludes</option>
+              <option value="postlude">Postludes</option>
+              <option value="processional">Processionals</option>
+              <option value="kyrie">Kyries</option>
+              <option value="gloria">Glorias</option>
+              <option value="sanctus">Sanctus</option>
+              <option value="mystery_of_faith">Mystery of Faith</option>
+              <option value="agnus_dei">Agnus Dei</option>
+              <option value="psalm">Psalms</option>
+              <option value="gospel_acclamation">Gospel Acclamations</option>
+              <option value="offertory_anthem">Offertory Anthems</option>
+              <option value="communion">Communion</option>
+              <option value="thanksgiving">Thanksgiving</option>
+              <option value="choral_anthem">Choral Anthems</option>
+              <option value="mass_setting">Mass Settings</option>
+              <option value="general">General</option>
+            </select>
+          </div>
+          <div class="fg"><label>&nbsp;</label>
+            <button type="button" class="btn btn-outline btn-sm" onclick="loadAttachmentList()">Refresh</button>
+          </div>
+        </div>
+        <div id="att_list"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1364,73 +1450,6 @@ Sunday — 11:00 AM"></textarea>
         <p style="font-size:11px;color:var(--gray);margin-top:4px;">When enabled, drafts must be submitted for review and approved by the pastor before they can be exported as PDF.</p>
       </div>
     </div>
-    <div class="form-section"><div class="form-section-hdr">Music &amp; Document Library</div>
-      <div class="form-section-body">
-        <p class="section-lock">Upload mass settings, preludes, postludes, anthems, and any other audio / PDF / image / score files you reference in worship aids. Files are reusable across every booklet.</p>
-        <div class="upload-area" onclick="document.getElementById('attachmentFileInput').click()">
-          <input type="file" id="attachmentFileInput" onchange="uploadAttachmentFromSettings(this)">
-          <p style="font-size:11px;color:var(--gray);">Click to upload a file (audio, PDF, image, MusicXML, MIDI, doc — up to 50&nbsp;MB)</p>
-        </div>
-        <div class="fg-row" style="grid-template-columns: 1fr 1fr;">
-          <div class="fg"><label>Title</label><input type="text" id="att_title" placeholder="Toccata in D Minor"></div>
-          <div class="fg"><label>Composer</label><input type="text" id="att_composer" placeholder="J.S. Bach"></div>
-        </div>
-        <div class="fg-row" style="grid-template-columns: 1fr 1fr;">
-          <div class="fg"><label>Kind</label>
-            <select id="att_kind">
-              <option value="prelude">Organ Prelude</option>
-              <option value="postlude">Organ Postlude</option>
-              <option value="processional">Processional / Entrance</option>
-              <option value="kyrie">Kyrie / Lord Have Mercy</option>
-              <option value="gloria">Gloria</option>
-              <option value="sanctus">Sanctus / Holy, Holy</option>
-              <option value="mystery_of_faith">Mystery of Faith</option>
-              <option value="agnus_dei">Lamb of God</option>
-              <option value="psalm">Responsorial Psalm</option>
-              <option value="gospel_acclamation">Gospel Acclamation</option>
-              <option value="offertory_anthem">Offertory Anthem</option>
-              <option value="communion">Communion</option>
-              <option value="thanksgiving">Hymn of Thanksgiving</option>
-              <option value="choral_anthem">Choral Anthem</option>
-              <option value="mass_setting">Full Mass Setting</option>
-              <option value="general">General / Other</option>
-            </select>
-          </div>
-          <div class="fg"><label>Tags (comma-separated)</label><input type="text" id="att_tags" placeholder="advent, organ"></div>
-        </div>
-        <p id="att_uploadStatus" style="font-size:11px;color:var(--gray);margin:4px 0;"></p>
-
-        <div style="border-top:1px solid var(--border);margin:10px 0 6px;padding-top:8px;">
-          <div class="fg-row" style="grid-template-columns: 1fr auto;">
-            <div class="fg"><label>Filter library</label>
-              <select id="att_filter_kind" onchange="loadAttachmentList()">
-                <option value="">All kinds</option>
-                <option value="prelude">Preludes</option>
-                <option value="postlude">Postludes</option>
-                <option value="processional">Processionals</option>
-                <option value="kyrie">Kyries</option>
-                <option value="gloria">Glorias</option>
-                <option value="sanctus">Sanctus</option>
-                <option value="mystery_of_faith">Mystery of Faith</option>
-                <option value="agnus_dei">Agnus Dei</option>
-                <option value="psalm">Psalms</option>
-                <option value="gospel_acclamation">Gospel Acclamations</option>
-                <option value="offertory_anthem">Offertory Anthems</option>
-                <option value="communion">Communion</option>
-                <option value="thanksgiving">Thanksgiving</option>
-                <option value="choral_anthem">Choral Anthems</option>
-                <option value="mass_setting">Mass Settings</option>
-                <option value="general">General</option>
-              </select>
-            </div>
-            <div class="fg"><label>&nbsp;</label>
-              <button type="button" class="btn btn-outline btn-sm" onclick="loadAttachmentList()">Refresh</button>
-            </div>
-          </div>
-          <div id="att_list"></div>
-        </div>
-      </div>
-    </div>
     <div class="form-section"><div class="form-section-hdr">Hymn Library (English only)</div>
       <div class="form-section-body">
         <p style="font-size:11px;color:var(--gray);margin-bottom:6px;">Music staff can search this catalog when filling in title fields. Edit as JSON; one object per hymn with fields: title, tune, composer, key, meter, source, notes.</p>
@@ -1497,7 +1516,7 @@ function showLogin() {
   _currentUser = null;
   document.getElementById('page-login').style.display = '';
   document.getElementById('main-nav').style.display = 'none';
-  ['editor','history','stats','admin','users'].forEach(p => document.getElementById('page-' + p).style.display = 'none');
+  ['editor','history','library','stats','admin','users'].forEach(p => document.getElementById('page-' + p).style.display = 'none');
 }
 
 async function showApp() {
@@ -1556,10 +1575,10 @@ document.getElementById('login-username').addEventListener('keydown', e => { if 
 
 // --- Role-Based Permissions ---
 const rolePerms = {
-  admin: ['edit_all', 'manage_users', 'manage_settings', 'edit_readings', 'edit_music', 'edit_seasonal', 'approve', 'export_pdf', 'edit_announcements', 'upload_images', 'edit_cover'],
-  music_director: ['edit_music', 'edit_seasonal', 'upload_images', 'export_pdf'],
+  admin: ['edit_all', 'manage_users', 'manage_settings', 'manage_attachments', 'edit_readings', 'edit_music', 'edit_seasonal', 'approve', 'export_pdf', 'edit_announcements', 'upload_images', 'edit_cover'],
+  music_director: ['edit_music', 'edit_seasonal', 'upload_images', 'manage_attachments', 'export_pdf'],
   pastor: ['edit_readings', 'approve', 'edit_announcements'],
-  staff: ['edit_readings', 'edit_music', 'edit_announcements', 'edit_seasonal', 'export_pdf']
+  staff: ['edit_readings', 'edit_music', 'edit_announcements', 'edit_seasonal', 'manage_attachments', 'export_pdf']
 };
 
 function hasRole(perm) {
@@ -1594,6 +1613,9 @@ function applyRolePermissions() {
 
   // Settings nav: admin only
   document.getElementById('nav-admin').style.display = hasRole('manage_settings') ? '' : 'none';
+  // Library nav: anyone who can manage attachments (admin, music_director, staff)
+  const libNav = document.getElementById('nav-library');
+  if (libNav) libNav.style.display = hasRole('manage_attachments') ? '' : 'none';
 }
 
 // --- Navigation ---
@@ -1607,13 +1629,14 @@ document.querySelectorAll('.nav-link').forEach(link => {
   });
 });
 function showPage(page) {
-  ['editor','history','stats','admin','users'].forEach(p => {
+  ['editor','history','library','stats','admin','users'].forEach(p => {
     document.getElementById('page-' + p).style.display = (p === page) ? '' : 'none';
   });
   if (page === 'history') loadHistory();
-  if (page === 'stats') loadStats();
-  if (page === 'admin') loadAdminSettings();
-  if (page === 'users') loadUsers();
+  if (page === 'stats')   loadStats();
+  if (page === 'admin')   loadAdminSettings();
+  if (page === 'users')   loadUsers();
+  if (page === 'library') loadAttachmentList();
 }
 
 // --- Form helpers ---

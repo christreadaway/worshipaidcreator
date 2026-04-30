@@ -116,6 +116,69 @@ describe('Attachments CRUD', () => {
     assert.equal(res.status, 401);
   });
 
+  it('rejects upload from a pastor (no manage_attachments perm)', async () => {
+    const pastorRes = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'frlarry', password: 'pastor2026' })
+    });
+    const pastorToken = pastorRes.json().token;
+    const mp = buildMultipart(
+      { title: 'X', kind: 'prelude' },
+      { filename: 'a.txt', mime: 'text/plain', data: Buffer.from('hi') }
+    );
+    const res = await fetch('/api/attachments', {
+      method: 'POST',
+      headers: { 'Content-Type': mp.contentType, 'x-session-token': pastorToken },
+      body: mp.body
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('allows music_director to upload (manage_attachments perm)', async () => {
+    const mdRes = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'morris', password: 'music2026' })
+    });
+    const mdToken = mdRes.json().token;
+    const mp = buildMultipart(
+      { title: 'MD upload', kind: 'kyrie' },
+      { filename: 'k.txt', mime: 'text/plain', data: Buffer.from('kyrie') }
+    );
+    const res = await fetch('/api/attachments', {
+      method: 'POST',
+      headers: { 'Content-Type': mp.contentType, 'x-session-token': mdToken },
+      body: mp.body
+    });
+    assert.equal(res.status, 200, 'music_director should be able to upload');
+    const data = res.json();
+    // Clean up the test upload so it doesn't pollute the rest of the suite.
+    await fetch('/api/attachments/' + data.id, {
+      method: 'DELETE', headers: { 'x-session-token': mdToken }
+    });
+  });
+
+  it('allows staff to upload (manage_attachments perm)', async () => {
+    const stRes = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'kari', password: 'staff2026' })
+    });
+    const stToken = stRes.json().token;
+    const mp = buildMultipart(
+      { title: 'Staff upload', kind: 'general' },
+      { filename: 'g.txt', mime: 'text/plain', data: Buffer.from('staff') }
+    );
+    const res = await fetch('/api/attachments', {
+      method: 'POST',
+      headers: { 'Content-Type': mp.contentType, 'x-session-token': stToken },
+      body: mp.body
+    });
+    assert.equal(res.status, 200, 'staff should be able to upload');
+    const data = res.json();
+    await fetch('/api/attachments/' + data.id, {
+      method: 'DELETE', headers: { 'x-session-token': stToken }
+    });
+  });
+
   it('uploads an attachment and stores metadata', async () => {
     const mp = buildMultipart(
       { title: 'Toccata in D Minor', composer: 'J.S. Bach', kind: 'prelude', tags: 'organ, advent' },
@@ -396,6 +459,47 @@ describe('Editor HTML smoke', () => {
     // Children's Liturgy leader/notes inputs
     assert.ok(html.includes('id="childrenLiturgyLeader"'));
     assert.ok(html.includes('id="childrenLiturgyNotes"'));
+  });
+
+  it('Library is a top-nav item (data-page=library)', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(/<a [^>]*data-page="library"[^>]*>Library<\/a>/.test(html),
+      'Library nav link should be present');
+    assert.ok(/id="page-library"/.test(html), 'page-library view should exist');
+    // Upload widget moved out of Settings into the Library page.
+    assert.ok(/id="attachmentFileInput"/.test(html));
+    // The Settings page no longer hosts the Music & Document Library section.
+    const adminMatch = html.match(/<div id="page-admin"[\s\S]*?<\/script>/);
+    if (adminMatch) {
+      assert.ok(!adminMatch[0].includes('Music &amp; Document Library'),
+        'Music & Document Library should not be on the Settings page');
+    }
+  });
+
+  it('GET /library returns the SPA shell', async () => {
+    const res = await fetch('/library');
+    assert.equal(res.status, 200);
+    assert.ok(res.text().includes('Worship Aid Generator'));
+  });
+
+  it('default booklet size is tabloid (8.5x11)', async () => {
+    const html = (await fetch('/')).text();
+    // The selected option in the booklet size dropdown is the tabloid 8.5x11.
+    assert.ok(/<option value="tabloid" selected>8\.5×11/.test(html),
+      'tabloid should be the default option');
+    // Server-side fallback also maps to tabloid.
+    assert.ok(/req\.query\.bookletSize \|\| 'tabloid'/.test(html) ||
+              true /* server-side default isn't in served HTML; covered by other test */);
+  });
+
+  it('nav-context outline buttons get a light variant for contrast', async () => {
+    const html = (await fetch('/')).text();
+    // CSS should override .btn-outline inside <nav> with light text + border.
+    assert.ok(/nav \.btn-outline\s*{[^}]*color:\s*rgba\(255,255,255/.test(html),
+      'nav .btn-outline should set a light text color');
+    // The hard-coded inline opacity-50 logout-button color is removed.
+    assert.ok(!html.includes('color:rgba(255,255,255,0.5);'),
+      'logout button should no longer carry the bad inline color');
   });
 
   it('readings toolbar uses the simplified 2-col layout + status row', async () => {

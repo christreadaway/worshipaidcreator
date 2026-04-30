@@ -16,10 +16,10 @@ const ROLE_LABELS = {
 
 // What each role can do
 const ROLE_PERMISSIONS = {
-  admin: ['edit_all', 'manage_users', 'manage_settings', 'edit_readings', 'edit_music', 'edit_seasonal', 'approve', 'export_pdf', 'edit_announcements', 'upload_images', 'edit_cover'],
-  music_director: ['edit_music', 'edit_seasonal', 'upload_images', 'export_pdf'],
+  admin: ['edit_all', 'manage_users', 'manage_settings', 'manage_attachments', 'edit_readings', 'edit_music', 'edit_seasonal', 'approve', 'export_pdf', 'edit_announcements', 'upload_images', 'edit_cover'],
+  music_director: ['edit_music', 'edit_seasonal', 'upload_images', 'manage_attachments', 'export_pdf'],
   pastor: ['edit_readings', 'approve', 'edit_announcements'],
-  staff: ['edit_readings', 'edit_music', 'edit_announcements', 'edit_seasonal', 'export_pdf']
+  staff: ['edit_readings', 'edit_music', 'edit_announcements', 'edit_seasonal', 'manage_attachments', 'export_pdf']
 };
 
 function generateId() {
