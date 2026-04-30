@@ -399,8 +399,18 @@ app.put('/api/attachments/:id', requireAuth, requirePermission('manage_settings'
 });
 
 app.delete('/api/attachments/:id', requireAuth, requirePermission('manage_settings'), async (req, res) => {
-  const ok = await attachmentsStore.deleteAttachment(req.params.id);
-  if (!ok) return res.status(404).json({ error: 'Not found' });
+  // Look up the metadata first so we can delete the on-disk binary too.
+  // (kv's namespace path doesn't line up with multer's diskStorage path,
+  // so attachmentsStore.deleteAttachment can't reach the local file alone.)
+  const meta = await attachmentsStore.getAttachment(req.params.id);
+  if (!meta) return res.status(404).json({ error: 'Not found' });
+  if (!kv.IS_NETLIFY && meta.filename) {
+    const filePath = path.join(ATTACHMENTS_DIR, meta.filename);
+    try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) {
+      console.warn('[attachments] could not unlink local file:', e.message);
+    }
+  }
+  await attachmentsStore.deleteAttachment(req.params.id);
   res.json({ success: true });
 });
 
@@ -1019,7 +1029,7 @@ nav .user-info strong { color: var(--gold-light); }
     <div class="form-section">
       <div class="form-section-hdr" onclick="toggle(this)">Liturgical Date &amp; Season <span>&#9660;</span></div>
       <div class="form-section-body">
-        <div class="fg"><label>Feast / Sunday Name <span style="font-weight:400;text-transform:none;color:var(--gray);">(auto-fills from date)</span></label><input type="text" id="feastName" placeholder="e.g., Second Sunday of Lent" oninput="this.dataset.userSet='1'"></div>
+        <div class="fg"><label>Feast / Sunday Name <span style="font-weight:400;text-transform:none;color:var(--gray);">(auto-fills from date when empty)</span></label><input type="text" id="feastName" placeholder="e.g., Second Sunday of Lent"></div>
         <div class="fg-row">
           <div class="fg"><label>Date <span style="font-weight:400;text-transform:none;color:var(--gray);">(defaults to next Sunday)</span></label><input type="date" id="liturgicalDate" onchange="onLiturgicalDateChange()"></div>
           <div class="fg"><label>Liturgical Season</label>
@@ -1920,9 +1930,11 @@ async function onLiturgicalDateChange() {
   } else {
     applyChildrenLiturgyAutoDefault();
   }
-  // Fill the feast/Sunday name unless the user has typed something custom.
+  // Fill the feast/Sunday name only when the field is empty.  This way a
+  // manually-typed override is preserved, but starting fresh (or clearing the
+  // field) always gets the right Sunday/feast for the chosen date.
   const feastEl = document.getElementById('feastName');
-  if (info && info.feastName && feastEl && !feastEl.dataset.userSet) {
+  if (info && info.feastName && feastEl && !feastEl.value.trim()) {
     feastEl.value = info.feastName;
   }
   autoFetchReadingsIfEmpty();
@@ -2040,10 +2052,15 @@ async function addAttachmentRefFromPicker(sel) {
   const id = sel.value;
   if (!id) return;
   if (!Array.isArray(window._attachmentRefs)) window._attachmentRefs = [];
-  if (window._attachmentRefs.includes(id)) { sel.value = ''; return; }
+  if (window._attachmentRefs.includes(id)) {
+    sel.value = '';
+    toast('That file is already attached to this worship aid.', 'error');
+    return;
+  }
   window._attachmentRefs.push(id);
   sel.value = '';
   renderAttachmentRefList();
+  toast('File attached', 'success');
 }
 
 function removeAttachmentRef(id) {

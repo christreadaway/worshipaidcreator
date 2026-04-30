@@ -1,7 +1,7 @@
 # Worship Aid Generator — Product Requirements Document
 
-**Version:** 1.1
-**Date:** April 29, 2026
+**Version:** 1.2
+**Date:** April 30, 2026
 **Owner:** COO, [Parish Name]
 **Status:** Active development — Publisher-replacement (Microsoft is discontinuing Publisher in fall 2026; this app is the primary substitute).
 
@@ -39,31 +39,36 @@ A web application that automates the weekly creation of an 8-page printable wors
 ### 4.1 Weekly Input Form
 A structured form with clearly labeled sections for all variable content. Organized to match the order it appears in the bulletin. Sections:
 
-- **Liturgical Date Block** — Date picker, feast/Sunday name (text), liturgical season selector (Ordinary Time / Advent / Christmas / Lent / Easter)
-- **Readings Entry**
+- **Liturgical Date Block** — Date picker, feast/Sunday name (text, **auto-fills from the date** via the liturgical calendar — see §5.7), liturgical season selector (Ordinary Time / Advent / Christmas / Lent / Easter, **also auto-detects from the date**)
+- **Readings Entry** — Bible Translation dropdown (defaults to NABRE, sourced from `bible.usccb.org`). Readings auto-fetch the moment a date is set; all fields editable. Manual "Fetch from USCCB" re-pull and translation switch supported.
   - First Reading: citation field + full text area
   - Responsorial Psalm: citation + verse text (supports 3–5 stanzas) + refrain text
   - Second Reading: citation + full text area (toggle "No Second Reading" for some feasts)
   - Gospel Acclamation verse: text field + scripture reference
   - Gospel: citation + full text area
 - **Music Selections** — Three sub-forms, one per Mass time (Sat 5PM, Sun 9AM, Sun 11AM):
-  - Organ Prelude (title, composer)
-  - Processional Hymn OR Entrance Antiphon (toggle by season)
-  - Lord Have Mercy / Kyrie setting (text + composer)
-  - Offertory Anthem (title + composer)
-  - Communion Hymn / Choral Anthem (title + composer)
-  - Hymn of Thanksgiving (title)
-  - Organ Postlude (title + composer)
-  - Choral Anthem at Concluding Rites (title + composer, optional)
+  - Organ Prelude (title, composer) — **NOT a hymn**; quick-pick from the parish attachments library (preludes)
+  - Processional Hymn OR Entrance Antiphon (toggle by season) — typeahead from the hymn library
+  - Lord Have Mercy / Kyrie setting (text + composer) — **NOT a hymn**; quick-pick from the kyrie library
+  - Offertory Anthem (title + composer) — **NOT a hymn**; quick-pick from the offertory-anthem library
+  - Communion Hymn (title + composer) — typeahead from the hymn library
+  - Hymn of Thanksgiving (title + composer) — typeahead from the hymn library
+  - Organ Postlude (title + composer) — **NOT a hymn**; quick-pick from the postlude library
+  - Choral Anthem at Concluding Rites (title + composer, optional) — **NOT a hymn**; quick-pick from the choral-anthem library
+- **Files Referenced** — The aid carries a list of attachments (audio / PDF / score / image) selected from the parish library, either via per-music-slot quick-pick or the "Files Referenced" picker.
 - **Seasonal Overrides** — Auto-populated based on season selector, but editable:
   - Gloria: Yes / No
-  - Creed type: Nicene / Apostles'
+  - Creed type: Nicene / Apostles' / Renewal of Baptismal Vows
+  - **Holy, Holy, Holy / Sanctus language: English / Latin** (default English; per-aid override of parish default)
   - Holy Holy setting: "Mass of St. Theresa" / "Vatican Edition XVIII" / custom
   - Mystery of Faith setting: same options
   - Lamb of God setting: same options
   - Penitential Act: Confiteor (I confess) / Kyrie only
-- **Children's Liturgy Block** — Toggle on/off; if on: Mass time (defaults to Sun 9AM), music title + composer
-- **Announcements** — Rich text area (optional)
+  - Postlude include / omit
+  - Advent Wreath lighting include / omit
+  - Lenten acclamation choice (when in Lent)
+- **Children's Liturgy Block** — Toggle on/off; if on: Mass time (defaults to Sun 9AM), **Leader (optional)**, music title + composer, **Notes** (printed under the entry)
+- **Announcements** — Free text area (optional)
 - **Special Notes** — Free text for any one-off variations (optional)
 
 ### 4.2 Live Preview
@@ -135,13 +140,42 @@ Based on analysis of existing worship aids (952×1260px JPEG renders = 5.5"×8.5
 - Formatting matches current pattern exactly: Title first (italics), then composer, then Mass times in parentheses
 
 ### 5.5 Readings Sourcing
-- v1.0: Manual entry only — coordinator pastes readings from USCCB website or lectionary
-- v1.1 (future): Auto-populate readings from USCCB lectionary API or internal readings database keyed by date
+- **Default behavior (v1.2):** readings auto-pull from `bible.usccb.org/bible/readings/MMDDYY.cfm` the moment a liturgical date is set. NABRE Lectionary text is the source of truth; alternate translations re-fetch the citations from `bible-api.com` while preserving Lectionary-only items (psalm refrain, gospel acclamation verse).
+- All fields stay editable so the user can clean up scraping quirks or swap a long reading for the Lectionary's "shorter form."
+- The Bible Translation dropdown defaults to **NABRE (Lectionary, USCCB)**.
 
 ### 5.6 Copyright Block
 - Short copyright (Page 7): static template, never changes
 - Full copyright block (Page 8): static template, updated once per year when license renews. Admin-editable in settings.
 - OneLicense number must be prominently stored and editable in settings without touching code
+
+### 5.7 Date-Driven Liturgical Calendar
+- A built-in liturgical calendar (`src/liturgical-calendar.js`, US General Roman Calendar) computes both the season and the feast / Sunday name for any date.
+- On every date change, the editor calls `/api/liturgical-info?date=YYYY-MM-DD` and:
+  - Auto-selects the season unless the user already picked a different one.
+  - Fills the **Feast / Sunday Name** field — but only if it is currently empty. A typed override is preserved; clearing the field then changing the date re-fills it.
+- Coverage: Sundays of Advent / Lent / Easter (numbered), Triduum, Easter Sunday, Divine Mercy, Ascension, Pentecost, Trinity, Corpus Christi, Sacred Heart, Christ the King, Holy Family, Baptism of the Lord, Epiphany, Nicene fixed feasts (Annunciation, Assumption, All Saints, Immaculate Conception, etc.), and numbered Sundays in Ordinary Time anchored so Christ the King = 34th Sunday.
+
+### 5.8 Sanctus Language Toggle
+- Per-aid `seasonalSettings.holyHolyLanguage` ∈ `{english, latin}`.
+- Parish-wide `defaultSanctusLanguage` setting controls the default.
+- Renderer precedence: per-aid override > parish default > English.
+- Heading switches between "Holy, Holy, Holy" and "Sanctus"; the booklet block prints the matching Roman Missal text in the chosen language.
+
+### 5.9 Generic Attachments Library
+- Music staff can upload **any file** the parish reuses across worship aids (audio / PDF / image / MusicXML / MIDI / doc / score, ≤ 50 MB) and tag it with one of 16 kinds: prelude, postlude, processional, kyrie, gloria, sanctus, mystery_of_faith, agnus_dei, psalm, gospel_acclamation, offertory_anthem, communion, thanksgiving, choral_anthem, mass_setting, general.
+- Library lives at parish scope and persists outside any single worship aid.
+- Editor surfaces the relevant kind for each non-hymn music slot (prelude / postlude / kyrie / offertory / choral anthem). Selecting an entry copies its title + composer into the music block AND attaches the file to the aid's reference list.
+- Hymn slots (processional, communion, thanksgiving) keep the hymn-library typeahead — preludes / postludes / mass settings / kyries / anthems do **not** pull from the hymn library.
+
+### 5.10 Parish Settings on the Cover
+- Stored at parish scope and rendered on every booklet:
+  - **Mass times** (one per line) on the cover.
+  - **Pastor + title**, **associates**, **deacons**, **music director** as a clergy block under the Mass times.
+  - **Cover tagline** under the parish name.
+  - **Welcome message** inside the cover.
+  - **Closing message** on the back cover.
+- Editable in Settings; leaving any field blank suppresses the corresponding line.
 
 ---
 
@@ -174,12 +208,16 @@ worship_aid {
   
   seasonal_settings {
     gloria: boolean
-    creed_type: nicene | apostles
+    creed_type: nicene | apostles | baptismal_vows
     entrance_type: processional | antiphon
     holy_holy_setting: string
+    holy_holy_language: english | latin     // NEW
     mystery_of_faith_setting: string
     lamb_of_god_setting: string
     penitential_act: confiteor | kyrie_only
+    include_postlude: boolean
+    advent_wreath: boolean
+    lenten_acclamation: standard | alternate
   }
   
   music_sat_5pm: MusicBlock
@@ -189,9 +227,13 @@ worship_aid {
   children_liturgy_enabled: boolean
   children_liturgy_mass_time: string
   children_liturgy_music: string
+  children_liturgy_music_composer: string
+  children_liturgy_leader: string (nullable)         // NEW
+  children_liturgy_notes: string (nullable)          // NEW
   
   announcements: string (nullable)
   special_notes: string (nullable)
+  attachment_refs: [string]                          // NEW — IDs from parish attachments library
   
   exported_pdf_url: string (nullable)
   export_timestamp: timestamp (nullable)
@@ -217,17 +259,67 @@ parish_settings {
   parish_phone: string
   parish_url: string
   parish_prayer_url: string
+
+  // Cover schedule — multi-line, one Mass per line                      // NEW
+  mass_times: string
+
+  // Clergy (printed on cover under Mass times)                          // NEW
+  pastor: string
+  pastor_title: string
+  associates: string                  // multi-line: one per line
+  deacons: string                     // multi-line: one per line
+  music_director: string
+
+  // Standing copy printed on every booklet                              // NEW
+  welcome_message: string             // inside cover
+  closing_message: string             // back cover
+  cover_tagline: string
+
+  // Cover info blocks
   nursery_blurb: string
   connect_blurb: string
   restrooms_blurb: string
   prayer_blurb: string
+
+  // Branding
+  logo_path: string
+  
+  // Default Sanctus language for new aids                               // NEW
+  default_sanctus_language: english | latin
+  
+  // Licensing
   onelicense_number: string
   copyright_short: string
   copyright_full: string
+
+  // Workflow
+  require_pastor_approval: boolean
   
   min_font_size_pt: number (default: 9)
   body_font: string (default: as specified in design system)
   header_font: string
+}
+```
+
+### 6.3 Attachments (Parish Media Library)                               // NEW
+```
+attachment {
+  id: UUID
+  filename: string
+  original_name: string
+  title: string
+  composer: string
+  kind: prelude | postlude | processional | kyrie | gloria | sanctus
+       | mystery_of_faith | agnus_dei | psalm | gospel_acclamation
+       | offertory_anthem | communion | thanksgiving | choral_anthem
+       | mass_setting | general
+  tags: [string]
+  notes: string
+  mime: string
+  size: number
+  url: string
+  uploaded_by: string
+  uploaded_at: timestamp
 }
 ```
 
@@ -247,18 +339,18 @@ parish_settings {
 
 ---
 
-## 8. Out of Scope (v1.0)
+## 8. Out of Scope (current version)
 
-- Auto-populating readings from an external API (v1.1)
 - Mobile app or mobile-optimized input form
 - Multi-parish support
-- Role-based permissions (editor vs. admin) — all authenticated users have full access in v1.0
 - Email delivery to printer
 - Integration with parish management system
-- Bilingual (English/Spanish) output
-- Special liturgies (weddings, funerals, Holy Week, RCIA)
+- Bilingual (English/Spanish) output (Spanish hymns, etc.)
+- Special liturgies (weddings, funerals, Holy Week, RCIA) — backlog in `product_spec.md`
 - Bulletin content beyond the worship aid (announcements pages, separate weekly bulletin)
 - InDesign template export
+
+**Now in scope (delivered):** Auto-populated readings from USCCB; role-based permissions across admin / music_director / pastor / staff; Sanctus English/Latin toggle; date-driven feast/season auto-detect; parish media library for non-hymn music files.
 
 ---
 

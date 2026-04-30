@@ -1,10 +1,10 @@
 # Worship Aid Generator — Product Specification
 
-**Version:** 1.1.0
-**Last Updated:** April 29, 2026
+**Version:** 1.2.0
+**Last Updated:** April 30, 2026
 **Status:** Active development — replacing Microsoft Publisher in fall 2026
 
-> **Pick-up note for next session:** see `session_notes.md` § "Session 3 (April 29, 2026)" for the full list of what shipped and what's open. The four items requested at end-of-session and **not yet implemented** are: (1) expand hymn library to 50 pre-1962 entries with lyrics in `src/assets/hymns/seed.json`, (2) make hymn-title autocomplete instant (preload + in-memory filter), (3) `scripts/fetch-hymns.js` Hymnary cache builder + `npm run fetch-hymns`, (4) `/api/stats/hymns` + Stats nav page visible to all users. Branch `claude/document-run-instructions-gIv6n`, HEAD `d29febe`.
+> **Pick-up note for next session:** see `session_notes.md` § "Session 5 (April 30, 2026)" for the full list of what shipped. Outstanding (still): expand the hymn library to ~40 pre-1962 entries with lyrics in `src/assets/hymns/seed.json` and refactor `src/store/hymn-library.js` to load it. Branch `claude/add-file-uploads-yxr13`. 168/168 tests passing.
 
 ---
 
@@ -35,41 +35,53 @@ A Node.js web application that automates weekly creation of Catholic Mass worshi
 
 ```
 src/
-  server.js               Express server + embedded SPA
-  template-renderer.js    HTML booklet renderer for live preview
-  pdf-generator.js        PDFKit-based PDF generator (half-letter + tabloid)
-  readings-fetcher.js     USCCB scraping + bible-api.com translation client
-  image-utils.js          Sharp-based notation auto-crop
-  validator.js            AJV validation + overflow detection
-  schema.js               JSON Schema for worship aid input
-  music-formatter.js      Per-mass-time music consolidation logic
-  cli.js                  Command-line interface
+  server.js                  Express server + embedded SPA
+  template-renderer.js       HTML booklet renderer for live preview
+  pdf-generator.js           PDFKit-based PDF generator (half-letter + tabloid)
+  readings-fetcher.js        USCCB scraping + bible-api.com translation client
+  liturgical-calendar.js     Date → feast/Sunday name + season (US calendar)
+  image-utils.js             Sharp-based notation auto-crop
+  validator.js               AJV validation + overflow detection
+  schema.js                  JSON Schema for worship aid input
+  music-formatter.js         Per-mass-time music consolidation logic
+  cli.js                     Command-line interface
   config/
-    seasons.js            Liturgical season auto-rules engine
-    defaults.js           Default parish settings
+    seasons.js               Liturgical season auto-rules engine
+    defaults.js              Default parish settings (mass times, clergy, …)
   store/
-    kv.js                 KV storage abstraction (filesystem or Netlify Blobs)
-    file-store.js         Async persistence (drafts, settings)
-    user-store.js         User management, sessions, role-based access
-    hymn-library.js       Parish-managed hymn catalog (English-only by default)
+    kv.js                    KV storage abstraction (filesystem or Netlify Blobs)
+    file-store.js            Async persistence (drafts, settings)
+    user-store.js            User management, sessions, role-based access
+    hymn-library.js          Parish-managed hymn catalog (English-only)
+    attachments.js           Generic media library (audio, PDF, score, etc.)
   assets/
     logo/jerusalem-cross.svg
-    text/creeds.js        Nicene, Apostles' Creed, Renewal of Baptismal Vows
-    text/mass-texts.js    Confiteor, Lord's Prayer, rubrics, etc.
-    text/copyright.js     Default copyright boilerplate
+    text/creeds.js           Nicene, Apostles' Creed, Renewal of Baptismal Vows
+    text/mass-texts.js       Confiteor, Sanctus (English + Latin), Lord's Prayer, rubrics
+    text/copyright.js        Default copyright boilerplate
   tests/
-    validator.test.js     14 tests — schema, overflow, line estimation
-    seasons.test.js       8 tests — 5 seasons + applySeasonDefaults
-    template-renderer.test.js  28 tests — 8 pages, seasons, creed, readings, music
-    pdf-generator.test.js      9 tests — filename, file creation, headers, creed, settings
-    pdf-layout.test.js         12 tests — layout correctness for both booklet sizes
-    server.test.js        14 tests — API endpoints, drafts CRUD, settings
+    validator.test.js        Schema, overflow, line estimation
+    seasons.test.js          5 seasons + applySeasonDefaults + music formatter
+    template-renderer.test.js  8-page rendering, seasons, creed, readings, music
+    pdf-generator.test.js    Filename, file creation, headers, creed, settings
+    pdf-layout.test.js       Layout for half-letter and tabloid booklet sizes
+    server.test.js           API endpoints, drafts CRUD, settings, auth
+    user-store.test.js       User CRUD, sessions, name matching
+    liturgical-calendar.test.js  Easter computus, season + feast detection
+    attachments-and-calendar.test.js  /api/liturgical-info, attachments CRUD,
+                                       Sanctus toggle, parish cover settings,
+                                       login regression, editor HTML smoke
 data/
-  drafts/                 Saved worship aid drafts (UUID.json)
-  settings/               parish-settings.json
-  exports/                Generated PDFs and HTML
+  drafts/                    Saved worship aid drafts (UUID.json)
+  settings/                  parish.json
+  attachments/               Attachment metadata (UUID.json)
+  uploads/
+    notation/                Notation scans
+    covers/                  Cover images + parish logo
+    attachments/             Audio / PDF / score binaries
+  exports/                   Generated PDFs and HTML
 sample/
-  second-sunday-lent.json Complete example input (Lent)
+  second-sunday-lent.json    Complete example input (Lent)
 ```
 
 ---
@@ -86,11 +98,14 @@ sample/
 
 | Section | Fields |
 |---|---|
-| Liturgical Date & Season | Feast name, date picker, season selector (5 seasons) |
-| Seasonal Settings | Gloria toggle, creed type, entrance type, Holy Holy / Mystery of Faith / Lamb of God settings, penitential act |
-| Readings | First Reading (citation + text), Psalm (citation + refrain + verses), Second Reading (citation + text, with "No Second Reading" toggle), Gospel Acclamation (reference + verse), Gospel (citation + text) |
-| Music (x3 mass times) | 8 fields each: Organ Prelude, Processional/Entrance, Kyrie, Offertory, Communion, Thanksgiving, Postlude, Choral Anthem — each with title + composer |
-| Children's Liturgy | Enable toggle, mass time, music title + composer |
+| Liturgical Date & Season | Feast name (auto-fills from date when empty), date picker (auto-detects season + feast), season selector (5 seasons) |
+| Seasonal Settings | Gloria toggle, creed type, entrance type, Holy Holy setting + **language toggle (English / Latin)**, Mystery of Faith setting, Lamb of God setting, penitential act, postlude toggle, Advent wreath toggle, Lenten acclamation choice |
+| Readings | Bible Translation dropdown (defaults to NABRE/USCCB), Fetch-from-USCCB button, First Reading (citation + text), Psalm (citation + refrain + verses), Second Reading (citation + text, with "No Second Reading" toggle), Gospel Acclamation (reference + verse), Gospel (citation + text). Auto-fetched from USCCB the moment a date is set. |
+| Music (x3 mass times) | 8 fields each: Organ Prelude, Processional/Entrance, Kyrie, Offertory, Communion, Thanksgiving, Postlude, Choral Anthem — each with title + composer. **Hymn-library autocomplete is wired only on processional / communion / thanksgiving (true congregational hymns); the other slots get a "pick from library" dropdown drawing from the new attachments library.** |
+| Files Referenced | Editor-side picker for the parish attachments library; per-music-slot quick-pick dropdowns auto-add the chosen file. |
+| Children's Liturgy | Enable toggle, mass time, leader name (optional), music title + composer, notes (printed under the entry) |
+| Notation Images | Upload music notation scans (auto-cropped on upload). |
+| Cover Image | Optional cover image with tone-driven concept suggestions (Unsplash / Pexels / Wikimedia search links). |
 | Announcements & Notes | Free text areas (optional) |
 
 ### 3. Liturgical Season Auto-Rules (PRD §5.1)
@@ -223,6 +238,70 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
   Useful for OneLicense reporting and for the music director when
   planning rotation across the year.
 
+### 18. Generic Attachments Library
+
+- Parish-managed library of audio / PDF / image / MusicXML / MIDI / doc
+  files that aren't congregational hymns (preludes, postludes, mass
+  settings, anthems, recordings, scores).
+- Each entry carries: `title`, `composer`, `kind` (16 options — see
+  `src/store/attachments.js`), `tags`, `notes`, mime, size, upload
+  metadata, and a stable URL.
+- Storage: Multer disk on local (`data/uploads/attachments/`) and
+  Netlify Blobs (`uploads-attachments`) in production. Metadata lives
+  in the `attachments` namespace. File size cap: 50 MB.
+- API: `GET /api/attachments` (filterable by `kind`, `kinds`, `q`),
+  `POST /api/attachments` (multipart, manage_settings),
+  `PUT /api/attachments/:id`, `DELETE /api/attachments/:id` (cleans
+  up on-disk binary even though the kv namespace path doesn't line up
+  with multer's diskStorage path), `GET /api/uploads/attachments/:filename`.
+- UI: New "Music & Document Library" section on the Settings page
+  (upload + filter + delete). Editor side: per-music-slot
+  "pick from library" dropdowns scoped to the slot's kind, plus a
+  general "Files Referenced" section showing the attachments wired
+  into the current worship aid.
+
+### 19. Liturgical Calendar Auto-Detect (Feast / Sunday Name)
+
+- `src/liturgical-calendar.js` derives feast / Sunday name + season
+  from any `YYYY-MM-DD` date. Coverage:
+  - Sundays of Advent, Lent, and Easter (numbered), Divine Mercy
+    Sunday, the Sunday in the Octave of Christmas (Holy Family).
+  - Triduum (Palm Sunday, Holy Thursday, Good Friday, Holy Saturday)
+    and Easter Sunday.
+  - Movable solemnities: Ascension, Pentecost, Trinity Sunday,
+    Corpus Christi, Sacred Heart, Christ the King, Holy Family,
+    Baptism of the Lord, Epiphany.
+  - Fixed feasts: Christmas, Annunciation, Assumption, All Saints,
+    All Souls, Immaculate Conception, Our Lady of Guadalupe, etc.
+  - Numbered Sundays in Ordinary Time (anchored so Christ the King
+    = 34th Sunday).
+  - Fallback: weekday + month/day if no rule matches.
+- `GET /api/liturgical-info?date=YYYY-MM-DD` returns
+  `{date, liturgicalSeason, feastName}`. Editor calls this on every
+  date change and fills the Feast / Sunday Name input only if it's
+  empty (manual overrides preserved).
+
+### 20. Sanctus / Holy, Holy, Holy Language Toggle
+
+- Per-aid: `seasonalSettings.holyHolyLanguage` ∈ `{english, latin}`.
+- Parish-wide default: `parishSettings.defaultSanctusLanguage`.
+- Renderer precedence: per-aid override > parish default > English.
+- Heading switches between "Holy, Holy, Holy" and "Sanctus"; the
+  block prints the matching Roman Missal text (English or the
+  Vulgate "Sanctus, Sanctus, Sanctus Dominus Deus Sabaoth …").
+
+### 21. Cover & Parish Settings Expansion
+
+- `parishSettings.massTimes` (multi-line) renders on the cover.
+- Clergy block on the cover lines up `pastor` + `pastorTitle`,
+  `associates` (one per line), `deacons` (one per line),
+  `musicDirector`.
+- `welcomeMessage` prints inside the cover; `closingMessage` on the
+  back cover.
+- Editor's Settings page exposes all of the above plus the existing
+  parish info, info-block blurbs, copyright fields, hymn library, and
+  workflow toggles.
+
 ---
 
 ## API Endpoints
@@ -237,6 +316,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 | GET | `/api/lenten-acclamations` | Lenten acclamation options |
 | GET | `/api/bible-translations` | Translations for the readings dropdown |
 | GET | `/api/readings?date&translation` | USCCB readings auto-fetch |
+| GET | `/api/liturgical-info?date` | Feast / Sunday name + season for the given date |
 | POST | `/api/cover-suggestions` | Cover image concept ideas + search links |
 | POST | `/api/validate` | Validate input + return overflow warnings |
 | POST | `/api/preview` | Generate HTML preview |
@@ -258,6 +338,11 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 | GET | `/api/hymns/search?q&limit&includeNonEnglish` | Typeahead search (smart-quote normalized) |
 | PUT | `/api/hymns` | Save hymn library (admin only) |
 | GET | `/api/stats/hymns` | Hymn usage frequency across all drafts |
+| GET | `/api/attachments` | List attachments (filter `kind`, `kinds`, `q`) |
+| POST | `/api/attachments` | Upload attachment (multipart, manage_settings) |
+| PUT | `/api/attachments/:id` | Update attachment metadata (manage_settings) |
+| DELETE | `/api/attachments/:id` | Remove attachment + on-disk binary (manage_settings) |
+| GET | `/api/uploads/attachments/:filename` | Serve attachment binary |
 | GET | `/api/sample` | Load sample data |
 | GET | `/exports/:filename` | Static file serving for exported PDFs |
 
@@ -265,17 +350,20 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 
 ## Test Coverage
 
-**127 tests across 7 test files. All passing (one pre-existing user-store flaky timestamp test occasionally collides between consecutive runs).**
+**168 tests across 9 test files. All passing.**
 
-| Suite | Tests | What It Covers |
-|---|---|---|
-| Validator | 14 | Schema validation, required fields, season enums, overflow detection (pages 3 & 4), line estimation |
-| Seasons | 16 | All 5 season defaults, season application, user override preservation, music formatter |
-| Template Renderer | 30 | 8-page rendering, seasonal variations (Gloria, Creed, Acclamation), parish info, readings, music display, copyright, Sign of Peace, Great Amen |
-| PDF Generator | 9 | Filename format, file creation, PDF headers, creed selection, parish settings integration |
-| Server API | 23 | All API endpoints, drafts CRUD, settings, auth login, approval workflow |
-| User Store | 17 | User CRUD, authentication (beta mode), case-insensitive login, display name matching, sessions, exclusive login, role permissions, role labels |
-| Utilities | 5 | escapeHtml, nl2br, formatDate |
+| Suite | What It Covers |
+|---|---|
+| Validator | Schema validation, required fields, season enums, overflow detection (pages 3 & 4), line estimation |
+| Seasons | All 5 season defaults, season application, user override preservation, music formatter |
+| Template Renderer | 8-page rendering, seasonal variations (Gloria, Creed, Acclamation), parish info, readings, music display, copyright, Sign of Peace, Great Amen |
+| PDF Generator | Filename format, file creation, PDF headers, creed selection, parish settings integration |
+| PDF Layout | Layout correctness for half-letter and tabloid booklets |
+| Server API | API endpoints, drafts CRUD, settings, auth login, approval workflow |
+| User Store | User CRUD, authentication (beta mode), case-insensitive login, display name matching, sessions, exclusive login, role permissions, role labels |
+| Liturgical Calendar | Easter computus accuracy, season detection, feast/Sunday name detection across cycle |
+| Attachments + Calendar + Sanctus | `/api/liturgical-info` endpoint, attachments CRUD (with disk-cleanup regression test), Sanctus toggle precedence chain (per-aid > parish > English), parish-cover rendering, login regression, editor-HTML smoke |
+| Utilities | escapeHtml, nl2br, formatDate (folded into renderer suite) |
 
 ---
 
@@ -364,12 +452,8 @@ Captured during the Publisher-replacement pass; not yet implemented.
 
 ### Open Tasks — Next Session (Top Priority)
 
-These four were requested at the end of Session 3 and should be the first work in the next chat:
-
-1. **Expand hymn library to 50 pre-1962 entries with lyrics** — write `src/assets/hymns/seed.json` with 50 hymns composed before 1962. Per entry: `title`, `tune`, `composer`, `lyricist`, `year`, `key`, `meter`, `source`, `tradition` (Latin chant / Lutheran / Anglican / American / Irish / etc.), `language: 'en'`, `lyrics` (≥ first verse, public domain), `referenceUrls` (Hymnary / CPDL / OpenHymnal). Update `src/store/hymn-library.js` to load this JSON in place of the hardcoded 20-entry array.
-2. **Instant hymn-title search** — replace the debounced server-call autocomplete (`initHymnAutocomplete` / `runHymnSearch` in `src/server.js`) with a one-time `/api/hymns` fetch on page load that caches the entire library client-side, then filter in-memory on every keystroke (no debounce).
-3. **Hymnary fetch script** — `scripts/fetch-hymns.js` that reads the seed library, calls `hymnary.org/data_api` for each tune/title, enriches with returned metadata (meter, scripture refs, hymnal instances), and writes a cached `data/hymn-library-local.json`. Wire as `npm run fetch-hymns`. Respect ≤ 1 req/sec and Hymnary attribution.
-4. **Hymn usage stats page** — `/api/stats/hymns` walks every draft in `data/drafts/` and aggregates per-hymn frequency by month and by liturgical season. Add a "Stats" nav link visible to **all roles** (no permission gate) plus a `#page-stats` view in the SPA showing the frequency table.
+1. **Expand hymn library to ~40 pre-1962 entries with lyrics** — write `src/assets/hymns/seed.json` with hymns composed before 1962. Per entry: `title`, `tune`, `composer`, `lyricist`, `year`, `key`, `meter`, `source`, `tradition` (Latin chant / Lutheran / Anglican / American / Irish / etc.), `language: 'en'`, `lyrics` (≥ first verse, public domain), `referenceUrls` (Hymnary / CPDL / OpenHymnal). Update `src/store/hymn-library.js` to load this JSON in place of the hardcoded 20-entry array.
+2. **Stock the attachments library** with the parish's existing prelude / postlude / mass-setting files so the per-music-slot dropdowns are useful out of the box.
 
 ### Music & Licensing
 - **OneLicense automation** — OneLicense.net publishes no public API and the site is Cloudflare-protected (returns 403 to any non-browser request). Recommended path:

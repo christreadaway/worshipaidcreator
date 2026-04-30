@@ -342,3 +342,178 @@ Fr. Larry — all return 200 with valid tokens).
 - Pushed: yes (origin matches)
 - Working tree: clean
 
+---
+
+## Session 5 (April 30, 2026): Attachments Library, Sanctus Toggle, Feast Auto-Detect
+
+**Branch:** `claude/add-file-uploads-yxr13`
+
+**Context:** Liturgist needed (1) a place to upload audio / PDF / score
+files that get reused across worship aids (preludes, postludes, mass
+settings, anthems), (2) a Sanctus English/Latin language toggle, (3)
+genuine date-driven auto-fill for the "Feast / Sunday Name" field
+because the previous attempt only filled the season, (4) parish
+settings for mass times + clergy + standing welcome/closing text, and
+(5) several UI cleanups (Bible Translation dropdown wider, hymn
+autocomplete restricted to actual hymn slots).
+
+### Shipped (committed and pushed)
+
+Commits on this branch:
+- `03db65d` Attachments library, parish settings, Sanctus toggle, feast auto-detect
+- `<NEXT>`  Bug-sweep follow-ups + tests + docs
+
+Feature summary:
+
+1. **Generic attachments library** — `src/store/attachments.js` defines
+   16 kinds (prelude, postlude, processional, kyrie, gloria, sanctus,
+   mystery_of_faith, agnus_dei, psalm, gospel_acclamation,
+   offertory_anthem, communion, thanksgiving, choral_anthem,
+   mass_setting, general). Multer-backed upload (≤50 MB) accepts
+   audio, PDF, image, MusicXML, MIDI, doc/text. Files are stored on
+   disk locally (`data/uploads/attachments/`) and in Netlify Blobs
+   (`uploads-attachments` namespace) in production.
+   - `GET    /api/attachments` (filterable by `kind`, `kinds`, `q`)
+   - `POST   /api/attachments` (manage_settings)
+   - `PUT    /api/attachments/:id` (manage_settings)
+   - `DELETE /api/attachments/:id` (manage_settings) — cleans up both
+     metadata and the on-disk binary (the namespaces don't line up
+     between multer's diskStorage and the kv adapter, so the route
+     does the unlink itself).
+   - `GET    /api/uploads/attachments/:filename` (serves bytes)
+
+2. **Per-music-slot quick-pick dropdowns** — Non-hymn slots (prelude,
+   postlude, kyrie, offertory anthem, choral anthem) carry a small
+   "pick from library" select wired to the matching kind. Picking an
+   entry copies title + composer into the music block AND attaches
+   the file to the worship aid's reference list. Hymn slots
+   (processional, communion, thanksgiving) keep the hymn-library
+   typeahead.
+
+3. **Hymn autocomplete scoping fix** — `data-hymn-search="title"` is
+   now only emitted on actual hymn fields. Preludes / postludes / mass
+   settings no longer search the hymn catalog.
+
+4. **Sanctus / Holy, Holy, Holy English-vs-Latin toggle** — New
+   `seasonalSettings.holyHolyLanguage` ('english' | 'latin'). Renderer
+   resolves the precedence per-aid override > parish default > English.
+   Latin block uses the Roman Missal text ("Sanctus, Sanctus, Sanctus
+   Dominus Deus Sabaoth..."). Heading switches between
+   "Holy, Holy, Holy" and "Sanctus".
+
+5. **Liturgical calendar module** — `src/liturgical-calendar.js`
+   computes feast/Sunday names using the General Roman Calendar (US):
+   - Sundays of Advent / Lent / Easter (numbered) including Divine
+     Mercy and the Sunday in the Octave
+   - Triduum (Palm Sunday, Holy Thursday, Good Friday, Holy Saturday)
+   - Movable solemnities (Easter, Ascension, Pentecost, Trinity, Corpus
+     Christi, Sacred Heart, Christ the King, Holy Family, Baptism of
+     the Lord, Epiphany)
+   - Fixed feasts (Christmas, Annunciation, Assumption, All Saints,
+     Immaculate Conception, etc.)
+   - Numbered Sundays in Ordinary Time (anchored to Christ the King =
+     34th Sunday)
+   - `GET /api/liturgical-info?date=YYYY-MM-DD` returns
+     `{date, liturgicalSeason, feastName}`.
+   - Editor's `onLiturgicalDateChange` now calls this endpoint and
+     fills the Feast / Sunday Name input whenever it's empty (manually
+     typed names are preserved).
+
+6. **Parish settings expansion** — `DEFAULT_PARISH_SETTINGS` adds
+   `massTimes` (multi-line cover schedule), `pastor`, `pastorTitle`,
+   `associates`, `deacons`, `musicDirector`, `welcomeMessage`,
+   `closingMessage`, `defaultSanctusLanguage`. Settings page UI gets a
+   new Clergy & Staff section, Mass Times textarea, Standing Worship-Aid
+   Text section, and Liturgical Defaults section.
+
+7. **Cover-page rendering** — Mass times line on cover is sourced from
+   `settings.massTimes` (one entry per line). Clergy lines render
+   under the times. Welcome message renders inside the cover; closing
+   message renders on the back cover.
+
+8. **Children's Liturgy expansion** — Schema/UI/template add
+   `childrenLiturgyLeader` and `childrenLiturgyNotes` so the parish
+   can name the catechist and add a one-liner like "Children rejoin
+   parents at the Offertory."
+
+9. **Bible Translation dropdown layout fix** — Replaced the cramped
+   `1fr 1fr auto` row with a dedicated `.readings-toolbar` grid
+   (`minmax(180px, 1.6fr) auto 1fr`) so the full "NABRE (Lectionary,
+   USCCB)" label fits without truncation. Added an explicit section
+   note clarifying that USCCB is the default source.
+
+### Bugs found in comprehensive sweep + fixed
+
+- **HIGH — Local attachment binary leaked on delete.** `kv.del('uploads-attachments', ...)` resolves to a different path than multer's `diskStorage` destination. The DELETE route now does `fs.unlinkSync` against the multer path before clearing metadata. Regression test asserts the file is gone from disk after delete.
+- **MEDIUM — Feast-name `userSet` flag was permanent.** Replaced the
+  flag with a simpler "fill only when empty" rule. Loading a saved
+  draft preserves whatever's in the field; clearing the field then
+  changing the date re-fills it.
+- **MEDIUM — Sanctus parish-default fallback never fired.**
+  `applySeasonDefaults` was setting `holyHolyLanguage='english'` before
+  the renderer's fallback chain could consult `settings.defaultSanctusLanguage`. Removed the eager default; the renderer now resolves
+  per-aid > parish > English correctly. Covered by a regression test.
+- **LOW — Picker silently no-op'd duplicates.** Adding a file already
+  attached now toasts "That file is already attached" instead of
+  swallowing the action.
+
+### Tests / endpoints verified
+
+- **168 / 168 tests passing** (147 prior + 21 new in
+  `attachments-and-calendar.test.js` and `liturgical-calendar.test.js`).
+- Smoke-tested via curl on the running server:
+  - `POST /api/auth/login` with jd/worship2026 and morris/music2026 →
+    200 + valid token
+  - `GET  /api/auth/me` → 200 with user payload
+  - `GET  /api/liturgical-info?date=2026-04-05` →
+    "Easter Sunday of the Resurrection of the Lord", season=easter
+  - `GET  /api/liturgical-info?date=2026-12-25` →
+    "The Nativity of the Lord (Christmas)", season=christmas
+  - `GET  /api/liturgical-info?date=2026-02-18` → "Ash Wednesday",
+    season=lent
+  - `POST /api/attachments` (multipart) → 200 + metadata
+  - `GET  /api/attachments` → list with the new entry
+  - `GET  /uploads/attachments/<file>` → file bytes
+  - `DELETE /api/attachments/:id` → 200; metadata gone, disk file gone
+  - `GET  /api/settings` returns all new fields with defaults
+  - `PUT  /api/settings` persists `pastor`, `associates`, `massTimes`,
+    etc.
+  - `POST /api/preview` with `holyHolyLanguage=latin` returns HTML
+    containing "Sanctus, Sanctus, Sanctus" + "Pleni sunt"
+  - `GET  /` (editor HTML) carries IDs `holyHolyLanguage`,
+    `attachmentPicker`, `s_massTimes`, `s_pastor`,
+    `childrenLiturgyLeader`, `attachmentFileInput`
+
+### Files added
+
+- `src/liturgical-calendar.js`
+- `src/store/attachments.js`
+- `src/tests/liturgical-calendar.test.js`
+- `src/tests/attachments-and-calendar.test.js`
+
+### Files modified
+
+- `src/server.js` (attachments routes, liturgical-info route,
+  attachments UI, parish-settings UI, Sanctus toggle UI, feast-name
+  auto-fill, hymn-autocomplete scoping, music-block field rewrite,
+  Bible Translation toolbar layout)
+- `src/template-renderer.js` (cover renders mass times + clergy +
+  welcome message; back cover renders closing message; Sanctus block
+  renders text in chosen language; Children's Liturgy block adds
+  leader + notes)
+- `src/schema.js` (`holyHolyLanguage`, `childrenLiturgyLeader`,
+  `childrenLiturgyNotes`, `attachmentRefs`)
+- `src/config/defaults.js` (mass times, clergy, welcome/closing,
+  defaultSanctusLanguage)
+- `src/config/seasons.js` (don't pre-set holyHolyLanguage; let
+  renderer resolve fallback)
+- `src/assets/text/mass-texts.js` (HOLY_HOLY_HOLY_LATIN,
+  getHolyHolyHolyText)
+
+### Branch state at end of session
+
+- Branch: `claude/add-file-uploads-yxr13`
+- Pushed: yes (origin matches)
+- Working tree: clean
+- Tests: 168/168 passing
+
