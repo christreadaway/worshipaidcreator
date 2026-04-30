@@ -195,7 +195,10 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 - Parish-managed catalog stored in KV (`hymn-library/parish-default`). Fields per entry: title, tune name, composer, key, meter, source/hymnal, notes, language (defaults to `en`).
 - Seeded with 20 common English Catholic hymns covering Public Domain + GIA/OCP/Hope etc. Editable as JSON in the Settings page.
 - Title fields in every Music block carry a typeahead that searches the library and shows tune name and key signature inline so the user can pick the arrangement that fits the parish. Selecting an entry auto-fills the composer field if blank.
+- **Instant in-memory search**: the full library is fetched once on first keystroke (or admin save), cached client-side, and filtered synchronously for every keystroke after that. No debounce, no per-keystroke network round-trip. Server-side `/api/hymns/search` is preserved for non-browser callers.
+- **Curly/straight quote normalization**: both server and client lowercase + collapse smart quotes (`'`, `'`, `"`, `"`) to ASCII before matching, so users typing a straight `'` still match seed entries that use typographic apostrophes (e.g. "On Eagle's Wings").
 - API: `GET /api/hymns/search?q=…` (English by default; pass `includeNonEnglish=1` to include other languages), `GET /api/hymns`, `PUT /api/hymns` (admin only).
+- **Local enrichment script**: `npm run fetch-hymns` reads `src/assets/hymns/seed.json`, calls Hymnary.org's free search endpoint per entry (~1 req/sec), and writes `data/hymn-library-local.json` with meter / scripture refs / hymnal-count metadata Hymnary returns. Defensive against network failures.
 
 ### 15. Notation Auto-Crop
 
@@ -208,6 +211,18 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 - Apostles' Creed (Advent, Lent, Easter Season per parish worksheet)
 - Renewal of Baptismal Vows (Easter Vigil and Easter Sunday Mass — full priest/all dialogue text)
 
+### 17. Hymn Usage Stats
+
+- **Visible to all roles** (no permission gate) under the "Stats" nav link.
+- `GET /api/stats/hymns` walks every saved draft in `data/drafts/` (or
+  the equivalent Netlify Blob namespace) and aggregates how often each
+  hymn title appears: total count, by month (`YYYY-MM`), and by
+  liturgical season. Each title is counted at most once per draft
+  regardless of how many mass times list it.
+- The view is a sortable table: hymn / total / by-season / by-month.
+  Useful for OneLicense reporting and for the music director when
+  planning rotation across the year.
+
 ---
 
 ## API Endpoints
@@ -217,7 +232,8 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 | GET | `/` | Serve SPA |
 | GET | `/history` | Serve SPA (history view) |
 | GET | `/admin` | Serve SPA (settings view) |
-| GET | `/api/season-defaults/:season` | Season auto-rules |
+| GET | `/stats` | Serve SPA (hymn usage stats view) |
+| GET | `/api/season-defaults/:season` | Season auto-rules (400 on unknown season) |
 | GET | `/api/lenten-acclamations` | Lenten acclamation options |
 | GET | `/api/bible-translations` | Translations for the readings dropdown |
 | GET | `/api/readings?date&translation` | USCCB readings auto-fetch |
@@ -239,8 +255,9 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 | POST | `/api/upload/cover` | Upload cover image |
 | POST | `/api/upload/logo` | Upload parish logo (admin only) |
 | GET | `/api/hymns` | Get hymn library |
-| GET | `/api/hymns/search?q&limit&includeNonEnglish` | Typeahead search |
+| GET | `/api/hymns/search?q&limit&includeNonEnglish` | Typeahead search (smart-quote normalized) |
 | PUT | `/api/hymns` | Save hymn library (admin only) |
+| GET | `/api/stats/hymns` | Hymn usage frequency across all drafts |
 | GET | `/api/sample` | Load sample data |
 | GET | `/exports/:filename` | Static file serving for exported PDFs |
 

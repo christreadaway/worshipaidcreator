@@ -255,3 +255,90 @@ These are documented in the Future Build Requirements section of `product_spec.m
 - Pushed: yes (origin matches)
 - Working tree: clean (verified before writing this note)
 
+---
+
+## Session 4 (April 29, 2026): Login Restore + Pick-Up Pass
+
+**Branch:** `claude/restore-login-finish-work-pOnWv`
+
+**Context:** Deployed Netlify site rendered blank — user could not see the
+login screen. Picked up the outstanding work captured at the end of the
+prior session, kept it in small commits so each piece could ship
+independently, and ran a comprehensive bug sweep against every API
+endpoint.
+
+### Critical fix shipped first
+
+**Login was broken site-wide** because of a single escaping bug. Inside
+`getAppHtml()`'s backtick template literal, the cover-suggestions HTML
+used `toast(\'Prompt copied\', \'success\')` — but template literals
+collapse `\'` to `'`, leaving an unescaped quote inside a single-quoted
+JS string in the rendered page. That parse error halted every script at
+the bottom of the page, including `checkAuth()`, so every page div
+(login, editor, history, admin) stayed `display:none` and the site
+appeared to render nothing. Fix: switch to `\\'` (which the template
+literal preserves as `\'`), matching the convention used by every other
+onclick handler in the file. Commit: `300abdc`.
+
+Verified by smoke test (curl POST /api/auth/login for jd, Morris,
+Fr. Larry — all return 200 with valid tokens).
+
+### Features shipped (one commit each)
+
+- `300abdc` **Fix login parse error** + clean up user-store test leakage
+  (after-hook deletes tracked test users; uniqueName generator removes
+  the Date.now() collision flake from the prior session).
+- `861fcd4` **Instant hymn search** — fetches `/api/hymns` once at
+  startup, caches client-side, filters synchronously on every keystroke
+  (no debounce, zero network latency). Cache invalidated when admin
+  saves the library from Settings.
+- `48a6130` **Hymn usage stats page** — `GET /api/stats/hymns`
+  aggregates hymn-title usage across saved drafts (total, by month, by
+  liturgical season), counted once per draft. New "Stats" nav link
+  visible to **all roles** with a sortable table view.
+- `3b46838` **Hymnary fetch script** (`npm run fetch-hymns`) — reads
+  `src/assets/hymns/seed.json`, calls Hymnary.org's free search
+  endpoint per entry (tune lookup first, falls back to title), writes
+  enriched cache to `data/hymn-library-local.json`. Rate-limited at
+  ~1 req/sec; defensive against network failures.
+
+### Bugs found in comprehensive sweep + fixed
+
+- `ecb683f` **Hymn search: curly-vs-straight apostrophe miss** — seed
+  uses typographic `'` (e.g. "On Eagle's Wings"), users type `'`.
+  Both server and client now lowercase + collapse smart quotes
+  before matching.
+- `555140e` **Invalid season returned 200** — `GET /api/season-defaults/<bad>`
+  silently returned ordinary defaults. Now returns 400 with the list
+  of valid seasons.
+
+### Tests / endpoints verified
+
+- 127/127 tests passing (no regressions; the prior session's flaky
+  display-name-first-word test is now stable).
+- Every page route (`/`, `/login`, `/admin`, `/history`, `/users`,
+  `/stats`) returns 200.
+- Every read-only API endpoint returns 200; protected endpoints return
+  401 unauthenticated and 403 with insufficient permissions.
+- PDF generation works for both half-letter and tabloid booklets and
+  for all three creed types (nicene, apostles, baptismal_vows).
+- Cover-suggestion endpoint handles empty body gracefully.
+- Login error UI uses `textContent` (not `innerHTML`) — XSS safe.
+
+### Outstanding work (NOT shipped — pick up here next time)
+
+- **Expand hymn library to 40 pre-1962 entries with lyrics** in
+  `src/assets/hymns/seed.json` and refactor `src/store/hymn-library.js`
+  to load it. Decided to ship the rest of the features first; the
+  current library remains the 20-entry hardcoded `STARTER_LIBRARY`.
+  Note: user revised target from 50 to 40 to "as many as we have"
+  (which today is 20). The seed.json work is queued for when there's
+  bandwidth to compose first-verse PD lyrics for each entry.
+
+### Branch state for next session
+
+- Branch: `claude/restore-login-finish-work-pOnWv`
+- HEAD: `555140e`
+- Pushed: yes (origin matches)
+- Working tree: clean
+

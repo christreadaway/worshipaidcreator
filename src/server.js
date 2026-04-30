@@ -276,8 +276,10 @@ app.delete('/api/users/:id', requireAuth, requirePermission('manage_users'), asy
 
 // Season defaults
 app.get('/api/season-defaults/:season', (req, res) => {
-  const defaults = getSeasonDefaults(req.params.season);
-  res.json(defaults);
+  if (!SEASONS.includes(req.params.season)) {
+    return res.status(400).json({ error: 'Unknown season: ' + req.params.season + '. Must be one of: ' + SEASONS.join(', ') });
+  }
+  res.json(getSeasonDefaults(req.params.season));
 });
 
 // Lenten acclamation options
@@ -607,6 +609,49 @@ app.post('/api/drafts/:id/request-changes', requireAuth, requirePermission('appr
   res.json(draft);
 });
 
+// --- STATS ---
+// Hymn-usage frequency across all saved drafts. Open to all roles — no auth gate.
+const HYMN_FIELDS = [
+  'organPrelude', 'processionalOrEntrance', 'kyrieSetting', 'offertoryAnthem',
+  'communionHymn', 'hymnOfThanksgiving', 'organPostlude', 'choralAnthemConcluding'
+];
+const MUSIC_BLOCKS = ['musicSat5pm', 'musicSun9am', 'musicSun11am'];
+
+function _normalizeTitle(s) {
+  return String(s || '').trim();
+}
+
+app.get('/api/stats/hymns', async (req, res) => {
+  try {
+    const drafts = await kv.list('drafts');
+    const stats = {};
+    for (const d of drafts) {
+      const date = d.liturgicalDate || '';
+      const month = date.slice(0, 7); // YYYY-MM
+      const season = d.liturgicalSeason || 'unknown';
+      const titles = new Set();
+      for (const block of MUSIC_BLOCKS) {
+        const m = d[block] || {};
+        for (const f of HYMN_FIELDS) {
+          const t = _normalizeTitle(m[f]);
+          if (t) titles.add(t);
+        }
+      }
+      titles.forEach(t => {
+        if (!stats[t]) stats[t] = { title: t, total: 0, byMonth: {}, bySeason: {}, draftDates: [] };
+        stats[t].total += 1;
+        if (month) stats[t].byMonth[month] = (stats[t].byMonth[month] || 0) + 1;
+        stats[t].bySeason[season] = (stats[t].bySeason[season] || 0) + 1;
+        if (date) stats[t].draftDates.push(date);
+      });
+    }
+    const list = Object.values(stats).sort((a, b) => b.total - a.total || a.title.localeCompare(b.title));
+    res.json({ totalDrafts: drafts.length, hymns: list });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // --- SETTINGS ---
 app.get('/api/settings', async (req, res) => {
   res.json(await store.loadSettings());
@@ -633,6 +678,7 @@ app.get('/login', (req, res) => res.send(getAppHtml()));
 app.get('/admin', (req, res) => res.send(getAppHtml()));
 app.get('/history', (req, res) => res.send(getAppHtml()));
 app.get('/users', (req, res) => res.send(getAppHtml()));
+app.get('/stats', (req, res) => res.send(getAppHtml()));
 
 // Only start listening when run directly (not when imported for testing)
 if (require.main === module) {
@@ -803,6 +849,7 @@ nav .user-info strong { color: var(--gold-light); }
   <span class="brand">&#x271E; Worship Aid Generator</span>
   <a href="/" class="nav-link active" data-page="editor">Editor</a>
   <a href="/history" class="nav-link" data-page="history">History</a>
+  <a href="/stats" class="nav-link" data-page="stats">Stats</a>
   <a href="/admin" class="nav-link" data-page="admin" id="nav-admin">Settings</a>
   <a href="/users" class="nav-link" data-page="users" id="nav-users" style="display:none;">Users</a>
   <span class="spacer"></span>
@@ -1019,6 +1066,16 @@ nav .user-info strong { color: var(--gold-light); }
   </div>
 </div>
 
+<!-- STATS PAGE -->
+<div id="page-stats" style="display:none;">
+  <div class="history-view">
+    <h2>Hymn Usage Stats</h2>
+    <p style="font-size:12px;color:var(--gray);margin-bottom:12px;">How often each hymn appears across saved drafts. Counted once per draft regardless of how many mass times use it.</p>
+    <div id="stats-summary" style="font-size:12px;color:var(--gray);margin-bottom:8px;"></div>
+    <div id="stats-list"></div>
+  </div>
+</div>
+
 <!-- ADMIN/SETTINGS PAGE -->
 <div id="page-admin" style="display:none;">
   <div class="admin-view">
@@ -1134,7 +1191,7 @@ function showLogin() {
   _currentUser = null;
   document.getElementById('page-login').style.display = '';
   document.getElementById('main-nav').style.display = 'none';
-  ['editor','history','admin','users'].forEach(p => document.getElementById('page-' + p).style.display = 'none');
+  ['editor','history','stats','admin','users'].forEach(p => document.getElementById('page-' + p).style.display = 'none');
 }
 
 async function showApp() {
@@ -1244,10 +1301,11 @@ document.querySelectorAll('.nav-link').forEach(link => {
   });
 });
 function showPage(page) {
-  ['editor','history','admin','users'].forEach(p => {
+  ['editor','history','stats','admin','users'].forEach(p => {
     document.getElementById('page-' + p).style.display = (p === page) ? '' : 'none';
   });
   if (page === 'history') loadHistory();
+  if (page === 'stats') loadStats();
   if (page === 'admin') loadAdminSettings();
   if (page === 'users') loadUsers();
 }
@@ -1579,7 +1637,7 @@ async function suggestCoverImages() {
       '<div style="border:1px solid var(--border);border-radius:3px;padding:6px 8px;margin-bottom:6px;">' +
         '<div style="font-weight:600;font-size:12px;">' + esc(c.title) + '</div>' +
         '<div style="font-size:11px;color:var(--gray);margin-top:2px;">' + esc(c.prompt) + '</div>' +
-        '<button type="button" style="margin-top:4px;font-size:10px;" onclick="navigator.clipboard.writeText(' + JSON.stringify(c.prompt) + ');toast(\'Prompt copied\',\'success\');">Copy prompt</button>' +
+        '<button type="button" style="margin-top:4px;font-size:10px;" onclick="navigator.clipboard.writeText(' + JSON.stringify(c.prompt) + ');toast(\\'Prompt copied\\',\\'success\\');">Copy prompt</button>' +
       '</div>'
     )).join('');
     const linkHtml = data.searchLinks.map(s => (
@@ -1792,6 +1850,54 @@ async function loadHistory() {
   } catch(e) { console.error(e); }
 }
 
+// --- Stats ---
+async function loadStats() {
+  const list = document.getElementById('stats-list');
+  const summary = document.getElementById('stats-summary');
+  list.innerHTML = '<p style="color:var(--gray);font-style:italic;">Loading…</p>';
+  try {
+    const res = await fetch('/api/stats/hymns');
+    if (!res.ok) {
+      list.innerHTML = '<p style="color:var(--error);">Could not load stats.</p>';
+      return;
+    }
+    const data = await res.json();
+    summary.textContent = data.totalDrafts + ' draft' + (data.totalDrafts === 1 ? '' : 's') + ' analyzed · ' + data.hymns.length + ' distinct hymn' + (data.hymns.length === 1 ? '' : 's') + ' used.';
+    if (!data.hymns.length) {
+      list.innerHTML = '<p style="color:var(--gray);font-style:italic;">No hymn usage yet — save a draft with music titles and refresh.</p>';
+      return;
+    }
+    const seasonOrder = ['advent', 'christmas', 'lent', 'easter', 'ordinary', 'unknown'];
+    const seasonLabel = { advent: 'Advent', christmas: 'Christmas', lent: 'Lent', easter: 'Easter', ordinary: 'Ordinary', unknown: '?' };
+    list.innerHTML =
+      '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+        '<thead><tr style="text-align:left;border-bottom:2px solid var(--border);">' +
+          '<th style="padding:6px 8px;">Hymn</th>' +
+          '<th style="padding:6px 8px;width:60px;text-align:center;">Total</th>' +
+          '<th style="padding:6px 8px;">By season</th>' +
+          '<th style="padding:6px 8px;">By month</th>' +
+        '</tr></thead><tbody>' +
+        data.hymns.map(h => {
+          const seasons = seasonOrder
+            .filter(s => h.bySeason[s])
+            .map(s => '<span style="display:inline-block;margin-right:6px;">' + seasonLabel[s] + ': <strong>' + h.bySeason[s] + '</strong></span>')
+            .join('');
+          const months = Object.keys(h.byMonth).sort()
+            .map(m => '<span style="display:inline-block;margin-right:6px;">' + esc(m) + ': <strong>' + h.byMonth[m] + '</strong></span>')
+            .join('');
+          return '<tr style="border-bottom:1px solid var(--border);">' +
+            '<td style="padding:6px 8px;font-weight:600;">' + esc(h.title) + '</td>' +
+            '<td style="padding:6px 8px;text-align:center;">' + h.total + '</td>' +
+            '<td style="padding:6px 8px;color:var(--gray);">' + seasons + '</td>' +
+            '<td style="padding:6px 8px;color:var(--gray);">' + months + '</td>' +
+          '</tr>';
+        }).join('') +
+      '</tbody></table>';
+  } catch (e) {
+    list.innerHTML = '<p style="color:var(--error);">Error loading stats: ' + esc(e.message) + '</p>';
+  }
+}
+
 async function openDraft(id) {
   const res = await fetch('/api/drafts/' + id);
   const data = await res.json();
@@ -1877,6 +1983,8 @@ async function saveHymnLibrary() {
     if (!res.ok) { if (status) status.textContent = data.error || 'Save failed'; toast(data.error || 'Save failed', 'error'); return; }
     if (status) status.textContent = 'Saved ' + data.entries.length + ' hymns';
     toast('Hymn library saved', 'success');
+    invalidateHymnCache();
+    getHymnCache();
   } catch (e) {
     if (status) status.textContent = 'Error: ' + e.message;
   }
@@ -2022,15 +2130,58 @@ initHymnAutocomplete();
 // Attach a typeahead to every input flagged with [data-hymn-search="title"].
 // Results show title, tune, composer, and key so the user can choose the
 // arrangement that fits the parish.
-let _hymnDebounce;
+//
+// The library is fetched ONCE at startup and cached in memory. Every keystroke
+// filters the cache synchronously — no debounce, no network call, instant.
+let _hymnCache = null;
+let _hymnCachePromise = null;
+
+function getHymnCache() {
+  if (_hymnCache) return Promise.resolve(_hymnCache);
+  if (_hymnCachePromise) return _hymnCachePromise;
+  _hymnCachePromise = fetch('/api/hymns')
+    .then(r => r.ok ? r.json() : { entries: [] })
+    .then(lib => {
+      _hymnCache = (lib && Array.isArray(lib.entries)) ? lib.entries.filter(e => (e.language || 'en') === 'en') : [];
+      return _hymnCache;
+    })
+    .catch(() => { _hymnCache = []; return _hymnCache; });
+  return _hymnCachePromise;
+}
+
+function invalidateHymnCache() { _hymnCache = null; _hymnCachePromise = null; }
+
+function searchHymnsLocal(q, limit) {
+  const entries = _hymnCache || [];
+  const norm = s => String(s || '').toLowerCase().replace(/[‘’ʼ]/g, "'").replace(/[“”]/g, '"');
+  const query = norm(q).trim();
+  if (!query) return entries.slice(0, limit);
+  const scored = [];
+  for (const e of entries) {
+    const title = norm(e.title);
+    const tune  = norm(e.tune);
+    const composer = norm(e.composer);
+    let score = 0;
+    if (title.startsWith(query))    score += 100;
+    else if (title.includes(query)) score += 50;
+    if (tune.startsWith(query))     score += 80;
+    else if (tune.includes(query))  score += 40;
+    if (composer.includes(query))   score += 10;
+    if (score > 0) scored.push({ e, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map(r => r.e);
+}
+
 function initHymnAutocomplete() {
+  // Pre-warm the cache so the first keystroke is instant
+  getHymnCache();
   document.addEventListener('input', e => {
     const t = e.target;
     if (!t || t.dataset.hymnSearch !== 'title') return;
-    clearTimeout(_hymnDebounce);
     const q = t.value.trim();
     if (!q) { closeHymnDropdown(); return; }
-    _hymnDebounce = setTimeout(() => runHymnSearch(t, q), 150);
+    runHymnSearch(t, q);
   });
   document.addEventListener('click', e => {
     if (!e.target.closest || !e.target.closest('.hymn-dropdown') && !(e.target.dataset && e.target.dataset.hymnSearch)) {
@@ -2043,11 +2194,16 @@ function initHymnAutocomplete() {
 }
 
 async function runHymnSearch(input, q) {
-  try {
-    const res = await fetch('/api/hymns/search?q=' + encodeURIComponent(q) + '&limit=8');
-    const data = await res.json();
-    showHymnDropdown(input, data.results || []);
-  } catch (e) { /* ignore */ }
+  if (_hymnCache) {
+    showHymnDropdown(input, searchHymnsLocal(q, 8));
+    return;
+  }
+  // Cache still loading on first keystroke — wait, then filter
+  await getHymnCache();
+  // The user may have kept typing; re-read the input value
+  const latestQ = input.value.trim();
+  if (!latestQ) { closeHymnDropdown(); return; }
+  showHymnDropdown(input, searchHymnsLocal(latestQ, 8));
 }
 
 function closeHymnDropdown() {

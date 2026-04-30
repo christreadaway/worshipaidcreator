@@ -7,18 +7,48 @@ const fs = require('fs');
 const path = require('path');
 const userStore = require('../store/user-store');
 
-// Clean up test users after tests
+// Track all users created during the test run so we can clean them up at the end
 const testUserIds = [];
+let _testCounter = 0;
+function uniqueName(prefix) {
+  _testCounter += 1;
+  return prefix + '_' + Date.now() + '_' + _testCounter + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+async function track(user) {
+  if (user && user.id) testUserIds.push(user.id);
+  return user;
+}
+
+after(async () => {
+  for (const id of testUserIds) {
+    try { await userStore.deleteUser(id); } catch (_) { /* ignore */ }
+  }
+  // Also wipe any user files whose username starts with a known test prefix in case
+  // earlier failures bypassed the tracking array.
+  const usersDir = path.join(__dirname, '..', '..', 'data', 'users');
+  if (fs.existsSync(usersDir)) {
+    const testPrefixes = ['testuser_', 'bad_', 'dup_', 'authtest_', 'authfail_', 'citest_', 'dntest_', 'session_', 'destroy_', 'excl1_', 'excl2_'];
+    for (const f of fs.readdirSync(usersDir)) {
+      const p = path.join(usersDir, f);
+      try {
+        const u = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (testPrefixes.some(prefix => u.username && u.username.startsWith(prefix))) {
+          fs.unlinkSync(p);
+        }
+      } catch (_) { /* skip malformed */ }
+    }
+  }
+});
 
 describe('User Store', () => {
   it('should create a user', async () => {
-    const user = await userStore.createUser({
-      username: 'testuser_' + Date.now(),
+    const user = await track(await userStore.createUser({
+      username: uniqueName('testuser'),
       displayName: 'Test User',
       role: 'staff',
       password: 'testpass'
-    });
-    testUserIds.push(user.id);
+    }));
     assert.ok(user.id);
     assert.equal(user.role, 'staff');
     assert.equal(user.displayName, 'Test User');
@@ -27,14 +57,14 @@ describe('User Store', () => {
 
   it('should reject invalid role', async () => {
     await assert.rejects(
-      () => userStore.createUser({ username: 'bad_' + Date.now(), displayName: 'Bad', role: 'invalid', password: 'x' }),
+      () => userStore.createUser({ username: uniqueName('bad'), displayName: 'Bad', role: 'invalid', password: 'x' }),
       /Invalid role/
     );
   });
 
   it('should reject duplicate username', async () => {
-    const unique = 'dup_' + Date.now();
-    await userStore.createUser({ username: unique, displayName: 'First', role: 'staff', password: 'x' });
+    const unique = uniqueName('dup');
+    await track(await userStore.createUser({ username: unique, displayName: 'First', role: 'staff', password: 'x' }));
     await assert.rejects(
       () => userStore.createUser({ username: unique, displayName: 'Second', role: 'staff', password: 'y' }),
       /already exists/
@@ -50,8 +80,8 @@ describe('User Store', () => {
   });
 
   it('should authenticate with correct credentials', async () => {
-    const uname = 'authtest_' + Date.now();
-    await userStore.createUser({ username: uname, displayName: 'Auth Test', role: 'staff', password: 'secret' });
+    const uname = uniqueName('authtest');
+    await track(await userStore.createUser({ username: uname, displayName: 'Auth Test', role: 'staff', password: 'secret' }));
     const user = await userStore.authenticateUser(uname, 'secret');
     assert.ok(user);
     assert.equal(user.username, uname);
@@ -60,32 +90,34 @@ describe('User Store', () => {
   // Beta mode: password check disabled — login by username only
   // TODO: re-enable this test when password check is restored for production
   it('should allow login regardless of password in beta mode', async () => {
-    const uname = 'authfail_' + Date.now();
-    await userStore.createUser({ username: uname, displayName: 'Fail', role: 'staff', password: 'correct' });
+    const uname = uniqueName('authfail');
+    await track(await userStore.createUser({ username: uname, displayName: 'Fail', role: 'staff', password: 'correct' }));
     const user = await userStore.authenticateUser(uname, 'wrong');
     assert.ok(user, 'Beta mode should allow login without password check');
     assert.equal(user.username, uname);
   });
 
   it('should authenticate with case-insensitive username', async () => {
-    const uname = 'citest_' + Date.now();
-    await userStore.createUser({ username: uname, displayName: 'CaseTest User', role: 'staff', password: 'pass' });
+    const uname = uniqueName('citest');
+    await track(await userStore.createUser({ username: uname, displayName: 'CaseTest User', role: 'staff', password: 'pass' }));
     const user = await userStore.authenticateUser(uname.toUpperCase(), 'pass');
     assert.ok(user, 'Should match username regardless of case');
     assert.equal(user.username, uname);
   });
 
   it('should authenticate by display name first word', async () => {
-    const uname = 'dntest_' + Date.now();
-    await userStore.createUser({ username: uname, displayName: 'Zelda (Staff)', role: 'staff', password: 'pass' });
-    const user = await userStore.authenticateUser('Zelda', '');
+    const uname = uniqueName('dntest');
+    // Use a unique display-name first word so we don't collide with parallel test runs
+    const displayWord = 'Zelda' + _testCounter;
+    await track(await userStore.createUser({ username: uname, displayName: displayWord + ' (Staff)', role: 'staff', password: 'pass' }));
+    const user = await userStore.authenticateUser(displayWord, '');
     assert.ok(user, 'Should match by display name first word');
     assert.equal(user.username, uname);
   });
 
   it('should create and validate sessions', async () => {
-    const uname = 'session_' + Date.now();
-    const created = await userStore.createUser({ username: uname, displayName: 'Session', role: 'admin', password: 'pass' });
+    const uname = uniqueName('session');
+    const created = await track(await userStore.createUser({ username: uname, displayName: 'Session', role: 'admin', password: 'pass' }));
     const token = await userStore.createSession(created.id);
     assert.ok(token);
     assert.ok(token.length > 20);
@@ -96,8 +128,8 @@ describe('User Store', () => {
   });
 
   it('should destroy sessions', async () => {
-    const uname = 'destroy_' + Date.now();
-    const created = await userStore.createUser({ username: uname, displayName: 'Destroy', role: 'staff', password: 'pass' });
+    const uname = uniqueName('destroy');
+    const created = await track(await userStore.createUser({ username: uname, displayName: 'Destroy', role: 'staff', password: 'pass' }));
     const token = await userStore.createSession(created.id);
     await userStore.destroySession(token);
     const user = await userStore.getSessionUser(token);
@@ -105,9 +137,8 @@ describe('User Store', () => {
   });
 
   it('should enforce exclusive login per role (same role kicks previous session)', async () => {
-    const ts = Date.now();
-    const user1 = await userStore.createUser({ username: 'excl1_' + ts, displayName: 'Excl1', role: 'music_director', password: 'pass' });
-    const user2 = await userStore.createUser({ username: 'excl2_' + ts, displayName: 'Excl2', role: 'music_director', password: 'pass' });
+    const user1 = await track(await userStore.createUser({ username: uniqueName('excl1'), displayName: 'Excl1', role: 'music_director', password: 'pass' }));
+    const user2 = await track(await userStore.createUser({ username: uniqueName('excl2'), displayName: 'Excl2', role: 'music_director', password: 'pass' }));
 
     // user1 logs in
     const token1 = await userStore.createSession(user1.id);
