@@ -2122,10 +2122,6 @@ async function fetchReadingsFromUsccb() {
   }
 }
 
-initBibleTranslations();
-suggestNextLiturgicalDate();
-initHymnAutocomplete();
-
 // --- Hymn library autocomplete ---
 // Attach a typeahead to every input flagged with [data-hymn-search="title"].
 // Results show title, tune, composer, and key so the user can choose the
@@ -2243,6 +2239,12 @@ function showHymnDropdown(input, results) {
   });
   document.body.appendChild(dd);
 }
+
+// Module state above is now initialized — safe to run inits (avoids
+// Temporal Dead Zone for the let-declared hymn cache).
+initBibleTranslations();
+suggestNextLiturgicalDate();
+initHymnAutocomplete();
 
 // --- Auto-save ---
 let _autoSaveTimer;
