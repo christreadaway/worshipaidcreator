@@ -125,7 +125,7 @@ The HARDEST constraint: content must fit in exactly 8 pages. Rules:
 ### 5.3 Print Format Specification
 Based on analysis of existing worship aids (952×1260px JPEG renders = 5.5"×8.5" at ~173dpi):
 
-- **Final booklet page size:** 5.5" × 8.5" (half-letter)
+- **Final booklet page size:** **8.5" × 11" (tabloid, default)** or 5.5" × 8.5" (half-letter, optional). Default is the larger trim — bigger type, easier for the assembly to read; printed on 11×17 saddle-stitched.
 - **Print format:** 8-page saddle-stitched booklet — 2 sheets of 8.5"×11" paper, printed duplex, folded and stapled at spine
 - **Printer-ready PDF impositioned page order:**
   - Sheet 1, Side A: Page 8 (left) + Page 1 (right)
@@ -165,6 +165,7 @@ Based on analysis of existing worship aids (952×1260px JPEG renders = 5.5"×8.5
 ### 5.9 Generic Attachments Library
 - Music staff can upload **any file** the parish reuses across worship aids (audio / PDF / image / MusicXML / MIDI / doc / score, ≤ 50 MB) and tag it with one of 16 kinds: prelude, postlude, processional, kyrie, gloria, sanctus, mystery_of_faith, agnus_dei, psalm, gospel_acclamation, offertory_anthem, communion, thanksgiving, choral_anthem, mass_setting, general.
 - Library lives at parish scope and persists outside any single worship aid.
+- **Surfaced as a top-level `Library` page** (top nav, between History and Stats). Visible to anyone with the `manage_attachments` permission — `admin`, `music_director`, and `staff` (not `pastor`).
 - Editor surfaces the relevant kind for each non-hymn music slot (prelude / postlude / kyrie / offertory / choral anthem). Selecting an entry copies its title + composer into the music block AND attaches the file to the aid's reference list.
 - Hymn slots (processional, communion, thanksgiving) keep the hymn-library typeahead — preludes / postludes / mass settings / kyries / anthems do **not** pull from the hymn library.
 

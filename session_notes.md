@@ -611,3 +611,58 @@ POST /api/generate-pdf {childrenLiturgyMassTimes: ["Sat 5:00 PM","Sun 9:00 AM"]}
 
 **Tests now: 177/177 passing.**
 
+### Session 5 follow-up #4: Library top-nav, contrast fix, default size
+
+After Session 5 went live, three more issues surfaced:
+
+1. **Nobody could find the upload UI.** It was buried in Settings (admin-only by visibility), and the API routes were also gated by `manage_settings`, which meant music directors couldn't upload mass settings or anthems even though they're the primary user of the feature.
+2. **Nav buttons ("Load Sample", "Save Draft", "Logout") had bad contrast** against the dark navy nav — gold/gray-on-dark made them nearly invisible.
+3. **Default booklet size should be 8.5"×11"** (tabloid), not 5.5"×8.5".
+
+**Shipped:**
+
+- New `manage_attachments` permission, granted to `admin`,
+  `music_director`, and `staff` (server-side `ROLE_PERMISSIONS` and
+  client-side `rolePerms` both updated). All three attachment write
+  routes (`POST`, `PUT`, `DELETE /api/attachments[/:id]`) now use
+  this permission instead of `manage_settings`.
+- **Library is a top-nav item.** New `Library` link between
+  `History` and `Stats`, gated by `hasRole('manage_attachments')`.
+  Routes: `GET /library` serves the SPA shell; the SPA's
+  `showPage('library')` triggers `loadAttachmentList()` to populate
+  the page view.
+- **Music & Document Library moved out of Settings** entirely.  The
+  upload widget, Title/Composer/Kind/Tags inputs, kind filter, and
+  attachment list now live on the Library page.  Settings keeps the
+  hymn-library JSON editor and parish-info forms.
+- **Default booklet size is tabloid (8.5"×11").** The nav dropdown
+  defaults to `<option value="tabloid" selected>` and the server
+  fallback in `/api/generate-pdf` is now `'tabloid'`.
+- **Nav-context outline buttons get a light variant.**  Added
+  `nav .btn-outline { color: rgba(255,255,255,0.92); ... }` and a
+  matching `:hover`. Removed the inline `style="color:rgba(...,0.5)"`
+  on the Logout button so it picks up the new style.
+
+**Tests added (7 new; suite is now 184/184 passing):**
+
+- Pastor (no `manage_attachments` perm) gets 403 on upload.
+- Music director uploads succeed (200).
+- Staff uploads succeed (200).
+- `Library` is present in the top nav (`data-page="library"`)
+  and the `page-library` view exists.
+- The Settings page no longer hosts the Music & Document Library
+  section.
+- `GET /library` returns the SPA shell.
+- Default booklet option in the nav is `<option value="tabloid" selected>`.
+- `nav .btn-outline` carries the light-text override; the inline
+  half-opacity logout color is gone.
+
+**Smoke test on a clean server boot:**
+- `/library` returns 200; library nav element present (hidden until
+  user has the perm).
+- Music director (`morris`) login → upload (200) → list contains
+  the new file → delete (200, file gone from disk).
+- Pastor (`frlarry`) login → upload → 403.
+- PDF generation for a no-`bookletSize` request still succeeds
+  (now defaults to tabloid).
+

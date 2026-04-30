@@ -152,9 +152,9 @@ Line estimation: character count / 65 chars per line. Overflow warnings identify
 
 ### 7. PDF Export
 
-- **Trim sizes:**
+- **Trim sizes (default: tabloid 8.5×11):**
+  - `tabloid` *(default)* — 8.5" × 11" (612×792pt). 1" margins (6.5×9 content). Print on 11×17, saddle-stitched. Fonts and spacing scale by 1.294× for readability at the larger trim.
   - `half-letter` — 5.5" × 8.5" (396×612pt). 0.5" margins (3.5×7.5 content). Print on letter (8.5×11), saddle-stitched.
-  - `tabloid` — 8.5" × 11" (612×792pt). 1" margins (6.5×9 content). Print on 11×17, saddle-stitched. Fonts and spacing scale by 1.294× for readability at the larger trim.
 - **Imposition:** Output is the finished booklet pages in reading order. Saddle-stitch imposition is delegated to the printer driver's "booklet print" / "fold booklet" mode (Acrobat, macOS Print, modern Windows print dialogs handle this natively).
 - **Engine:** PDFKit (direct page construction, no headless browser).
 - **Filename convention:** `YYYY_MM_DD__Feast_Name.pdf`.
@@ -250,12 +250,17 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
   Netlify Blobs (`uploads-attachments`) in production. Metadata lives
   in the `attachments` namespace. File size cap: 50 MB.
 - API: `GET /api/attachments` (filterable by `kind`, `kinds`, `q`),
-  `POST /api/attachments` (multipart, manage_settings),
+  `POST /api/attachments` (multipart, **`manage_attachments`** perm),
   `PUT /api/attachments/:id`, `DELETE /api/attachments/:id` (cleans
   up on-disk binary even though the kv namespace path doesn't line up
   with multer's diskStorage path), `GET /api/uploads/attachments/:filename`.
-- UI: New "Music & Document Library" section on the Settings page
-  (upload + filter + delete). Editor side: per-music-slot
+- **Permission model:** the `manage_attachments` role permission is
+  granted to `admin`, `music_director`, and `staff` (the people who
+  actually pick music). `pastor` does not have it.
+- **UI: dedicated `Library` top-nav page.** Upload widget, kind
+  selector, tags input, and the kind-filterable list of all
+  attachments live on this page. The nav link is hidden for users
+  without `manage_attachments`. Editor side: per-music-slot
   "pick from library" dropdowns scoped to the slot's kind, plus a
   general "Files Referenced" section showing the attachments wired
   into the current worship aid.
@@ -318,6 +323,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 | GET | `/` | Serve SPA |
 | GET | `/history` | Serve SPA (history view) |
 | GET | `/admin` | Serve SPA (settings view) |
+| GET | `/library` | Serve SPA (Music & Document Library view) |
 | GET | `/stats` | Serve SPA (hymn usage stats view) |
 | GET | `/api/season-defaults/:season` | Season auto-rules (400 on unknown season) |
 | GET | `/api/lenten-acclamations` | Lenten acclamation options |
@@ -357,7 +363,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 
 ## Test Coverage
 
-**177 tests across 9 test files. All passing.**
+**184 tests across 9 test files. All passing.**
 
 | Suite | What It Covers |
 |---|---|
@@ -398,10 +404,10 @@ npm test
 
 | Role | Label | Key Permissions |
 |---|---|---|
-| admin | Director of Liturgy | Full access: edit all, manage users, manage settings, approve, export |
-| music_director | Music Director | Edit music, seasonal settings, upload images, export PDF |
+| admin | Director of Liturgy | Full access: edit all, manage users, manage settings, manage attachments, approve, export |
+| music_director | Music Director | Edit music, seasonal settings, upload images, **manage attachments**, export PDF |
 | pastor | Pastor | Edit readings, approve drafts, edit announcements |
-| staff | Staff | Edit readings, music, announcements, seasonal settings, export PDF |
+| staff | Staff | Edit readings, music, announcements, seasonal settings, **manage attachments**, export PDF |
 
 ### Default Seed Users
 
