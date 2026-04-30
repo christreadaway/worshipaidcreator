@@ -557,3 +557,57 @@ Manual smoke test against a fresh server boot:
   + per-aid override `holyHolyLanguage=english` correctly produces
   English Sanctus (per-aid > parish precedence verified).
 
+### Session 5 follow-up #3: Children's Liturgy at multiple Mass times
+
+**User feedback:** "childrens liturgy can happen at any masses... not
+just one."  The original implementation locked the worship aid to a
+single Mass time (free-text input).
+
+**Shipped:**
+
+- Schema gains `childrenLiturgyMassTimes: string[]`. The legacy
+  single-string `childrenLiturgyMassTime` field stays in the schema
+  for back-compat and is migrated on draft load.
+- Editor replaces the single text input with three checkboxes for the
+  parish's standard times (Sat 5:00 PM, Sun 9:00 AM, Sun 11:00 AM)
+  plus a free-form "Other Mass times, comma-separated" field for
+  ad-hoc entries (e.g. holy day vigil, daily Mass).
+- `collectChildrenLiturgyTimes()` walks the checkboxes + the "Other"
+  string into a deduped array on save.
+- `applyChildrenLiturgyTimes(times)` ticks the right boxes and routes
+  unknown labels into the "Other" field on draft load.  Migration:
+  if a saved draft only carries `childrenLiturgyMassTime` (singular),
+  it's wrapped into a one-element array before applying.
+- Template renderer joins all selected times with " & "
+  (e.g. "Sat 5:00 PM & Sun 9:00 AM & Sun 11:00 AM").  Falls back to
+  the legacy single string and finally "Sun 9:00 AM" if nothing
+  configured.
+- PDF generator follows the same fallback chain.
+
+**Tests added (7 new):**
+
+- Single-time render hits the right block (and uses a precise regex
+  so it doesn't false-match the cover-page Mass times).
+- All-three-Masses render contains every label.
+- Back-compat: legacy single-string field still renders.
+- Empty array falls back to default.
+- `childrenLiturgyEnabled=false` suppresses the block entirely.
+- Editor UI exposes the checkboxes + "Other" input.
+- Editor exposes `collectChildrenLiturgyTimes` and
+  `applyChildrenLiturgyTimes` helper functions.
+
+End-to-end smoke run:
+
+```
+POST /api/preview {childrenLiturgyMassTimes: ["Sat 5:00 PM","Sun 9:00 AM","Sun 11:00 AM"]}
+  → "Children's Liturgy of the Word — Sat 5:00 PM & Sun 9:00 AM & Sun 11:00 AM"
+POST /api/preview {childrenLiturgyMassTimes: ["Sat 5:00 PM"]}
+  → "Children's Liturgy of the Word — Sat 5:00 PM"
+POST /api/preview {childrenLiturgyMassTime: "Sun 9:00 AM"}      # legacy field
+  → "Children's Liturgy of the Word — Sun 9:00 AM"
+POST /api/generate-pdf {childrenLiturgyMassTimes: ["Sat 5:00 PM","Sun 9:00 AM"]}
+  → success, both labels printed in the booklet box
+```
+
+**Tests now: 177/177 passing.**
+

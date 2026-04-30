@@ -67,7 +67,7 @@ A structured form with clearly labeled sections for all variable content. Organi
   - Postlude include / omit
   - Advent Wreath lighting include / omit
   - Lenten acclamation choice (when in Lent)
-- **Children's Liturgy Block** — Toggle on/off; if on: Mass time (defaults to Sun 9AM), **Leader (optional)**, music title + composer, **Notes** (printed under the entry)
+- **Children's Liturgy Block** — Toggle on/off; if on: **Mass times (checkboxes — any subset of the parish's Masses, plus a free-form "Other" comma list, since Children's Liturgy can run at any number of Masses)**, **Leader (optional)**, music title + composer, **Notes** (printed under the entry)
 - **Announcements** — Free text area (optional)
 - **Special Notes** — Free text for any one-off variations (optional)
 
@@ -225,7 +225,8 @@ worship_aid {
   music_sun_11am: MusicBlock
   
   children_liturgy_enabled: boolean
-  children_liturgy_mass_time: string
+  children_liturgy_mass_times: [string]              // NEW — list of Mass times that will host CLOTW
+  children_liturgy_mass_time: string                 // legacy single-string field, still accepted
   children_liturgy_music: string
   children_liturgy_music_composer: string
   children_liturgy_leader: string (nullable)         // NEW

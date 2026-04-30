@@ -959,6 +959,10 @@ nav .user-info strong { color: var(--gold-light); }
 .upload-area input[type="file"] { display: none; }
 .image-preview { max-width: 100%; max-height: 80px; margin-top: 6px; border: 1px solid var(--border); border-radius: 3px; }
 
+/* Children's Liturgy mass-time checkboxes — wrap inline */
+.children-liturgy-times { display: flex; flex-wrap: wrap; gap: 12px 16px; margin-bottom: 4px; }
+.children-liturgy-times .fg-check { margin-bottom: 0; }
+
 /* Readings toolbar — dropdown gets the lion's share so the full
    "NABRE (Lectionary, USCCB)" label fits; button hugs its content;
    status message gets its own line below so a long message can wrap
@@ -1155,16 +1159,22 @@ nav .user-info strong { color: var(--gold-light); }
     <div class="form-section">
       <div class="form-section-hdr" onclick="toggle(this)">Children's Liturgy <span>&#9660;</span></div>
       <div class="form-section-body">
-        <p class="section-lock">Auto-defaults to ON when school is in session and OFF for summer, Christmas, and Easter. Toggle to override.</p>
+        <p class="section-lock">Auto-defaults to ON when school is in session and OFF for summer, Christmas, and Easter. Children's Liturgy can run at any subset of Masses — check every one that applies.</p>
         <div class="fg-check">
           <input type="checkbox" id="childrenLiturgyEnabled" onchange="onChildrenLiturgyToggle()">
           <label for="childrenLiturgyEnabled">Enable Children's Liturgy of the Word</label>
           <span id="childrenLiturgyAutoNote" style="font-size: 11px; color: var(--gray); margin-left: 8px;"></span>
         </div>
-        <div class="fg-row">
-          <div class="fg"><label>Mass Time</label><input type="text" id="childrenLiturgyMassTime" placeholder="Sun 9:00 AM" value="Sun 9:00 AM"></div>
-          <div class="fg"><label>Leader (optional)</label><input type="text" id="childrenLiturgyLeader" placeholder="e.g., Mrs. Donna Smith"></div>
+        <div class="fg">
+          <label>Mass Times (check all that apply)</label>
+          <div class="children-liturgy-times">
+            <label class="fg-check"><input type="checkbox" class="cl-time" value="Sat 5:00 PM"> Sat 5:00 PM</label>
+            <label class="fg-check"><input type="checkbox" class="cl-time" value="Sun 9:00 AM"> Sun 9:00 AM</label>
+            <label class="fg-check"><input type="checkbox" class="cl-time" value="Sun 11:00 AM"> Sun 11:00 AM</label>
+          </div>
+          <input type="text" id="childrenLiturgyOtherTimes" placeholder="Other Mass times, comma-separated (optional)" style="margin-top:4px;">
         </div>
+        <div class="fg"><label>Leader (optional)</label><input type="text" id="childrenLiturgyLeader" placeholder="e.g., Mrs. Donna Smith"></div>
         <div class="fg-row">
           <div class="fg"><label>Music Title</label><input type="text" id="childrenLiturgyMusic"></div>
           <div class="fg"><label>Composer</label><input type="text" id="childrenLiturgyMusicComposer"></div>
@@ -1699,7 +1709,7 @@ function buildData() {
     musicSun9am: buildMusicBlock('sun9am'),
     musicSun11am: buildMusicBlock('sun11am'),
     childrenLiturgyEnabled: ch('childrenLiturgyEnabled'),
-    childrenLiturgyMassTime: v('childrenLiturgyMassTime'),
+    childrenLiturgyMassTimes: collectChildrenLiturgyTimes(),
     childrenLiturgyMusic: v('childrenLiturgyMusic'),
     childrenLiturgyMusicComposer: v('childrenLiturgyMusicComposer'),
     childrenLiturgyLeader: v('childrenLiturgyLeader'),
@@ -1750,7 +1760,15 @@ function populateForm(data) {
   const _clCb = document.getElementById('childrenLiturgyEnabled');
   if (_clCb) _clCb.dataset.userSet = (data.childrenLiturgyEnabled !== undefined) ? '1' : '';
   updateChildrenLiturgyAutoNote(data.childrenLiturgyEnabled !== undefined);
-  sv('childrenLiturgyMassTime', data.childrenLiturgyMassTime);
+  // Children's Liturgy can happen at any number of Masses. New drafts use
+  // childrenLiturgyMassTimes (array); legacy drafts have a single
+  // childrenLiturgyMassTime string — migrate it on load so the user sees
+  // the right boxes ticked.
+  applyChildrenLiturgyTimes(
+    Array.isArray(data.childrenLiturgyMassTimes) && data.childrenLiturgyMassTimes.length
+      ? data.childrenLiturgyMassTimes
+      : (data.childrenLiturgyMassTime ? [data.childrenLiturgyMassTime] : [])
+  );
   sv('childrenLiturgyMusic', data.childrenLiturgyMusic);
   sv('childrenLiturgyMusicComposer', data.childrenLiturgyMusicComposer);
   sv('childrenLiturgyLeader', data.childrenLiturgyLeader);
@@ -1878,6 +1896,45 @@ function onChildrenLiturgyToggle() {
   const cb = document.getElementById('childrenLiturgyEnabled');
   if (cb) cb.dataset.userSet = '1';
   updateChildrenLiturgyAutoNote(true);
+}
+
+// Collect every checked "Mass Time" box plus the free-form "Other"
+// list, deduped, in the order checkbox-first then custom entries.
+function collectChildrenLiturgyTimes() {
+  const out = [];
+  const seen = new Set();
+  document.querySelectorAll('.cl-time:checked').forEach(cb => {
+    const v = (cb.value || '').trim();
+    if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+  });
+  const other = (document.getElementById('childrenLiturgyOtherTimes') || {}).value || '';
+  other.split(',').map(s => s.trim()).filter(Boolean).forEach(v => {
+    if (!seen.has(v)) { seen.add(v); out.push(v); }
+  });
+  return out;
+}
+
+// Tick the right "Mass Time" boxes for an array of labels; anything not in
+// the standard list goes into the "Other" text input.
+function applyChildrenLiturgyTimes(times) {
+  const standard = new Set();
+  document.querySelectorAll('.cl-time').forEach(cb => {
+    standard.add(cb.value);
+    cb.checked = false;
+  });
+  const others = [];
+  (times || []).forEach(t => {
+    const v = String(t || '').trim();
+    if (!v) return;
+    if (standard.has(v)) {
+      const cb = document.querySelector('.cl-time[value="' + v.replace(/"/g, '\\"') + '"]');
+      if (cb) cb.checked = true;
+    } else {
+      others.push(v);
+    }
+  });
+  const otherEl = document.getElementById('childrenLiturgyOtherTimes');
+  if (otherEl) otherEl.value = others.join(', ');
 }
 
 // --- Liturgical date / season auto-detection ---

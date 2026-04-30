@@ -264,6 +264,84 @@ describe('Parish settings on cover', () => {
   });
 });
 
+describe("Children's Liturgy: multi-Mass-time support", () => {
+  const baseData = {
+    feastName: 'Sunday Test', liturgicalDate: '2026-03-01', liturgicalSeason: 'lent',
+    seasonalSettings: { holyHolySetting: 'Mass of St. Theresa' },
+    readings: {},
+    childrenLiturgyEnabled: true,
+    childrenLiturgyMusic: 'Children of God',
+    childrenLiturgyLeader: 'Mrs. Donna Smith'
+  };
+
+  it('renders a single time when only one Mass is selected', () => {
+    const { html } = renderBookletHtml({ ...baseData, childrenLiturgyMassTimes: ['Sun 9:00 AM'] });
+    assert.ok(html.includes("Children's Liturgy of the Word"));
+    // Inspect just the Children's Liturgy block (the cover lists "Sat" too).
+    const m = html.match(/Children's Liturgy of the Word<\/strong> — ([^<]+)/);
+    assert.ok(m, 'Children Liturgy block should render');
+    assert.equal(m[1].trim(), 'Sun 9:00 AM');
+  });
+
+  it('renders ALL selected Masses joined by &', () => {
+    const { html } = renderBookletHtml({
+      ...baseData,
+      childrenLiturgyMassTimes: ['Sat 5:00 PM', 'Sun 9:00 AM', 'Sun 11:00 AM']
+    });
+    assert.ok(html.includes('Sat 5:00 PM'));
+    assert.ok(html.includes('Sun 9:00 AM'));
+    assert.ok(html.includes('Sun 11:00 AM'));
+    // The list should appear in one block on one line, joined by " & "
+    const m = html.match(/Children's Liturgy of the Word<\/strong> — ([^<]+)/);
+    assert.ok(m, 'Children Liturgy line should render');
+    assert.ok(m[1].includes('Sat 5:00 PM'));
+    assert.ok(m[1].includes('Sun 11:00 AM'));
+  });
+
+  it('back-compat: legacy single childrenLiturgyMassTime still renders', () => {
+    const { html } = renderBookletHtml({
+      ...baseData,
+      childrenLiturgyMassTime: 'Sun 9:00 AM'
+    });
+    assert.ok(html.includes('Sun 9:00 AM'));
+  });
+
+  it('back-compat: empty list falls back to default', () => {
+    const { html } = renderBookletHtml({
+      ...baseData,
+      childrenLiturgyMassTimes: []
+    });
+    // Falls back to default 'Sun 9:00 AM'
+    assert.ok(html.includes('Sun 9:00 AM'));
+  });
+
+  it('skips the block entirely when childrenLiturgyEnabled is false', () => {
+    const { html } = renderBookletHtml({
+      ...baseData,
+      childrenLiturgyEnabled: false,
+      childrenLiturgyMassTimes: ['Sat 5:00 PM']
+    });
+    assert.ok(!html.includes("Children's Liturgy of the Word"));
+  });
+
+  it('editor UI exposes checkboxes for the three standard Mass times', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(html.includes('class="cl-time"'));
+    assert.ok(html.includes('value="Sat 5:00 PM"'));
+    assert.ok(html.includes('value="Sun 9:00 AM"'));
+    assert.ok(html.includes('value="Sun 11:00 AM"'));
+    assert.ok(html.includes('id="childrenLiturgyOtherTimes"'));
+    // The single-line input is gone
+    assert.ok(!/<input[^>]*id="childrenLiturgyMassTime"[^>]*type="text"/.test(html));
+  });
+
+  it('editor exposes collect/apply helpers for the times list', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(html.includes('function collectChildrenLiturgyTimes'));
+    assert.ok(html.includes('function applyChildrenLiturgyTimes'));
+  });
+});
+
 describe('Login still works after refactor', () => {
   it('admin login by username succeeds', async () => {
     const res = await fetch('/api/auth/login', {

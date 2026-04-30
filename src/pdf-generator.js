@@ -477,8 +477,14 @@ class WorshipAidPdfGenerator {
       const boxH = this.s(22);
       this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, boxH)
         .fillColor('#f5f0e6').fill().restore();
+      // Children's Liturgy can run at any subset of Masses — render every
+      // selected time, joined by " & " (or fall back to the legacy single
+      // string field for old saved drafts).
+      const _clTimes = (Array.isArray(this.data.childrenLiturgyMassTimes) && this.data.childrenLiturgyMassTimes.length)
+        ? this.data.childrenLiturgyMassTimes
+        : (this.data.childrenLiturgyMassTime ? [this.data.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
       this.doc.fontSize(this.s(8)).fillColor(COLORS.text).font('Helvetica-Bold')
-        .text(`Children's Liturgy of the Word — ${this.data.childrenLiturgyMassTime || 'Sun 9:00 AM'}`,
+        .text(`Children's Liturgy of the Word — ${_clTimes.join(' & ')}`,
           this.MARGIN_SIDE + this.s(4), this.y + this.s(4), { width: this.CONTENT_WIDTH - this.s(8) });
       if (this.data.childrenLiturgyMusic) {
         this.doc.font('Helvetica-Oblique').fontSize(this.s(7.5))
