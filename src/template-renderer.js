@@ -7,7 +7,7 @@
 const path = require('path');
 const fs = require('fs');
 const { APOSTLES_CREED, NICENE_CREED } = require('./assets/text/creeds');
-const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER } = require('./assets/text/mass-texts');
+const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER, getHolyHolyHolyText } = require('./assets/text/mass-texts');
 const { formatMusicSlot, renderMusicLineHtml } = require('./music-formatter');
 const { applySeasonDefaults } = require('./config/seasons');
 const { detectOverflows } = require('./validator');
@@ -88,6 +88,23 @@ function renderBookletHtml(data, options = {}) {
   const prayerBlurb = settings.prayerBlurb || 'For prayer requests, contact the parish office.';
   const copyrightShort = settings.copyrightShort || 'Music reprinted under OneLicense #A-702171. All rights reserved.';
   const copyrightFull = settings.copyrightFull || `Excerpts from the Lectionary for Mass for Use in the Dioceses of the United States of America, second typical edition © 2001, 1998, 1997, 1986, 1970 Confraternity of Christian Doctrine, Inc., Washington, DC. Used with permission. All rights reserved.\n\nExcerpts from the English translation of The Roman Missal © 2010, International Commission on English in the Liturgy Corporation. All rights reserved.\n\nMusic reprinted under OneLicense #${escapeHtml(settings.onelicenseNumber || 'A-702171')}. All rights reserved.`;
+
+  // Mass schedule, clergy, and standing messages (cover page).  Each section
+  // is optional — a parish that doesn't fill these in still renders cleanly.
+  const massTimesLines = String(settings.massTimes || 'Sat 5:00 PM\nSun 9:00 AM\nSun 11:00 AM').split('\n').map(s => s.trim()).filter(Boolean);
+  const clergyLines = [];
+  if (settings.pastor)        clergyLines.push(`${settings.pastor}, ${settings.pastorTitle || 'Pastor'}`);
+  if (settings.associates)    String(settings.associates).split('\n').forEach(l => { if (l.trim()) clergyLines.push(l.trim()); });
+  if (settings.deacons)       String(settings.deacons).split('\n').forEach(l => { if (l.trim()) clergyLines.push(l.trim()); });
+  if (settings.musicDirector) clergyLines.push(settings.musicDirector + ', Music Director');
+  const welcomeMessage = settings.welcomeMessage || '';
+  const closingMessage = settings.closingMessage || '';
+  const coverTagline = settings.coverTagline || '';
+
+  // Sanctus language: per-aid override > parish default > 'english'
+  const holyHolyLanguage = ss.holyHolyLanguage || settings.defaultSanctusLanguage || 'english';
+  const holyHolyText = getHolyHolyHolyText(holyHolyLanguage);
+  const holyHolyHeading = holyHolyLanguage === 'latin' ? 'Sanctus' : 'Holy, Holy, Holy';
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -346,9 +363,12 @@ function renderBookletHtml(data, options = {}) {
   <div class="cover-page">
     <div class="cover-top">
       <div class="cover-logo">${getLogoSvg()}</div>
+      ${parishName ? `<div style="font-family:'Cinzel',serif;font-size:11pt;color:#6B1A1A;text-align:center;margin-top:6pt;letter-spacing:1pt;">${escapeHtml(parishName)}</div>` : ''}
+      ${coverTagline ? `<div style="font-size:8pt;color:#777;text-align:center;font-style:italic;margin-top:1pt;">${escapeHtml(coverTagline)}</div>` : ''}
       <div class="cover-feast">${escapeHtml(d.feastName)}</div>
       <div class="cover-date">${escapeHtml(formatDate(d.liturgicalDate))}</div>
-      <div class="cover-times">Sat 5:00 PM &bull; Sun 9:00 AM &bull; Sun 11:00 AM</div>
+      <div class="cover-times">${massTimesLines.map(escapeHtml).join(' &bull; ')}</div>
+      ${clergyLines.length ? `<div style="font-size:8pt;color:#666;text-align:center;margin-top:6pt;line-height:1.4;">${clergyLines.map(escapeHtml).join('<br>')}</div>` : ''}
     </div>
     <div class="parish-info">
       <div>
@@ -368,6 +388,7 @@ function renderBookletHtml(data, options = {}) {
         <p>${nl2br(prayerBlurb)}</p>
       </div>
     </div>
+    ${welcomeMessage ? `<div style="margin-top:6pt;padding:5pt 8pt;border:0.5pt solid #B8922A;border-radius:2pt;font-size:8pt;font-style:italic;text-align:center;">${nl2br(welcomeMessage)}</div>` : ''}
   </div>
 </div>
 
@@ -471,7 +492,9 @@ function renderBookletHtml(data, options = {}) {
   ${d.childrenLiturgyEnabled ? `
   <div class="children-liturgy">
     <strong>Children's Liturgy of the Word</strong> — ${escapeHtml(d.childrenLiturgyMassTime || 'Sun 9:00 AM')}
+    ${d.childrenLiturgyLeader ? `<br>Led by ${escapeHtml(d.childrenLiturgyLeader)}` : ''}
     ${d.childrenLiturgyMusic ? `<br><em>${escapeHtml(d.childrenLiturgyMusic)}</em>${d.childrenLiturgyMusicComposer ? ', ' + escapeHtml(d.childrenLiturgyMusicComposer) : ''}` : ''}
+    ${d.childrenLiturgyNotes ? `<br><span style="font-size:7.5pt;font-style:italic;">${nl2br(d.childrenLiturgyNotes)}</span>` : ''}
   </div>
   ` : ''}
 
@@ -481,8 +504,9 @@ function renderBookletHtml(data, options = {}) {
   <p class="prayer-text" style="font-size:8.5pt;"><strong>Priest:</strong> ${escapeHtml(INVITATION_TO_PRAYER.priest)}</p>
   <p class="prayer-text" style="font-size:8.5pt;"><strong>All:</strong> ${escapeHtml(INVITATION_TO_PRAYER.all)}</p>
 
-  <div class="sub-heading">Holy, Holy, Holy</div>
+  <div class="sub-heading">${escapeHtml(holyHolyHeading)}</div>
   <p class="music-entry"><em>${escapeHtml(ss.holyHolySetting || 'Mass of St. Theresa')}</em></p>
+  <div class="prayer-text" style="font-size:8.5pt;">${nl2br(holyHolyText)}</div>
 
   <p class="rubric">${RUBRICS.kneel}</p>
 
@@ -558,6 +582,7 @@ function renderBookletHtml(data, options = {}) {
     </div>
 
     ${d.specialNotes ? `<div style="margin:8pt 0;font-size:8pt;font-style:italic;text-align:center;max-width:4in;">${nl2br(d.specialNotes)}</div>` : ''}
+    ${closingMessage ? `<div style="margin:8pt 0;font-size:8pt;text-align:center;max-width:4in;">${nl2br(closingMessage)}</div>` : ''}
 
     <div class="copyright-full">${nl2br(copyrightFull)}</div>
   </div>

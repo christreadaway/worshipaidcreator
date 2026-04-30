@@ -102,6 +102,10 @@ function applySeasonDefaults(data) {
   if (!merged.entranceType) merged.entranceType = defaults.entranceType;
   if (!merged.seasonalSettings) merged.seasonalSettings = {};
   if (!merged.seasonalSettings.holyHolySetting) merged.seasonalSettings.holyHolySetting = defaults.holyHolySetting;
+  // NB: `holyHolyLanguage` is intentionally NOT defaulted here — the renderer
+  // resolves the fallback chain (per-aid override > parish default > English)
+  // so that a parish-wide Latin preference can take effect when the aid
+  // didn't pick a language explicitly.
   if (!merged.seasonalSettings.mysteryOfFaithSetting) merged.seasonalSettings.mysteryOfFaithSetting = defaults.mysteryOfFaithSetting;
   if (!merged.seasonalSettings.lambOfGodSetting) merged.seasonalSettings.lambOfGodSetting = defaults.lambOfGodSetting;
   if (!merged.seasonalSettings.penitentialAct) merged.seasonalSettings.penitentialAct = defaults.penitentialAct;

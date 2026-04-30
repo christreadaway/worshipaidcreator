@@ -66,6 +66,8 @@ const inputSchema = {
         creedType: { type: 'string', enum: ['nicene', 'apostles', 'baptismal_vows'] },
         entranceType: { type: 'string', enum: ['processional', 'antiphon'] },
         holyHolySetting: { type: 'string' },
+        // 'english' or 'latin' — defaults to english
+        holyHolyLanguage: { type: 'string', enum: ['english', 'latin'] },
         mysteryOfFaithSetting: { type: 'string' },
         lambOfGodSetting: { type: 'string' },
         penitentialAct: { type: 'string', enum: ['confiteor', 'kyrie_only'] },
@@ -85,6 +87,8 @@ const inputSchema = {
     childrenLiturgyMassTime: { type: 'string' },
     childrenLiturgyMusic: { type: 'string' },
     childrenLiturgyMusicComposer: { type: 'string' },
+    childrenLiturgyLeader: { type: 'string' },
+    childrenLiturgyNotes: { type: 'string' },
 
     // Optional content
     announcements: { type: 'string' },
@@ -95,6 +99,13 @@ const inputSchema = {
     notationImages: {
       type: 'object',
       additionalProperties: { type: 'string' }
+    },
+
+    // Attachments referenced by id (for preludes, postludes, anthems, etc.).
+    // The actual file metadata + binaries live in the attachments store.
+    attachmentRefs: {
+      type: 'array',
+      items: { type: 'string' }
     }
   }
 };

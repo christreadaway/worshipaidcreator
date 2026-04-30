@@ -18,11 +18,25 @@ const INVITATION_TO_PRAYER = {
   all: 'May the Lord accept the sacrifice at your hands for the praise and glory of his name, for our good and the good of all his holy Church.'
 };
 
-const HOLY_HOLY_HOLY = `Holy, Holy, Holy Lord God of hosts.
+const HOLY_HOLY_HOLY_ENGLISH = `Holy, Holy, Holy Lord God of hosts.
 Heaven and earth are full of your glory.
 Hosanna in the highest.
 Blessed is he who comes in the name of the Lord.
 Hosanna in the highest.`;
+
+const HOLY_HOLY_HOLY_LATIN = `Sanctus, Sanctus, Sanctus
+Dominus Deus Sabaoth.
+Pleni sunt cæli et terra gloria tua.
+Hosanna in excelsis.
+Benedictus qui venit in nomine Domini.
+Hosanna in excelsis.`;
+
+// Back-compat alias (older tests / code expect HOLY_HOLY_HOLY).
+const HOLY_HOLY_HOLY = HOLY_HOLY_HOLY_ENGLISH;
+
+function getHolyHolyHolyText(language) {
+  return language === 'latin' ? HOLY_HOLY_HOLY_LATIN : HOLY_HOLY_HOLY_ENGLISH;
+}
 
 const MYSTERY_OF_FAITH_OPTIONS = {
   A: 'We proclaim your Death, O Lord, and profess your Resurrection until you come again.',
@@ -59,6 +73,9 @@ module.exports = {
   CONFITEOR,
   INVITATION_TO_PRAYER,
   HOLY_HOLY_HOLY,
+  HOLY_HOLY_HOLY_ENGLISH,
+  HOLY_HOLY_HOLY_LATIN,
+  getHolyHolyHolyText,
   MYSTERY_OF_FAITH_OPTIONS,
   LORDS_PRAYER,
   AGNUS_DEI_TEXT,
