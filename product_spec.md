@@ -1,10 +1,10 @@
 # Worship Aid Generator — Product Specification
 
-**Version:** 1.2.0
+**Version:** 1.3.0
 **Last Updated:** April 30, 2026
 **Status:** Active development — replacing Microsoft Publisher in fall 2026
 
-> **Pick-up note for next session:** see `session_notes.md` § "Session 5 (April 30, 2026)" for the full list of what shipped. Outstanding (still): expand the hymn library to ~40 pre-1962 entries with lyrics in `src/assets/hymns/seed.json` and refactor `src/store/hymn-library.js` to load it. Branch `claude/add-file-uploads-yxr13`. 168/168 tests passing.
+> **Pick-up note for next session:** see `session_notes.md` § "Session 6 (April 30, 2026)" for the colleague-feedback fixes shipped in v1.3 — readings paragraph reflow, hymnal+number lookup, Responsorial Psalm setting slot, OneLicense search helper, stateless HMAC sessions (fixes "Not authenticated" upload bug), preview matches selected booklet size, per-user prefs. Branch `claude/reformat-readings-layout-vPijN`. 240/240 tests passing.
 
 ---
 
@@ -167,9 +167,9 @@ Line estimation: character count / 65 chars per line. Overflow warnings identify
 
 - Parallel renderer producing identical 8-page layout in HTML/CSS
 - EB Garamond + Cinzel via Google Fonts
-- `@page: 5.5in 8.5in` print CSS
+- **Page geometry tracks the selected booklet size (v1.3):** when the Editor's booklet-size selector is `tabloid`, the preview renders at 8.5"×11" with proportionally larger fonts; when `half-letter`, at 5.5"×8.5". The preview iframe width and `@page` size adjust on every preview generation, so the preview is a true-scale rendering of what'll print.
 - Red border + error banner on overflow pages
-- Displayed in sandboxed iframe in the editor
+- Displayed in sandboxed iframe in the editor — `frame.style.width` is set to the server-reported `pageWidth` so the iframe is the correct trim.
 
 ### 9. Draft Persistence
 
@@ -194,6 +194,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 - `/api/readings?date=YYYY-MM-DD&translation=NABRE` scrapes `bible.usccb.org/bible/readings/MMDDYY.cfm` and returns parsed first/second readings, psalm (refrain split from verses), gospel acclamation verse, and gospel.
 - Bible translation dropdown: NABRE (Lectionary, default, from USCCB), Douay-Rheims, KJV, World English Bible, Bible in Basic English, ASV. Non-NABRE picks re-fetch the citations from bible-api.com but keep Lectionary-only items (psalm refrain, acclamation verse) intact.
 - "Fetch from USCCB" button populates all reading fields from the liturgical date in one click.
+- **Paragraph reflow (v1.3):** USCCB serves Lectionary text in sense-line layout (each clause on its own line, for lectors). The fetcher now flattens single line breaks within a paragraph into spaces while keeping paragraph breaks intact, so worship-aid readings print as flowing paragraphs. Applied to first/second/gospel readings and the gospel-acclamation verse. Psalm verses keep their stanza structure. `src/readings-fetcher.js#reflowAsParagraphs`.
 
 ### 12. Liturgical Calendar Automation
 
@@ -208,13 +209,31 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 
 ### 14. Hymn Library (English Only)
 
-- Parish-managed catalog stored in KV (`hymn-library/parish-default`). Fields per entry: title, tune name, composer, key, meter, source/hymnal, notes, language (defaults to `en`).
+- Parish-managed catalog stored in KV (`hymn-library/parish-default`). Fields per entry: title, tune name, composer, key, meter, source/hymnal, **hymnal name (e.g. "Worship IV")**, **hymnNumber (e.g. "612")**, notes, language (defaults to `en`).
 - Seeded with 20 common English Catholic hymns covering Public Domain + GIA/OCP/Hope etc. Editable as JSON in the Settings page.
-- Title fields in every Music block carry a typeahead that searches the library and shows tune name and key signature inline so the user can pick the arrangement that fits the parish. Selecting an entry auto-fills the composer field if blank.
+- Title fields in every Music block carry a typeahead that searches the library and shows tune name, key signature, and **`[Hymnal #N]`** inline so the user can pick the arrangement that fits the parish. Selecting an entry auto-fills the composer, hymnal, and hymn-number fields if blank.
+- **Hymnal + number search (v1.3):** typing the number alone (e.g. "612") ranks the matching hymnal entry highest. Hymnal name matches (e.g. "worship") also score. Music directors normally search OneLicense by hymnal + number, not title.
 - **Instant in-memory search**: the full library is fetched once on first keystroke (or admin save), cached client-side, and filtered synchronously for every keystroke after that. No debounce, no per-keystroke network round-trip. Server-side `/api/hymns/search` is preserved for non-browser callers.
 - **Curly/straight quote normalization**: both server and client lowercase + collapse smart quotes (`'`, `'`, `"`, `"`) to ASCII before matching, so users typing a straight `'` still match seed entries that use typographic apostrophes (e.g. "On Eagle's Wings").
 - API: `GET /api/hymns/search?q=…` (English by default; pass `includeNonEnglish=1` to include other languages), `GET /api/hymns`, `PUT /api/hymns` (admin only).
+- `oneLicenseSearchUrl(entry)` helper builds a OneLicense search URL: prefers hymnal + number, falls back to title + composer.
+- **Hymnal citation in rendered output:** the printed booklet shows `Title [Hymnal #N], Composer` whenever the hymn entry has a hymnal+number, so congregations can find the song in the pews. CSS class `.hymnal-cite`.
 - **Local enrichment script**: `npm run fetch-hymns` reads `src/assets/hymns/seed.json`, calls Hymnary.org's free search endpoint per entry (~1 req/sec), and writes `data/hymn-library-local.json` with meter / scripture refs / hymnal-count metadata Hymnary returns. Defensive against network failures.
+
+### 14a. Responsorial Psalm Setting (v1.3)
+
+- New shared-music slot: **Responsorial Psalm Setting** (and composer).
+- Renders on Page 3 between the citation and the refrain so a published psalm setting (e.g. *Psalm 27 — Joncas*) is credited alongside the refrain text.
+- **Auto-prefill from USCCB:** when readings are fetched, the refrain text is copied into the psalm-setting title input as a starting point — the music director can then search OneLicense for a matching setting.
+- **OneLicense search-by-refrain button** opens the OneLicense search with the refrain text as the query.
+- Persisted via the `responsorialPsalmSetting` / `responsorialPsalmSettingComposer` fields on each music block; populates from any block (Sat/Sun9/Sun11) so legacy drafts open cleanly.
+
+### 14b. OneLicense Search Helpers (v1.3)
+
+- Each shared hymn slot (processional, communion, thanksgiving) gets a **OneLicense** button next to its hymnal/#number inputs.  Click → opens `https://www.onelicense.net/search?text=<query>` in a new tab.
+- Query precedence: `hymnal #number` > `hymnal` alone > `#number` alone > `title + composer`.
+- Responsorial Psalm has its own button that searches by refrain text.
+- No automated OneLicense scraping (the site is Cloudflare-protected and returns 403 to non-browser requests). Helpers keep humans in the loop.
 
 ### 15. Notation Auto-Crop
 
@@ -303,6 +322,32 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
   block prints the matching Roman Missal text (English or the
   Vulgate "Sanctus, Sanctus, Sanctus Dominus Deus Sabaoth …").
 
+### 21a. Per-User Preferences (v1.3)
+
+Distinct from parish-wide `/api/settings`, which apply to every user. Per-user prefs are tied to the authenticated user and persist across drafts and devices.
+
+- Stored as `user.prefs` on the user record (`kv` namespace `users`).
+- API: `GET /api/user-prefs`, `PUT /api/user-prefs` (auth required). PUT performs a shallow merge.
+- Currently persisted: `bookletSize` (last-selected trim — tabloid or half-letter). The Editor's nav bar selector saves to prefs on change and restores on next sign-in.
+- Designed to grow: future candidates include `defaultSanctusLanguage` override, preferred hymnal name, preferred Bible translation, last-used cover tone.
+
+### 21b. Health Endpoint (v1.3)
+
+`GET /api/health` reports the KV backend that's actually being used so deployment issues are observable. Response:
+
+```json
+{
+  "ok": true,
+  "timestamp": "...",
+  "environment": "local" | "netlify",
+  "persistence": "filesystem" | "netlify-blobs" | "in-memory",
+  "persistsAcrossInvocations": true | false,
+  "warning": "..."   // present iff persistence === "in-memory"
+}
+```
+
+If persistence reports `in-memory` on Netlify, sessions/settings/uploads will not survive Lambda cold starts — Netlify Blobs needs to be enabled for the site.
+
 ### 21. Cover & Parish Settings Expansion
 
 - `parishSettings.massTimes` (multi-line) renders on the cover.
@@ -343,8 +388,11 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 | POST | `/api/drafts/:id/submit-for-review` | Move draft to `review` |
 | POST | `/api/drafts/:id/approve` | Pastor approval |
 | POST | `/api/drafts/:id/request-changes` | Pastor requests changes |
-| GET | `/api/settings` | Load parish settings |
-| PUT | `/api/settings` | Save parish settings |
+| GET | `/api/settings` | Load parish settings (parish-wide) |
+| PUT | `/api/settings` | Save parish settings (parish-wide) |
+| GET | `/api/user-prefs` | Load per-user preferences (auth required) |
+| PUT | `/api/user-prefs` | Merge per-user preferences (auth required) |
+| GET | `/api/health` | KV backend status (filesystem / netlify-blobs / in-memory) |
 | POST | `/api/upload/notation` | Upload notation scan (auto-cropped) |
 | POST | `/api/upload/cover` | Upload cover image |
 | POST | `/api/upload/logo` | Upload parish logo (admin only) |
@@ -364,7 +412,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 
 ## Test Coverage
 
-**197 tests across 9 test files. All passing.**
+**240 tests across 11 test files. All passing.**
 
 | Suite | What It Covers |
 |---|---|
@@ -377,6 +425,8 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 | User Store | User CRUD, authentication (beta mode), case-insensitive login, display name matching, sessions, exclusive login, role permissions, role labels |
 | Liturgical Calendar | Easter computus accuracy, season detection, feast/Sunday name detection across cycle |
 | Attachments + Calendar + Sanctus | `/api/liturgical-info` endpoint, attachments CRUD (with disk-cleanup regression test), Sanctus toggle precedence chain (per-aid > parish > English), parish-cover rendering, login regression, editor-HTML smoke |
+| **Readings Fetcher** | Paragraph reflow correctness (collapse single line breaks, preserve paragraph breaks), HTML parsing, splitPsalm refrain extraction, splitGospelAcclamation R-line stripping, USCCB date format |
+| **Feedback Fixes** | Hymnal+number on hymn entries, OneLicense URL helper, music-formatter hymnal rendering, Responsorial Psalm slot, OneLicense buttons, stateless HMAC tokens (survive store wipe + tampering), per-user prefs API merge semantics, health endpoint, preview matches selected booklet size, settings round-trip |
 | Utilities | escapeHtml, nl2br, formatDate (folded into renderer suite) |
 
 ---
@@ -434,9 +484,14 @@ Failed logins show available usernames instead of a generic error.
 
 ### Session Management
 
-- Token-based sessions (`x-session-token` header)
-- Exclusive login per role: when a new user of the same role logs in, the previous session is invalidated
-- Google OAuth supported (linked via `googleEmail` field on user record)
+- **Stateless HMAC-signed tokens (v1.3):** tokens are self-contained `<userId>.<issuedAtMs>.<sig>`, signed with `SESSION_SECRET` (env var). Verification only requires the secret + user record — no per-session storage. This eliminates the "Not authenticated" upload failures that occurred on Netlify when the in-memory blob fallback dropped state between Lambda cold starts.
+- **30-day expiry** (`SESSION_MAX_AGE_MS`).
+- **Logout (`destroySession`)** persists the token to a small revocation list (`sessions/_revoked`) so it stops validating immediately. List capped at 500 most-recent entries; older tokens self-expire.
+- **Exclusive login per role:** when a new user of the same role logs in, every same-role user gets a fresh `revokedBefore` timestamp; tokens issued before that timestamp no longer validate.
+- **Frontend 401 handling:** every upload (notation, attachment, logo, cover) checks `_sessionToken` before sending and recognises a 401 response as "session expired" — clears the cached token and redirects to login instead of silently failing.
+- Token transmitted via `x-session-token` header on every protected request.
+- Google OAuth supported (linked via `googleEmail` field on user record).
+- **Set `SESSION_SECRET` in production.** The default dev secret is fine for local use but should NEVER be relied on in deployment.
 
 ### BETA MODE — Temporary Password Bypass
 

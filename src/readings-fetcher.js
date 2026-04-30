@@ -86,6 +86,21 @@ function htmlToLines(html) {
     .trim();
 }
 
+// USCCB renders the Lectionary text with each clause/phrase on its own line
+// (sense-line layout used by lectors).  Worship aids want a normal flowing
+// paragraph instead.  Collapse single line breaks within a paragraph into
+// spaces, but keep paragraph breaks (blank lines).  Used for first/second/
+// gospel readings + the gospel-acclamation verse.  Psalm verses are NOT
+// reflowed — those are stanzas with intentional line structure.
+function reflowAsParagraphs(text) {
+  if (!text) return '';
+  return text
+    .split(/\n{2,}/)
+    .map(p => p.replace(/\s*\n\s*/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 function parseUsccbHtml(html) {
   const sections = {};
   // Each reading lives in a `<div class="wr-block b-verse ...">` block.
@@ -164,17 +179,17 @@ async function fetchUsccbReadings(yyyyMmDd) {
   return {
     sourceUrl: url,
     firstReadingCitation: reading1 ? reading1.citation : '',
-    firstReadingText:     reading1 ? reading1.body : '',
+    firstReadingText:     reading1 ? reflowAsParagraphs(reading1.body) : '',
     psalmCitation:        psalm ? psalm.citation : '',
     psalmRefrain:         psalmParts.refrain,
     psalmVerses:          psalmParts.verses,
     secondReadingCitation: reading2 ? reading2.citation : '',
-    secondReadingText:     reading2 ? reading2.body : '',
+    secondReadingText:     reading2 ? reflowAsParagraphs(reading2.body) : '',
     noSecondReading:       !reading2,
     gospelAcclamationReference: accl ? accl.citation : '',
-    gospelAcclamationVerse:     accl ? splitGospelAcclamation(accl.body) : '',
+    gospelAcclamationVerse:     accl ? reflowAsParagraphs(splitGospelAcclamation(accl.body)) : '',
     gospelCitation: gospel ? gospel.citation : '',
-    gospelText:     gospel ? gospel.body : ''
+    gospelText:     gospel ? reflowAsParagraphs(gospel.body) : ''
   };
 }
 
@@ -185,7 +200,8 @@ async function fetchPassageFromBibleApi(citation, code) {
   let json;
   try { json = JSON.parse(body); } catch { return ''; }
   if (!json || !json.text) return '';
-  return String(json.text).replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  const cleaned = String(json.text).replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  return reflowAsParagraphs(cleaned);
 }
 
 // Replace USCCB Lectionary text with a different translation, keeping the
@@ -205,7 +221,12 @@ async function applyTranslation(readings, translationId) {
     if (!citation) return;
     try {
       const text = await fetchPassageFromBibleApi(citation, t.code);
-      if (text) out[field] = text;
+      if (text) {
+        // psalmVerses keeps its original stanza line structure; everything
+        // else is reflowed to flowing paragraphs (already done in
+        // fetchPassageFromBibleApi for the others, but also here for safety).
+        out[field] = field === 'psalmVerses' ? text : reflowAsParagraphs(text);
+      }
     } catch (e) {
       // Leave the USCCB text in place if the alternate translation fails.
       console.warn(`[readings] ${t.id} fetch failed for ${citation}: ${e.message}`);
@@ -226,6 +247,7 @@ module.exports = {
   fetchReadings,
   fetchUsccbReadings,
   applyTranslation,
+  reflowAsParagraphs,
   // exported for testing
-  _internal: { parseUsccbHtml, splitPsalm, splitGospelAcclamation, toUsccbDate }
+  _internal: { parseUsccbHtml, splitPsalm, splitGospelAcclamation, toUsccbDate, reflowAsParagraphs }
 };

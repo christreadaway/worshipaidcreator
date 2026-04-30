@@ -406,6 +406,7 @@ class WorshipAidPdfGenerator {
 
     this.subHeading('Responsorial Psalm');
     this.citation(this.r.psalmCitation);
+    this.musicLine('responsorialPsalmSetting', 'responsorialPsalmSettingComposer', 'Setting');
     if (this.r.psalmRefrain) this.bodyText(`R. ${this.r.psalmRefrain}`, { bold: true, size: 9 });
     if (this.r.psalmVerses) this.bodyText(this.r.psalmVerses, { size: 8.5, x: this.MARGIN_SIDE + this.s(10), width: this.CONTENT_WIDTH - this.s(10) });
 

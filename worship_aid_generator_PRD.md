@@ -1,11 +1,13 @@
 # Worship Aid Generator — Product Requirements Document
 
-**Version:** 1.2
+**Version:** 1.3
 **Date:** April 30, 2026
 **Owner:** COO, [Parish Name]
 **Status:** Active development — Publisher-replacement (Microsoft is discontinuing Publisher in fall 2026; this app is the primary substitute).
 
 > See `product_spec.md` for the implementation-level reference and the **Future Build Requirements** section for the prioritized backlog (OneLicense automation, wedding/funeral variants, true imposition, proofing workflow, etc.).
+
+> **v1.3 (April 30, 2026)** addresses post-pilot feedback: readings reflow lectionary sense-lines into normal paragraphs, hymn library carries hymnal+number with OneLicense search helpers, new Responsorial Psalm setting slot prefilled from the refrain, preview matches the selected booklet trim, stateless HMAC sessions fix the "Not authenticated" upload bug, per-user preferences persist across drafts. 240 tests passing.
 
 ---
 
@@ -46,12 +48,14 @@ A structured form with clearly labeled sections for all variable content. Organi
   - Second Reading: citation + full text area (toggle "No Second Reading" for some feasts)
   - Gospel Acclamation verse: text field + scripture reference
   - Gospel: citation + full text area
+  - **Paragraph reflow (v1.3):** USCCB ships Lectionary text in lector sense-line format (each clause on its own line). Worship aids want flowing paragraphs, so the fetcher collapses single line breaks within a paragraph into spaces while keeping paragraph breaks intact. Applied to first/second/gospel readings and the gospel-acclamation verse. Psalm verses keep their stanza structure.
 - **Shared Music** — same at every Mass, entered ONCE.  Per the music director, the only slots that legitimately differ per Mass are the two anthems (below); everything else is shared.
   - Organ Prelude (title, composer)
-  - Processional / Entrance Hymn (title + composer) — hymn-library typeahead
+  - Processional / Entrance Hymn (title + composer + **hymnal + number** + OneLicense search) — hymn-library typeahead
   - Lord Have Mercy / Kyrie setting (text + composer)
-  - Communion Hymn (title + composer) — hymn-library typeahead
-  - Hymn of Thanksgiving (title + composer) — hymn-library typeahead
+  - **Responsorial Psalm Setting (v1.3)** — title + composer + OneLicense-by-refrain button. Auto-prefilled with today's refrain text when readings are fetched. Renders on Page 3 between citation and refrain.
+  - Communion Hymn (title + composer + **hymnal + number** + OneLicense search) — hymn-library typeahead
+  - Hymn of Thanksgiving (title + composer + **hymnal + number** + OneLicense search) — hymn-library typeahead
   - Organ Postlude (title + composer)
 - **Per-Mass Anthems** — three sub-forms (Sat 5PM, Sun 9AM, Sun 11AM), each holding only the two slots that may be scheduled differently per Mass:
   - **Offertory Anthem** (title + composer)
@@ -75,7 +79,7 @@ A structured form with clearly labeled sections for all variable content. Organi
 
 ### 4.2 Live Preview
 - Side-by-side or tabbed preview of all 8 pages as the form is completed
-- Renders the actual layout at correct proportions (5.5" × 8.5" booklet page)
+- **Renders at the actual selected booklet trim (v1.3):** the preview width and `@page` size match whatever the Editor's booklet-size selector is set to (tabloid 8.5×11 or half-letter 5.5×8.5). When a user toggles the trim and re-previews, the preview reflows to match — true-scale to what'll print.
 - Text overflow warnings: if any page exceeds its content area, flag it visually with a red border and a specific error message identifying which content block is causing the overflow
 - Page count indicator confirming exactly 8 pages
 
@@ -140,12 +144,14 @@ Based on analysis of existing worship aids (952×1260px JPEG renders = 5.5"×8.5
 - If all three Mass times have the SAME music selection for a given slot, display once with no time qualifier (e.g., "Offertory Anthem — O Sun of Justice, [composer]")
 - If Mass times differ, display each with its qualifier (e.g., "Offertory Anthem — Title A, composer (Sat, 5 PM & Sun, 11 AM) / Title B, composer (Sun, 9 AM)")
 - Formatting matches current pattern exactly: Title first (italics), then composer, then Mass times in parentheses
+- **Hymnal citation (v1.3):** if a hymn entry carries a hymnal name + number (e.g. "Worship IV" + "612"), the rendered line shows `Title [Hymnal #N], Composer`.  This is what the assembly looks up in the pew rack.
 
 ### 5.5 Readings Sourcing
 - **Auto-fetch is the default behavior.** The moment a liturgical date is set, the readings are pulled — there's no "Fetch" button required for normal use.  NABRE comes from `bible.usccb.org/bible/readings/MMDDYY.cfm` (the U.S. Lectionary); alternate translations come from `bible-api.com` using the same citations, while Lectionary-only items (psalm refrain, gospel acclamation verse) are preserved.
 - A **Refresh readings** button is available for manual re-fetch (e.g. after editing a citation by hand).  Switching the Bible Translation dropdown also re-fetches automatically.
 - All fields stay editable so the user can clean up scraping quirks or swap a long reading for the Lectionary's "shorter form."
 - The Bible Translation dropdown defaults to **NABRE (Lectionary, USCCB)**.
+- **Paragraph reflow (v1.3):** USCCB ships text in lector sense-line layout (each clause on its own line). The fetcher reflows that into normal paragraphs (single line breaks → spaces; paragraph breaks preserved) for first/second/gospel readings and the gospel-acclamation verse, so the booklet prints as flowing prose.  Psalm verses keep their original stanza structure.
 
 ### 5.6 Copyright Block
 - Short copyright (Page 7): static template, never changes
@@ -246,13 +252,29 @@ worship_aid {
 
 MusicBlock {
   organ_prelude: string
+  organ_prelude_composer: string
   processional_or_entrance: string
+  processional_or_entrance_composer: string
+  processional_or_entrance_hymnal: string         // NEW v1.3 — for OneLicense lookup
+  processional_or_entrance_hymn_number: string    // NEW v1.3
   kyrie_setting: string
+  kyrie_composer: string
+  responsorial_psalm_setting: string              // NEW v1.3 — published psalm setting
+  responsorial_psalm_setting_composer: string     // NEW v1.3
   offertory_anthem: string
+  offertory_anthem_composer: string
   communion_hymn: string
+  communion_hymn_composer: string
+  communion_hymn_hymnal: string                   // NEW v1.3
+  communion_hymn_hymn_number: string              // NEW v1.3
   hymn_of_thanksgiving: string
+  hymn_of_thanksgiving_composer: string
+  hymn_of_thanksgiving_hymnal: string             // NEW v1.3
+  hymn_of_thanksgiving_hymn_number: string        // NEW v1.3
   organ_postlude: string
+  organ_postlude_composer: string
   choral_anthem_concluding: string (nullable)
+  choral_anthem_concluding_composer: string (nullable)
 }
 ```
 
@@ -327,6 +349,31 @@ attachment {
   uploaded_at: timestamp
 }
 ```
+
+### 6.4 Hymn Library Entry                                              // v1.3
+```
+hymn_entry {
+  title: string
+  tune: string
+  composer: string
+  key: string
+  meter: string
+  source: string
+  hymnal: string             // NEW v1.3 — e.g. "Worship IV"
+  hymn_number: string        // NEW v1.3 — e.g. "612"
+  language: string           // 'en' default; library filtered to English by default
+  notes: string
+}
+```
+
+### 6.5 Per-User Preferences                                            // v1.3
+```
+user_prefs {
+  booklet_size: tabloid | half-letter            // remembered across drafts
+  // Future: default_sanctus_language, preferred_hymnal, preferred_translation
+}
+```
+Stored on the user record (`user.prefs`). Distinct from parish-wide settings.
 
 ---
 
