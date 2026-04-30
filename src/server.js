@@ -959,11 +959,15 @@ nav .user-info strong { color: var(--gold-light); }
 .upload-area input[type="file"] { display: none; }
 .image-preview { max-width: 100%; max-height: 80px; margin-top: 6px; border: 1px solid var(--border); border-radius: 3px; }
 
-/* Readings toolbar — give the translation dropdown enough room for full text */
-.readings-toolbar { display: grid; grid-template-columns: minmax(180px, 1.6fr) auto 1fr; gap: 8px; align-items: end; margin-bottom: 10px; }
-.readings-toolbar select, .readings-toolbar button { width: 100%; }
-.readings-toolbar .readings-status-cell { min-width: 0; overflow: hidden; }
-.readings-toolbar .readings-status-cell span { display: block; white-space: normal; overflow-wrap: anywhere; }
+/* Readings toolbar — dropdown gets the lion's share so the full
+   "NABRE (Lectionary, USCCB)" label fits; button hugs its content;
+   status message gets its own line below so a long message can wrap
+   freely without crushing the toolbar. */
+.readings-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; margin-bottom: 4px; }
+.readings-toolbar .fg { margin-bottom: 0; min-width: 0; }
+.readings-toolbar select { width: 100%; }
+.readings-toolbar button { white-space: nowrap; }
+.readings-status { font-size: 11px; color: var(--gray); margin: 0 0 10px; min-height: 14px; line-height: 1.3; }
 
 /* Attachments library — a filter bar + list of meta cards. */
 .attachment-card { background: white; border: 1px solid var(--border); border-radius: 5px; padding: 8px 10px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
@@ -1085,18 +1089,16 @@ nav .user-info strong { color: var(--gold-light); }
       <div class="form-section-body">
         <p class="section-lock">Auto-pulled from <strong>bible.usccb.org</strong> the moment a date is set. Switch translations or click <em>Fetch from USCCB</em> to re-fetch. All fields are editable.</p>
         <div class="readings-toolbar">
-          <div class="fg"><label>Bible Translation</label>
+          <div class="fg">
+            <label>Bible Translation</label>
             <select id="bibleTranslation"></select>
           </div>
           <div class="fg">
             <label>&nbsp;</label>
-            <button type="button" class="btn btn-outline btn-sm" id="fetchReadingsBtn" onclick="fetchReadingsFromUsccb()" style="white-space:nowrap;">Fetch from USCCB</button>
-          </div>
-          <div class="fg readings-status-cell">
-            <label>&nbsp;</label>
-            <span id="fetchReadingsStatus" style="font-size: 11px; color: var(--gray);"></span>
+            <button type="button" class="btn btn-outline btn-sm" id="fetchReadingsBtn" onclick="fetchReadingsFromUsccb()">Fetch from USCCB</button>
           </div>
         </div>
+        <p class="readings-status" id="fetchReadingsStatus"></p>
         <div class="fg"><label>First Reading — Citation</label><input type="text" id="firstReadingCitation" placeholder="e.g., Genesis 15:5-12, 17-18"></div>
         <div class="fg"><label>First Reading — Text</label><textarea id="firstReadingText" rows="5"></textarea></div>
         <div class="fg"><label>Responsorial Psalm — Citation</label><input type="text" id="psalmCitation"></div>
