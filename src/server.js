@@ -15,6 +15,8 @@ const userStore = require('./store/user-store');
 const { fetchReadings, TRANSLATIONS } = require('./readings-fetcher');
 const { autoCropNotation } = require('./image-utils');
 const hymnLibrary = require('./store/hymn-library');
+const attachmentsStore = require('./store/attachments');
+const { getLiturgicalInfo } = require('./liturgical-calendar');
 
 const https = require('https');
 
@@ -27,8 +29,9 @@ const kv = require('./store/kv');
 const UPLOADS_DIR = path.join(__dirname, '..', 'data', 'uploads');
 const NOTATION_DIR = path.join(UPLOADS_DIR, 'notation');
 const COVERS_DIR = path.join(UPLOADS_DIR, 'covers');
+const ATTACHMENTS_DIR = path.join(UPLOADS_DIR, 'attachments');
 if (!kv.IS_NETLIFY) {
-  [NOTATION_DIR, COVERS_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
+  [NOTATION_DIR, COVERS_DIR, ATTACHMENTS_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
 }
 
 // Multer config — memory storage on Netlify, disk storage locally
@@ -72,6 +75,21 @@ const logoUpload = makeUploadConfig(
   5 * 1024 * 1024
 );
 
+// Attachments: any audio / PDF / image / score the parish wants reused.
+// Keep the size cap generous so MP3 anthems and full PDF scores still fit.
+const attachmentUpload = makeUploadConfig(
+  ATTACHMENTS_DIR,
+  ext => `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`,
+  [
+    '.mp3', '.m4a', '.wav', '.ogg', '.aac', '.flac',
+    '.pdf',
+    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp',
+    '.mid', '.midi', '.mxl', '.musicxml', '.xml',
+    '.txt', '.md', '.docx', '.doc', '.rtf'
+  ],
+  50 * 1024 * 1024
+);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -86,6 +104,25 @@ if (kv.IS_NETLIFY) {
 if (!kv.IS_NETLIFY) {
   app.use('/exports', express.static(store.getExportsDir()));
   app.use('/uploads', express.static(UPLOADS_DIR));
+}
+
+// MIME guess for attachments served from Blobs (Netlify) or any uploaded
+// file whose extension we know.
+function guessMime(filename) {
+  const ext = path.extname(String(filename || '')).toLowerCase();
+  const map = {
+    '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+    '.aac': 'audio/aac', '.flac': 'audio/flac',
+    '.pdf': 'application/pdf',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif', '.svg': 'image/svg+xml', '.webp': 'image/webp',
+    '.mid': 'audio/midi', '.midi': 'audio/midi',
+    '.mxl': 'application/vnd.recordare.musicxml', '.musicxml': 'application/vnd.recordare.musicxml+xml', '.xml': 'application/xml',
+    '.txt': 'text/plain', '.md': 'text/markdown',
+    '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.rtf': 'application/rtf'
+  };
+  return map[ext] || 'application/octet-stream';
 }
 
 // Seed default users — retry on demand if initial attempt fails (e.g. Netlify cold start)
@@ -290,6 +327,96 @@ app.get('/api/lenten-acclamations', (req, res) => {
 // Bible translations available for the readings dropdown
 app.get('/api/bible-translations', (req, res) => {
   res.json(TRANSLATIONS.map(({ id, label, source }) => ({ id, label, source })));
+});
+
+// Auto-derive feast/Sunday name + liturgical season from a date.
+// Drives the "Feast / Sunday Name" auto-fill in the editor.
+app.get('/api/liturgical-info', (req, res) => {
+  const date = String(req.query.date || '');
+  const info = getLiturgicalInfo(date);
+  if (!info) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  res.json(info);
+});
+
+// --- ATTACHMENTS LIBRARY ---
+// Generic media library — preludes, postludes, anthems, mass settings,
+// recordings the parish wants on hand.  Authenticated users with the
+// `manage_settings` permission can upload/delete; everyone can list.
+app.get('/api/attachments', async (req, res) => {
+  try {
+    const filter = {};
+    if (req.query.kind) filter.kind = String(req.query.kind);
+    if (req.query.kinds) filter.kinds = String(req.query.kinds).split(',');
+    if (req.query.q) filter.q = String(req.query.q);
+    const list = await attachmentsStore.listAttachments(filter);
+    res.json({ kinds: attachmentsStore.KINDS, attachments: list });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/attachments', requireAuth, requirePermission('manage_settings'), attachmentUpload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const ext = path.extname(req.file.originalname);
+  const filename = req.file.filename || `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+  const mime = req.file.mimetype || guessMime(filename);
+
+  if (kv.IS_NETLIFY) {
+    await kv.set(attachmentsStore.BLOB_NS, filename, { data: req.file.buffer.toString('base64'), mime });
+  }
+
+  const url = kv.IS_NETLIFY ? `/api/uploads/attachments/${filename}` : `/uploads/attachments/${filename}`;
+  const meta = await attachmentsStore.saveAttachmentMeta({
+    filename,
+    originalName: req.file.originalname,
+    title: String(req.body.title || '').trim() || req.file.originalname.replace(/\.[^.]+$/, ''),
+    composer: String(req.body.composer || '').trim(),
+    kind: String(req.body.kind || 'general'),
+    tags: String(req.body.tags || '').split(',').map(s => s.trim()).filter(Boolean),
+    notes: String(req.body.notes || '').trim(),
+    mime,
+    size: req.file.size,
+    url,
+    uploadedBy: req.user.displayName,
+    uploadedAt: new Date().toISOString()
+  });
+  res.json(meta);
+});
+
+app.put('/api/attachments/:id', requireAuth, requirePermission('manage_settings'), async (req, res) => {
+  const patch = {};
+  ['title', 'composer', 'kind', 'notes'].forEach(k => {
+    if (req.body[k] !== undefined) patch[k] = String(req.body[k] || '').trim();
+  });
+  if (req.body.tags !== undefined) {
+    patch.tags = Array.isArray(req.body.tags)
+      ? req.body.tags.map(s => String(s).trim()).filter(Boolean)
+      : String(req.body.tags || '').split(',').map(s => s.trim()).filter(Boolean);
+  }
+  const updated = await attachmentsStore.updateAttachment(req.params.id, patch);
+  if (!updated) return res.status(404).json({ error: 'Not found' });
+  res.json(updated);
+});
+
+app.delete('/api/attachments/:id', requireAuth, requirePermission('manage_settings'), async (req, res) => {
+  const ok = await attachmentsStore.deleteAttachment(req.params.id);
+  if (!ok) return res.status(404).json({ error: 'Not found' });
+  res.json({ success: true });
+});
+
+app.get('/api/uploads/attachments/:filename', async (req, res) => {
+  if (kv.IS_NETLIFY) {
+    const item = await kv.get(attachmentsStore.BLOB_NS, req.params.filename);
+    if (!item) return res.status(404).json({ error: 'Not found' });
+    const buf = Buffer.from(item.data, 'base64');
+    res.setHeader('Content-Type', item.mime || guessMime(req.params.filename));
+    return res.send(buf);
+  }
+  // Locally we serve via express.static('/uploads'); provide a fallback.
+  const filePath = path.join(ATTACHMENTS_DIR, req.params.filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Not found' });
+  res.setHeader('Content-Type', guessMime(req.params.filename));
+  fs.createReadStream(filePath).pipe(res);
 });
 
 // Local hymn library — parish-managed catalog. English-only by default.
@@ -821,6 +948,25 @@ nav .user-info strong { color: var(--gold-light); }
 .upload-area:hover { border-color: var(--gold); background: #faf8f0; }
 .upload-area input[type="file"] { display: none; }
 .image-preview { max-width: 100%; max-height: 80px; margin-top: 6px; border: 1px solid var(--border); border-radius: 3px; }
+
+/* Readings toolbar — give the translation dropdown enough room for full text */
+.readings-toolbar { display: grid; grid-template-columns: minmax(180px, 1.6fr) auto 1fr; gap: 8px; align-items: end; margin-bottom: 10px; }
+.readings-toolbar select, .readings-toolbar button { width: 100%; }
+.readings-toolbar .readings-status-cell { min-width: 0; overflow: hidden; }
+.readings-toolbar .readings-status-cell span { display: block; white-space: normal; overflow-wrap: anywhere; }
+
+/* Attachments library — a filter bar + list of meta cards. */
+.attachment-card { background: white; border: 1px solid var(--border); border-radius: 5px; padding: 8px 10px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+.attachment-card .info { flex: 1; min-width: 0; }
+.attachment-card .info .t { font-weight: 600; font-size: 12px; word-break: break-word; }
+.attachment-card .info .m { font-size: 10px; color: var(--gray); }
+.attachment-card .actions { display: flex; gap: 4px; flex-shrink: 0; }
+.attachment-kind-pill { display: inline-block; background: #eef0e6; color: #5a5a3a; font-size: 9px; font-weight: 600; padding: 1px 6px; border-radius: 8px; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 4px; }
+.attachment-list-empty { color: var(--gray); font-style: italic; font-size: 11px; padding: 8px; }
+.attachment-pick-row { display: grid; grid-template-columns: 1fr auto; gap: 4px; align-items: center; margin-top: 2px; }
+.attachment-pick-row select { font-size: 11px; padding: 4px 6px; min-width: 0; }
+.attachment-pick-row a { font-size: 10px; color: var(--gold); text-decoration: none; white-space: nowrap; }
+.attachment-pick-row a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -873,7 +1019,7 @@ nav .user-info strong { color: var(--gold-light); }
     <div class="form-section">
       <div class="form-section-hdr" onclick="toggle(this)">Liturgical Date &amp; Season <span>&#9660;</span></div>
       <div class="form-section-body">
-        <div class="fg"><label>Feast / Sunday Name</label><input type="text" id="feastName" placeholder="e.g., Second Sunday of Lent"></div>
+        <div class="fg"><label>Feast / Sunday Name <span style="font-weight:400;text-transform:none;color:var(--gray);">(auto-fills from date)</span></label><input type="text" id="feastName" placeholder="e.g., Second Sunday of Lent" oninput="this.dataset.userSet='1'"></div>
         <div class="fg-row">
           <div class="fg"><label>Date <span style="font-weight:400;text-transform:none;color:var(--gray);">(defaults to next Sunday)</span></label><input type="date" id="liturgicalDate" onchange="onLiturgicalDateChange()"></div>
           <div class="fg"><label>Liturgical Season</label>
@@ -899,7 +1045,15 @@ nav .user-info strong { color: var(--gold-light); }
           <div class="fg"><label>Creed</label><select id="creedType"><option value="nicene">Nicene Creed</option><option value="apostles">Apostles' Creed</option><option value="baptismal_vows">Renewal of Baptismal Vows</option></select></div>
           <div class="fg"><label>Entrance Type</label><select id="entranceType"><option value="processional">Processional Hymn</option><option value="antiphon">Entrance Antiphon</option></select></div>
         </div>
-        <div class="fg"><label>Holy Holy Setting</label><input type="text" id="holyHolySetting" placeholder="e.g., Mass of St. Theresa"></div>
+        <div class="fg-row">
+          <div class="fg"><label>Holy, Holy, Holy Setting</label><input type="text" id="holyHolySetting" placeholder="e.g., Mass of St. Theresa"></div>
+          <div class="fg"><label>Sanctus Language</label>
+            <select id="holyHolyLanguage" onchange="this.dataset.userSet='1'">
+              <option value="english">English (Holy, Holy, Holy)</option>
+              <option value="latin">Latin (Sanctus)</option>
+            </select>
+          </div>
+        </div>
         <div class="fg"><label>Mystery of Faith Setting</label><input type="text" id="mysteryOfFaithSetting"></div>
         <div class="fg"><label>Lamb of God Setting</label><input type="text" id="lambOfGodSetting"></div>
         <div class="fg"><label>Penitential Act</label><select id="penitentialAct"><option value="confiteor">Confiteor (I confess)</option><option value="kyrie_only">Kyrie Only</option></select></div>
@@ -919,14 +1073,17 @@ nav .user-info strong { color: var(--gold-light); }
     <div class="form-section" id="section-readings">
       <div class="form-section-hdr" onclick="toggle(this)">Readings <span>&#9660;</span></div>
       <div class="form-section-body">
-        <div class="fg-row" style="grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end;">
+        <p class="section-lock">Auto-pulled from <strong>bible.usccb.org</strong> the moment a date is set. Switch translations or click <em>Fetch from USCCB</em> to re-fetch. All fields are editable.</p>
+        <div class="readings-toolbar">
           <div class="fg"><label>Bible Translation</label>
             <select id="bibleTranslation"></select>
           </div>
-          <div class="fg"><label>USCCB lookup</label>
-            <button type="button" id="fetchReadingsBtn" onclick="fetchReadingsFromUsccb()">Fetch from USCCB</button>
+          <div class="fg">
+            <label>&nbsp;</label>
+            <button type="button" class="btn btn-outline btn-sm" id="fetchReadingsBtn" onclick="fetchReadingsFromUsccb()" style="white-space:nowrap;">Fetch from USCCB</button>
           </div>
-          <div class="fg"><label>&nbsp;</label>
+          <div class="fg readings-status-cell">
+            <label>&nbsp;</label>
             <span id="fetchReadingsStatus" style="font-size: 11px; color: var(--gray);"></span>
           </div>
         </div>
@@ -992,11 +1149,29 @@ nav .user-info strong { color: var(--gold-light); }
           <label for="childrenLiturgyEnabled">Enable Children's Liturgy of the Word</label>
           <span id="childrenLiturgyAutoNote" style="font-size: 11px; color: var(--gray); margin-left: 8px;"></span>
         </div>
-        <div class="fg"><label>Mass Time</label><input type="text" id="childrenLiturgyMassTime" placeholder="Sun 9:00 AM" value="Sun 9:00 AM"></div>
+        <div class="fg-row">
+          <div class="fg"><label>Mass Time</label><input type="text" id="childrenLiturgyMassTime" placeholder="Sun 9:00 AM" value="Sun 9:00 AM"></div>
+          <div class="fg"><label>Leader (optional)</label><input type="text" id="childrenLiturgyLeader" placeholder="e.g., Mrs. Donna Smith"></div>
+        </div>
         <div class="fg-row">
           <div class="fg"><label>Music Title</label><input type="text" id="childrenLiturgyMusic"></div>
           <div class="fg"><label>Composer</label><input type="text" id="childrenLiturgyMusicComposer"></div>
         </div>
+        <div class="fg"><label>Notes (printed under the entry)</label><input type="text" id="childrenLiturgyNotes" placeholder="Children dismissed after the Opening Prayer; rejoin parents at the Offertory."></div>
+      </div>
+    </div>
+
+    <!-- ATTACHMENTS REFERENCED -->
+    <div class="form-section">
+      <div class="form-section-hdr" onclick="toggle(this)">Files Referenced (preludes, postludes, anthems…) <span>&#9660;</span></div>
+      <div class="form-section-body">
+        <p class="section-lock">Pick from the parish library. Add new files in <em>Settings → Music &amp; Document Library</em>. They'll show up here for any worship aid.</p>
+        <div class="fg"><label>Add a file</label>
+          <select id="attachmentPicker" onchange="addAttachmentRefFromPicker(this)">
+            <option value="">— pick from library —</option>
+          </select>
+        </div>
+        <div id="attachmentRefList"></div>
       </div>
     </div>
 
@@ -1088,6 +1263,48 @@ nav .user-info strong { color: var(--gold-light); }
           <div class="fg"><label>Phone</label><input type="text" id="s_parishPhone"></div>
           <div class="fg"><label>Website URL</label><input type="text" id="s_parishUrl"></div>
         </div>
+        <div class="fg"><label>Mass Times (one per line — appears on cover)</label>
+          <textarea id="s_massTimes" rows="3" placeholder="Sat Vigil — 5:00 PM
+Sunday — 9:00 AM
+Sunday — 11:00 AM"></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="form-section"><div class="form-section-hdr">Clergy &amp; Staff</div>
+      <div class="form-section-body">
+        <p class="section-lock">These print on the cover (under the Mass times). Leave blank to omit.</p>
+        <div class="fg-row">
+          <div class="fg"><label>Pastor</label><input type="text" id="s_pastor" placeholder="Fr. Lawrence Smith"></div>
+          <div class="fg"><label>Pastor Title</label><input type="text" id="s_pastorTitle" placeholder="Pastor"></div>
+        </div>
+        <div class="fg"><label>Associates / Parochial Vicars (one per line)</label>
+          <textarea id="s_associates" rows="2" placeholder="Fr. John Doe — Parochial Vicar"></textarea>
+        </div>
+        <div class="fg"><label>Deacons (one per line)</label>
+          <textarea id="s_deacons" rows="2" placeholder="Deacon Bob Roe — Permanent Deacon"></textarea>
+        </div>
+        <div class="fg"><label>Music Director</label><input type="text" id="s_musicDirector" placeholder="Morris Brown"></div>
+      </div>
+    </div>
+    <div class="form-section"><div class="form-section-hdr">Standing Worship-Aid Text</div>
+      <div class="form-section-body">
+        <p class="section-lock">Reused across every worship aid. Leave any field blank to skip.</p>
+        <div class="fg"><label>Welcome Message (printed inside cover)</label>
+          <textarea id="s_welcomeMessage" rows="2" placeholder="A warm welcome to all who join us today..."></textarea>
+        </div>
+        <div class="fg"><label>Closing Message (printed on back cover)</label>
+          <textarea id="s_closingMessage" rows="2" placeholder="Thank you for worshiping with us today..."></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="form-section"><div class="form-section-hdr">Liturgical Defaults</div>
+      <div class="form-section-body">
+        <div class="fg"><label>Default Sanctus / Holy, Holy, Holy Language</label>
+          <select id="s_defaultSanctusLanguage">
+            <option value="english">English (Holy, Holy, Holy)</option>
+            <option value="latin">Latin (Sanctus)</option>
+          </select>
+        </div>
       </div>
     </div>
     <div class="form-section"><div class="form-section-hdr">Cover Page — Persistent Branding</div>
@@ -1123,6 +1340,73 @@ nav .user-info strong { color: var(--gold-light); }
       <div class="form-section-body">
         <div class="fg-check"><input type="checkbox" id="s_requirePastorApproval"><label for="s_requirePastorApproval">Require pastor approval before PDF export</label></div>
         <p style="font-size:11px;color:var(--gray);margin-top:4px;">When enabled, drafts must be submitted for review and approved by the pastor before they can be exported as PDF.</p>
+      </div>
+    </div>
+    <div class="form-section"><div class="form-section-hdr">Music &amp; Document Library</div>
+      <div class="form-section-body">
+        <p class="section-lock">Upload mass settings, preludes, postludes, anthems, and any other audio / PDF / image / score files you reference in worship aids. Files are reusable across every booklet.</p>
+        <div class="upload-area" onclick="document.getElementById('attachmentFileInput').click()">
+          <input type="file" id="attachmentFileInput" onchange="uploadAttachmentFromSettings(this)">
+          <p style="font-size:11px;color:var(--gray);">Click to upload a file (audio, PDF, image, MusicXML, MIDI, doc — up to 50&nbsp;MB)</p>
+        </div>
+        <div class="fg-row" style="grid-template-columns: 1fr 1fr;">
+          <div class="fg"><label>Title</label><input type="text" id="att_title" placeholder="Toccata in D Minor"></div>
+          <div class="fg"><label>Composer</label><input type="text" id="att_composer" placeholder="J.S. Bach"></div>
+        </div>
+        <div class="fg-row" style="grid-template-columns: 1fr 1fr;">
+          <div class="fg"><label>Kind</label>
+            <select id="att_kind">
+              <option value="prelude">Organ Prelude</option>
+              <option value="postlude">Organ Postlude</option>
+              <option value="processional">Processional / Entrance</option>
+              <option value="kyrie">Kyrie / Lord Have Mercy</option>
+              <option value="gloria">Gloria</option>
+              <option value="sanctus">Sanctus / Holy, Holy</option>
+              <option value="mystery_of_faith">Mystery of Faith</option>
+              <option value="agnus_dei">Lamb of God</option>
+              <option value="psalm">Responsorial Psalm</option>
+              <option value="gospel_acclamation">Gospel Acclamation</option>
+              <option value="offertory_anthem">Offertory Anthem</option>
+              <option value="communion">Communion</option>
+              <option value="thanksgiving">Hymn of Thanksgiving</option>
+              <option value="choral_anthem">Choral Anthem</option>
+              <option value="mass_setting">Full Mass Setting</option>
+              <option value="general">General / Other</option>
+            </select>
+          </div>
+          <div class="fg"><label>Tags (comma-separated)</label><input type="text" id="att_tags" placeholder="advent, organ"></div>
+        </div>
+        <p id="att_uploadStatus" style="font-size:11px;color:var(--gray);margin:4px 0;"></p>
+
+        <div style="border-top:1px solid var(--border);margin:10px 0 6px;padding-top:8px;">
+          <div class="fg-row" style="grid-template-columns: 1fr auto;">
+            <div class="fg"><label>Filter library</label>
+              <select id="att_filter_kind" onchange="loadAttachmentList()">
+                <option value="">All kinds</option>
+                <option value="prelude">Preludes</option>
+                <option value="postlude">Postludes</option>
+                <option value="processional">Processionals</option>
+                <option value="kyrie">Kyries</option>
+                <option value="gloria">Glorias</option>
+                <option value="sanctus">Sanctus</option>
+                <option value="mystery_of_faith">Mystery of Faith</option>
+                <option value="agnus_dei">Agnus Dei</option>
+                <option value="psalm">Psalms</option>
+                <option value="gospel_acclamation">Gospel Acclamations</option>
+                <option value="offertory_anthem">Offertory Anthems</option>
+                <option value="communion">Communion</option>
+                <option value="thanksgiving">Thanksgiving</option>
+                <option value="choral_anthem">Choral Anthems</option>
+                <option value="mass_setting">Mass Settings</option>
+                <option value="general">General</option>
+              </select>
+            </div>
+            <div class="fg"><label>&nbsp;</label>
+              <button type="button" class="btn btn-outline btn-sm" onclick="loadAttachmentList()">Refresh</button>
+            </div>
+          </div>
+          <div id="att_list"></div>
+        </div>
       </div>
     </div>
     <div class="form-section"><div class="form-section-hdr">Hymn Library (English only)</div>
@@ -1377,6 +1661,7 @@ function buildData() {
       creedType: v('creedType'),
       entranceType: v('entranceType'),
       holyHolySetting: v('holyHolySetting'),
+      holyHolyLanguage: v('holyHolyLanguage') || 'english',
       mysteryOfFaithSetting: v('mysteryOfFaithSetting'),
       lambOfGodSetting: v('lambOfGodSetting'),
       penitentialAct: v('penitentialAct'),
@@ -1405,9 +1690,12 @@ function buildData() {
     childrenLiturgyMassTime: v('childrenLiturgyMassTime'),
     childrenLiturgyMusic: v('childrenLiturgyMusic'),
     childrenLiturgyMusicComposer: v('childrenLiturgyMusicComposer'),
+    childrenLiturgyLeader: v('childrenLiturgyLeader'),
+    childrenLiturgyNotes: v('childrenLiturgyNotes'),
     announcements: v('announcements'),
     specialNotes: v('specialNotes'),
-    coverImagePath: window._coverImagePath || undefined
+    coverImagePath: window._coverImagePath || undefined,
+    attachmentRefs: window._attachmentRefs || []
   };
 }
 
@@ -1421,6 +1709,7 @@ function populateForm(data) {
   sv('creedType', ss.creedType);
   sv('entranceType', ss.entranceType);
   sv('holyHolySetting', ss.holyHolySetting);
+  sv('holyHolyLanguage', ss.holyHolyLanguage || (window._parishSettings && window._parishSettings.defaultSanctusLanguage) || 'english');
   sv('mysteryOfFaithSetting', ss.mysteryOfFaithSetting);
   sv('lambOfGodSetting', ss.lambOfGodSetting);
   sv('penitentialAct', ss.penitentialAct);
@@ -1452,9 +1741,13 @@ function populateForm(data) {
   sv('childrenLiturgyMassTime', data.childrenLiturgyMassTime);
   sv('childrenLiturgyMusic', data.childrenLiturgyMusic);
   sv('childrenLiturgyMusicComposer', data.childrenLiturgyMusicComposer);
+  sv('childrenLiturgyLeader', data.childrenLiturgyLeader);
+  sv('childrenLiturgyNotes', data.childrenLiturgyNotes);
   sv('announcements', data.announcements);
   sv('specialNotes', data.specialNotes);
   window._coverImagePath = data.coverImagePath || undefined;
+  window._attachmentRefs = Array.isArray(data.attachmentRefs) ? data.attachmentRefs.slice() : [];
+  renderAttachmentRefList();
   updateSeasonUI();
 }
 
@@ -1473,6 +1766,11 @@ async function onSeasonChange() {
     sv('penitentialAct', defaults.penitentialAct);
     sc('includePostlude', defaults.includePostlude !== false);
     sc('adventWreath', !!defaults.adventWreath);
+    // Sanctus language: respect user override; otherwise fall back to parish default.
+    const sanctusEl = document.getElementById('holyHolyLanguage');
+    if (sanctusEl && !sanctusEl.dataset.userSet) {
+      sanctusEl.value = (window._parishSettings && window._parishSettings.defaultSanctusLanguage) || 'english';
+    }
     updateSeasonUI();
     applyChildrenLiturgyAutoDefault();
     toast('Season defaults applied: ' + season, 'success');
@@ -1605,16 +1903,27 @@ function nextSundayISO(fromDate) {
   return iso;
 }
 
-function onLiturgicalDateChange() {
+async function onLiturgicalDateChange() {
   const date = v('liturgicalDate');
   if (!date) return;
-  const detected = detectLiturgicalSeason(date);
+  // Server-side liturgical calendar gives us both feast name and season.
+  let info = null;
+  try {
+    const r = await fetch('/api/liturgical-info?date=' + encodeURIComponent(date));
+    if (r.ok) info = await r.json();
+  } catch (e) { /* fall back to local season detection */ }
+  const detected = (info && info.liturgicalSeason) || detectLiturgicalSeason(date);
   const seasonSel = document.getElementById('liturgicalSeason');
   if (detected && seasonSel && seasonSel.value !== detected) {
     seasonSel.value = detected;
-    onSeasonChange(); // applies seasonal defaults + cascades to children's liturgy
+    await onSeasonChange(); // applies seasonal defaults + cascades to children's liturgy
   } else {
     applyChildrenLiturgyAutoDefault();
+  }
+  // Fill the feast/Sunday name unless the user has typed something custom.
+  const feastEl = document.getElementById('feastName');
+  if (info && info.feastName && feastEl && !feastEl.dataset.userSet) {
+    feastEl.value = info.feastName;
   }
   autoFetchReadingsIfEmpty();
 }
@@ -1672,19 +1981,203 @@ async function suggestCoverImages() {
   }
 }
 
-function suggestNextLiturgicalDate() {
+async function suggestNextLiturgicalDate() {
   const dateInput = document.getElementById('liturgicalDate');
   if (!dateInput || dateInput.value) return; // don't override an existing pick
   const iso = nextSundayISO();
   dateInput.value = iso;
-  const detected = detectLiturgicalSeason(iso);
-  const seasonSel = document.getElementById('liturgicalSeason');
-  if (detected && seasonSel) seasonSel.value = detected;
-  applyChildrenLiturgyAutoDefault();
-  // Auto-populate readings for the suggested date — manual edits are
-  // never overwritten because autoFetchReadingsIfEmpty() bails out the
-  // moment any reading field has content.
-  autoFetchReadingsIfEmpty();
+  // Defer to onLiturgicalDateChange so we use the same server-side calendar
+  // path (sets season + feast name + auto-fetches readings).
+  await onLiturgicalDateChange();
+}
+
+// --- Attachments library ---
+const ATTACHMENT_KIND_LABELS = {
+  prelude: 'Prelude',
+  postlude: 'Postlude',
+  processional: 'Processional / Entrance',
+  kyrie: 'Kyrie',
+  gloria: 'Gloria',
+  sanctus: 'Sanctus',
+  mystery_of_faith: 'Mystery of Faith',
+  agnus_dei: 'Lamb of God',
+  psalm: 'Psalm',
+  gospel_acclamation: 'Gospel Acclamation',
+  offertory_anthem: 'Offertory Anthem',
+  communion: 'Communion',
+  thanksgiving: 'Thanksgiving',
+  choral_anthem: 'Choral Anthem',
+  mass_setting: 'Mass Setting',
+  general: 'General'
+};
+
+window._attachmentRefs = window._attachmentRefs || [];
+let _attachmentCache = null;
+
+async function getAttachmentCache(force) {
+  if (_attachmentCache && !force) return _attachmentCache;
+  try {
+    const res = await fetch('/api/attachments');
+    const data = await res.json();
+    _attachmentCache = (data && data.attachments) || [];
+  } catch (e) {
+    _attachmentCache = [];
+  }
+  return _attachmentCache;
+}
+
+async function refreshAttachmentPicker() {
+  const sel = document.getElementById('attachmentPicker');
+  if (!sel) return;
+  const list = await getAttachmentCache(true);
+  sel.innerHTML = '<option value="">— pick from library —</option>' + list.map(a =>
+    '<option value="' + esc(a.id) + '">[' + esc(ATTACHMENT_KIND_LABELS[a.kind] || a.kind) + '] ' +
+    esc(a.title || a.originalName) + (a.composer ? ' — ' + esc(a.composer) : '') + '</option>'
+  ).join('');
+}
+
+async function addAttachmentRefFromPicker(sel) {
+  const id = sel.value;
+  if (!id) return;
+  if (!Array.isArray(window._attachmentRefs)) window._attachmentRefs = [];
+  if (window._attachmentRefs.includes(id)) { sel.value = ''; return; }
+  window._attachmentRefs.push(id);
+  sel.value = '';
+  renderAttachmentRefList();
+}
+
+function removeAttachmentRef(id) {
+  window._attachmentRefs = (window._attachmentRefs || []).filter(x => x !== id);
+  renderAttachmentRefList();
+}
+
+async function renderAttachmentRefList() {
+  const target = document.getElementById('attachmentRefList');
+  if (!target) return;
+  const ids = window._attachmentRefs || [];
+  if (!ids.length) { target.innerHTML = '<p class="attachment-list-empty">No files attached yet.</p>'; return; }
+  const lib = await getAttachmentCache();
+  target.innerHTML = ids.map(id => {
+    const a = lib.find(x => x.id === id);
+    if (!a) return '<div class="attachment-card"><div class="info">Missing file (id ' + esc(id) + ') — it may have been deleted.</div><div class="actions"><button class="btn btn-outline btn-sm" onclick="removeAttachmentRef(\\'' + id + '\\')">Remove</button></div></div>';
+    return '<div class="attachment-card">' +
+      '<div class="info">' +
+        '<div class="t"><span class="attachment-kind-pill">' + esc(ATTACHMENT_KIND_LABELS[a.kind] || a.kind) + '</span>' + esc(a.title || a.originalName) + '</div>' +
+        '<div class="m">' + (a.composer ? esc(a.composer) + ' · ' : '') + esc(a.originalName) + '</div>' +
+      '</div>' +
+      '<div class="actions">' +
+        '<a href="' + esc(a.url) + '" target="_blank" rel="noopener" class="btn btn-outline btn-sm">Open</a>' +
+        '<button class="btn btn-outline btn-sm" onclick="removeAttachmentRef(\\'' + a.id + '\\')">Remove</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+// Per-music-slot attachment quick-pick (for non-hymn fields like prelude,
+// postlude, kyrie, anthems).  Shown next to the title input — picking an
+// entry copies its title (and composer if known) into the music block,
+// AND adds the attachment to the worship aid's reference list.
+async function pickAttachmentIntoMusicSlot(prefix, slotKey, kind) {
+  const lib = await getAttachmentCache();
+  const matching = lib.filter(a => a.kind === kind);
+  if (!matching.length) {
+    toast('No ' + (ATTACHMENT_KIND_LABELS[kind] || kind) + 's in the library yet. Upload one in Settings.', 'error');
+    return;
+  }
+  const sel = document.getElementById(prefix + '_' + slotKey + '_attachmentSelect');
+  if (!sel) return;
+  const a = matching.find(x => x.id === sel.value);
+  if (!a) return;
+  const titleInput = document.getElementById(prefix + '_' + slotKey);
+  if (titleInput) {
+    titleInput.value = a.title || a.originalName;
+    titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  const composerId = titleInput && titleInput.dataset.pairComposer;
+  if (composerId && a.composer) {
+    const cinp = document.getElementById(composerId);
+    if (cinp) { cinp.value = a.composer; cinp.dispatchEvent(new Event('input', { bubbles: true })); }
+  }
+  if (!Array.isArray(window._attachmentRefs)) window._attachmentRefs = [];
+  if (!window._attachmentRefs.includes(a.id)) window._attachmentRefs.push(a.id);
+  renderAttachmentRefList();
+  sel.value = '';
+}
+
+async function refreshAttachmentSlotSelectors() {
+  const lib = await getAttachmentCache(true);
+  document.querySelectorAll('select[data-attachment-slot]').forEach(sel => {
+    const kind = sel.dataset.attachmentKind;
+    const matches = lib.filter(a => a.kind === kind);
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">— ' + (matches.length ? 'pick from library' : 'no files yet') + ' —</option>' +
+      matches.map(a => '<option value="' + esc(a.id) + '">' + esc(a.title || a.originalName) + (a.composer ? ' — ' + esc(a.composer) : '') + '</option>').join('');
+    if (prev) sel.value = prev;
+  });
+}
+
+async function uploadAttachmentFromSettings(input) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const status = document.getElementById('att_uploadStatus');
+  if (status) status.textContent = 'Uploading ' + file.name + '…';
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('title', v('att_title') || file.name.replace(/\\.[^.]+$/, ''));
+  fd.append('composer', v('att_composer'));
+  fd.append('kind', v('att_kind') || 'general');
+  fd.append('tags', v('att_tags'));
+  try {
+    const res = await fetch('/api/attachments', { method: 'POST', headers: { 'x-session-token': _sessionToken }, body: fd });
+    const data = await res.json();
+    if (!res.ok) { if (status) status.textContent = ''; toast(data.error || 'Upload failed', 'error'); return; }
+    if (status) status.textContent = 'Uploaded: ' + (data.title || data.originalName);
+    sv('att_title', ''); sv('att_composer', ''); sv('att_tags', '');
+    input.value = '';
+    await loadAttachmentList();
+    await refreshAttachmentPicker();
+    await refreshAttachmentSlotSelectors();
+    toast('File added to library', 'success');
+  } catch (e) {
+    if (status) status.textContent = '';
+    toast('Upload error: ' + e.message, 'error');
+  }
+}
+
+async function loadAttachmentList() {
+  const list = document.getElementById('att_list');
+  if (!list) return;
+  const kind = v('att_filter_kind');
+  const url = '/api/attachments' + (kind ? '?kind=' + encodeURIComponent(kind) : '');
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    const items = (data && data.attachments) || [];
+    if (!items.length) { list.innerHTML = '<p class="attachment-list-empty">No files yet. Upload one above.</p>'; return; }
+    list.innerHTML = items.map(a => {
+      return '<div class="attachment-card">' +
+        '<div class="info">' +
+          '<div class="t"><span class="attachment-kind-pill">' + esc(ATTACHMENT_KIND_LABELS[a.kind] || a.kind) + '</span>' + esc(a.title || a.originalName) + '</div>' +
+          '<div class="m">' + (a.composer ? esc(a.composer) + ' · ' : '') + esc(a.originalName) + ' · ' + Math.round((a.size || 0) / 1024) + ' KB</div>' +
+        '</div>' +
+        '<div class="actions">' +
+          '<a href="' + esc(a.url) + '" target="_blank" rel="noopener" class="btn btn-outline btn-sm">Open</a>' +
+          '<button class="btn btn-danger btn-sm" onclick="deleteAttachment(\\'' + a.id + '\\')">Delete</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  } catch (e) {
+    list.innerHTML = '<p class="attachment-list-empty">Could not load library.</p>';
+  }
+}
+
+async function deleteAttachment(id) {
+  if (!confirm('Delete this file from the library? Worship aids that reference it will show "missing".')) return;
+  await fetch('/api/attachments/' + id, { method: 'DELETE', headers: { 'x-session-token': _sessionToken } });
+  await loadAttachmentList();
+  await refreshAttachmentPicker();
+  await refreshAttachmentSlotSelectors();
+  toast('File removed', 'success');
 }
 
 // --- Image Uploads ---
@@ -1962,7 +2455,13 @@ async function requestChanges(id) {
 }
 
 // --- Admin Settings ---
-const settingsFields = ['parishName','parishAddress','parishPhone','parishUrl','coverTagline','logoPath','connectBlurb','nurseryBlurb','restroomsBlurb','prayerBlurb','onelicenseNumber','copyrightShort','copyrightFull'];
+const settingsFields = [
+  'parishName','parishAddress','parishPhone','parishUrl','coverTagline','logoPath',
+  'massTimes','pastor','pastorTitle','associates','deacons','musicDirector',
+  'welcomeMessage','closingMessage','defaultSanctusLanguage',
+  'connectBlurb','nurseryBlurb','restroomsBlurb','prayerBlurb',
+  'onelicenseNumber','copyrightShort','copyrightFull'
+];
 const settingsCheckboxes = ['requirePastorApproval'];
 async function loadAdminSettings() {
   const res = await fetch('/api/settings');
@@ -1979,6 +2478,8 @@ async function loadAdminSettings() {
     const lib = await hr.json();
     sv('s_hymnLibrary', JSON.stringify(lib.entries || [], null, 2));
   } catch (e) {}
+  // Attachments library list lives on the same Settings page.
+  loadAttachmentList();
 }
 
 async function saveHymnLibrary() {
@@ -2267,6 +2768,11 @@ function showHymnDropdown(input, results) {
 initBibleTranslations();
 suggestNextLiturgicalDate();
 initHymnAutocomplete();
+// Attachments lookup — populates editor picker + per-music-slot dropdowns
+// so the user can pick a prelude/postlude/anthem from the library.
+refreshAttachmentPicker();
+refreshAttachmentSlotSelectors();
+renderAttachmentRefList();
 
 // --- Auto-save ---
 let _autoSaveTimer;
@@ -2333,24 +2839,52 @@ setTimeout(initGoogleSignIn, 500);
 </html>`;
 }
 
-// Helper: generates the per-mass-time music fields HTML
+// Helper: generates the per-mass-time music fields HTML.
+//
+// The third tuple entry is the source — 'hymn' wires the hymn-library
+// autocomplete; an attachment-kind string (e.g. 'prelude') wires a quick-pick
+// dropdown sourced from the parish attachments library instead.  Postludes,
+// preludes, anthems, and mass settings are NOT hymns and so don't pull from
+// the hymn catalog.
 function musicBlockFields(prefix) {
   const fields = [
-    ['organPrelude', 'organPreludeComposer', 'Organ Prelude'],
-    ['processional', 'processionalComposer', 'Processional / Entrance'],
-    ['kyrie', 'kyrieComposer', 'Lord, Have Mercy (Kyrie)'],
-    ['offertory', 'offertoryComposer', 'Offertory Anthem'],
-    ['communion', 'communionComposer', 'Communion Hymn'],
-    ['thanksgiving', 'thanksgivingComposer', 'Hymn of Thanksgiving'],
-    ['postlude', 'postludeComposer', 'Organ Postlude'],
-    ['choral', 'choralComposer', 'Choral Anthem (Concluding)']
+    // [titleId, composerId, label, source]
+    ['organPrelude',  'organPreludeComposer',  'Organ Prelude',                  'prelude'],
+    ['processional',  'processionalComposer',  'Processional / Entrance',        'hymn'],
+    ['kyrie',         'kyrieComposer',         'Lord, Have Mercy (Kyrie)',       'kyrie'],
+    ['offertory',     'offertoryComposer',     'Offertory Anthem',               'offertory_anthem'],
+    ['communion',     'communionComposer',     'Communion Hymn',                 'hymn'],
+    ['thanksgiving',  'thanksgivingComposer',  'Hymn of Thanksgiving',           'hymn'],
+    ['postlude',      'postludeComposer',      'Organ Postlude',                 'postlude'],
+    ['choral',        'choralComposer',        'Choral Anthem (Concluding)',     'choral_anthem']
   ];
-  return fields.map(([titleId, compId, label]) => `
-    <div class="fg-row">
-      <div class="fg" style="position:relative;"><label>${label}</label><input type="text" id="${prefix}_${titleId}" placeholder="Title" autocomplete="off" data-hymn-search="title" data-pair-composer="${prefix}_${compId}"></div>
-      <div class="fg"><label>&nbsp;</label><input type="text" id="${prefix}_${compId}" placeholder="Composer"></div>
-    </div>
-  `).join('');
+  return fields.map(([titleId, compId, label, source]) => {
+    const titleAttrs = source === 'hymn'
+      ? `data-hymn-search="title" data-pair-composer="${prefix}_${compId}"`
+      : `data-pair-composer="${prefix}_${compId}"`;
+    const helper = source === 'hymn'
+      ? ''
+      : `
+        <div class="attachment-pick-row">
+          <select data-attachment-slot="${prefix}_${titleId}" data-attachment-kind="${source}" id="${prefix}_${titleId}_attachmentSelect" onchange="pickAttachmentIntoMusicSlot('${prefix}', '${titleId}', '${source}')">
+            <option value="">— pick from library —</option>
+          </select>
+        </div>`;
+    const sourceLabel = source === 'hymn'
+      ? '<span style="font-size:9px;color:var(--gray);">type to search hymns</span>'
+      : `<span style="font-size:9px;color:var(--gray);">not a hymn — pulls from Music &amp; Document Library</span>`;
+    return `
+      <div class="fg-row">
+        <div class="fg" style="position:relative;">
+          <label>${label}</label>
+          <input type="text" id="${prefix}_${titleId}" placeholder="Title" autocomplete="off" ${titleAttrs}>
+          ${sourceLabel}
+          ${helper}
+        </div>
+        <div class="fg"><label>&nbsp;</label><input type="text" id="${prefix}_${compId}" placeholder="Composer"></div>
+      </div>
+    `;
+  }).join('');
 }
 
 module.exports = app;

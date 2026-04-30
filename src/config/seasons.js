@@ -102,6 +102,8 @@ function applySeasonDefaults(data) {
   if (!merged.entranceType) merged.entranceType = defaults.entranceType;
   if (!merged.seasonalSettings) merged.seasonalSettings = {};
   if (!merged.seasonalSettings.holyHolySetting) merged.seasonalSettings.holyHolySetting = defaults.holyHolySetting;
+  // Default Sanctus language — English unless caller passed an override.
+  if (!merged.seasonalSettings.holyHolyLanguage) merged.seasonalSettings.holyHolyLanguage = 'english';
   if (!merged.seasonalSettings.mysteryOfFaithSetting) merged.seasonalSettings.mysteryOfFaithSetting = defaults.mysteryOfFaithSetting;
   if (!merged.seasonalSettings.lambOfGodSetting) merged.seasonalSettings.lambOfGodSetting = defaults.lambOfGodSetting;
   if (!merged.seasonalSettings.penitentialAct) merged.seasonalSettings.penitentialAct = defaults.penitentialAct;
