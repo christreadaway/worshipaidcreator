@@ -489,14 +489,19 @@ function renderBookletHtml(data, options = {}) {
   <div class="sub-heading">Offertory</div>
   ${renderMusicSection(d, 'offertoryAnthem', 'offertoryAnthemComposer', 'Offertory Anthem')}
 
-  ${d.childrenLiturgyEnabled ? `
+  ${d.childrenLiturgyEnabled ? (() => {
+    const times = Array.isArray(d.childrenLiturgyMassTimes) && d.childrenLiturgyMassTimes.length
+      ? d.childrenLiturgyMassTimes
+      : (d.childrenLiturgyMassTime ? [d.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
+    return `
   <div class="children-liturgy">
-    <strong>Children's Liturgy of the Word</strong> — ${escapeHtml(d.childrenLiturgyMassTime || 'Sun 9:00 AM')}
+    <strong>Children's Liturgy of the Word</strong> — ${times.map(escapeHtml).join(' &amp; ')}
     ${d.childrenLiturgyLeader ? `<br>Led by ${escapeHtml(d.childrenLiturgyLeader)}` : ''}
     ${d.childrenLiturgyMusic ? `<br><em>${escapeHtml(d.childrenLiturgyMusic)}</em>${d.childrenLiturgyMusicComposer ? ', ' + escapeHtml(d.childrenLiturgyMusicComposer) : ''}` : ''}
     ${d.childrenLiturgyNotes ? `<br><span style="font-size:7.5pt;font-style:italic;">${nl2br(d.childrenLiturgyNotes)}</span>` : ''}
   </div>
-  ` : ''}
+  `;
+  })() : ''}
 
   <p class="rubric">${RUBRICS.stand}</p>
 

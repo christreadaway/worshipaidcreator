@@ -103,7 +103,7 @@ sample/
 | Readings | Bible Translation dropdown (defaults to NABRE/USCCB), Fetch-from-USCCB button, First Reading (citation + text), Psalm (citation + refrain + verses), Second Reading (citation + text, with "No Second Reading" toggle), Gospel Acclamation (reference + verse), Gospel (citation + text). Auto-fetched from USCCB the moment a date is set. |
 | Music (x3 mass times) | 8 fields each: Organ Prelude, Processional/Entrance, Kyrie, Offertory, Communion, Thanksgiving, Postlude, Choral Anthem — each with title + composer. **Hymn-library autocomplete is wired only on processional / communion / thanksgiving (true congregational hymns); the other slots get a "pick from library" dropdown drawing from the new attachments library.** |
 | Files Referenced | Editor-side picker for the parish attachments library; per-music-slot quick-pick dropdowns auto-add the chosen file. |
-| Children's Liturgy | Enable toggle, mass time, leader name (optional), music title + composer, notes (printed under the entry) |
+| Children's Liturgy | Enable toggle, **Mass times (checkboxes — any subset of Sat 5:00 PM / Sun 9:00 AM / Sun 11:00 AM, plus free-form "Other" comma list)**, leader name (optional), music title + composer, notes (printed under the entry) |
 | Notation Images | Upload music notation scans (auto-cropped on upload). |
 | Cover Image | Optional cover image with tone-driven concept suggestions (Unsplash / Pexels / Wikimedia search links). |
 | Announcements & Notes | Free text areas (optional) |
@@ -277,9 +277,16 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
     = 34th Sunday).
   - Fallback: weekday + month/day if no rule matches.
 - `GET /api/liturgical-info?date=YYYY-MM-DD` returns
-  `{date, liturgicalSeason, feastName}`. Editor calls this on every
-  date change and fills the Feast / Sunday Name input only if it's
-  empty (manual overrides preserved).
+  `{date, liturgicalSeason, feastName}`.
+- **Liturgical season ALWAYS tracks the date.** When the user changes
+  the date — and when a saved draft loads — the season selector is
+  set to the date-derived value. Manual overrides of the seasonal
+  sub-settings (Gloria, creed, Holy Holy setting, etc.) are preserved
+  because `onSeasonChange()` only runs when the season actually
+  changes. The reconciliation helper is `reconcileSeasonAndFeastFromDate({ feastFillIfEmpty })` in `src/server.js`.
+- **Feast / Sunday Name auto-fills only when empty** — a manually
+  typed override is preserved; clearing the field then changing the
+  date refills it.
 
 ### 20. Sanctus / Holy, Holy, Holy Language Toggle
 
@@ -350,7 +357,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 
 ## Test Coverage
 
-**168 tests across 9 test files. All passing.**
+**177 tests across 9 test files. All passing.**
 
 | Suite | What It Covers |
 |---|---|

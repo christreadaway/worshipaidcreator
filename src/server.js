@@ -959,11 +959,19 @@ nav .user-info strong { color: var(--gold-light); }
 .upload-area input[type="file"] { display: none; }
 .image-preview { max-width: 100%; max-height: 80px; margin-top: 6px; border: 1px solid var(--border); border-radius: 3px; }
 
-/* Readings toolbar — give the translation dropdown enough room for full text */
-.readings-toolbar { display: grid; grid-template-columns: minmax(180px, 1.6fr) auto 1fr; gap: 8px; align-items: end; margin-bottom: 10px; }
-.readings-toolbar select, .readings-toolbar button { width: 100%; }
-.readings-toolbar .readings-status-cell { min-width: 0; overflow: hidden; }
-.readings-toolbar .readings-status-cell span { display: block; white-space: normal; overflow-wrap: anywhere; }
+/* Children's Liturgy mass-time checkboxes — wrap inline */
+.children-liturgy-times { display: flex; flex-wrap: wrap; gap: 12px 16px; margin-bottom: 4px; }
+.children-liturgy-times .fg-check { margin-bottom: 0; }
+
+/* Readings toolbar — dropdown gets the lion's share so the full
+   "NABRE (Lectionary, USCCB)" label fits; button hugs its content;
+   status message gets its own line below so a long message can wrap
+   freely without crushing the toolbar. */
+.readings-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; margin-bottom: 4px; }
+.readings-toolbar .fg { margin-bottom: 0; min-width: 0; }
+.readings-toolbar select { width: 100%; }
+.readings-toolbar button { white-space: nowrap; }
+.readings-status { font-size: 11px; color: var(--gray); margin: 0 0 10px; min-height: 14px; line-height: 1.3; }
 
 /* Attachments library — a filter bar + list of meta cards. */
 .attachment-card { background: white; border: 1px solid var(--border); border-radius: 5px; padding: 8px 10px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
@@ -1085,18 +1093,16 @@ nav .user-info strong { color: var(--gold-light); }
       <div class="form-section-body">
         <p class="section-lock">Auto-pulled from <strong>bible.usccb.org</strong> the moment a date is set. Switch translations or click <em>Fetch from USCCB</em> to re-fetch. All fields are editable.</p>
         <div class="readings-toolbar">
-          <div class="fg"><label>Bible Translation</label>
+          <div class="fg">
+            <label>Bible Translation</label>
             <select id="bibleTranslation"></select>
           </div>
           <div class="fg">
             <label>&nbsp;</label>
-            <button type="button" class="btn btn-outline btn-sm" id="fetchReadingsBtn" onclick="fetchReadingsFromUsccb()" style="white-space:nowrap;">Fetch from USCCB</button>
-          </div>
-          <div class="fg readings-status-cell">
-            <label>&nbsp;</label>
-            <span id="fetchReadingsStatus" style="font-size: 11px; color: var(--gray);"></span>
+            <button type="button" class="btn btn-outline btn-sm" id="fetchReadingsBtn" onclick="fetchReadingsFromUsccb()">Fetch from USCCB</button>
           </div>
         </div>
+        <p class="readings-status" id="fetchReadingsStatus"></p>
         <div class="fg"><label>First Reading — Citation</label><input type="text" id="firstReadingCitation" placeholder="e.g., Genesis 15:5-12, 17-18"></div>
         <div class="fg"><label>First Reading — Text</label><textarea id="firstReadingText" rows="5"></textarea></div>
         <div class="fg"><label>Responsorial Psalm — Citation</label><input type="text" id="psalmCitation"></div>
@@ -1153,16 +1159,22 @@ nav .user-info strong { color: var(--gold-light); }
     <div class="form-section">
       <div class="form-section-hdr" onclick="toggle(this)">Children's Liturgy <span>&#9660;</span></div>
       <div class="form-section-body">
-        <p class="section-lock">Auto-defaults to ON when school is in session and OFF for summer, Christmas, and Easter. Toggle to override.</p>
+        <p class="section-lock">Auto-defaults to ON when school is in session and OFF for summer, Christmas, and Easter. Children's Liturgy can run at any subset of Masses — check every one that applies.</p>
         <div class="fg-check">
           <input type="checkbox" id="childrenLiturgyEnabled" onchange="onChildrenLiturgyToggle()">
           <label for="childrenLiturgyEnabled">Enable Children's Liturgy of the Word</label>
           <span id="childrenLiturgyAutoNote" style="font-size: 11px; color: var(--gray); margin-left: 8px;"></span>
         </div>
-        <div class="fg-row">
-          <div class="fg"><label>Mass Time</label><input type="text" id="childrenLiturgyMassTime" placeholder="Sun 9:00 AM" value="Sun 9:00 AM"></div>
-          <div class="fg"><label>Leader (optional)</label><input type="text" id="childrenLiturgyLeader" placeholder="e.g., Mrs. Donna Smith"></div>
+        <div class="fg">
+          <label>Mass Times (check all that apply)</label>
+          <div class="children-liturgy-times">
+            <label class="fg-check"><input type="checkbox" class="cl-time" value="Sat 5:00 PM"> Sat 5:00 PM</label>
+            <label class="fg-check"><input type="checkbox" class="cl-time" value="Sun 9:00 AM"> Sun 9:00 AM</label>
+            <label class="fg-check"><input type="checkbox" class="cl-time" value="Sun 11:00 AM"> Sun 11:00 AM</label>
+          </div>
+          <input type="text" id="childrenLiturgyOtherTimes" placeholder="Other Mass times, comma-separated (optional)" style="margin-top:4px;">
         </div>
+        <div class="fg"><label>Leader (optional)</label><input type="text" id="childrenLiturgyLeader" placeholder="e.g., Mrs. Donna Smith"></div>
         <div class="fg-row">
           <div class="fg"><label>Music Title</label><input type="text" id="childrenLiturgyMusic"></div>
           <div class="fg"><label>Composer</label><input type="text" id="childrenLiturgyMusicComposer"></div>
@@ -1697,7 +1709,7 @@ function buildData() {
     musicSun9am: buildMusicBlock('sun9am'),
     musicSun11am: buildMusicBlock('sun11am'),
     childrenLiturgyEnabled: ch('childrenLiturgyEnabled'),
-    childrenLiturgyMassTime: v('childrenLiturgyMassTime'),
+    childrenLiturgyMassTimes: collectChildrenLiturgyTimes(),
     childrenLiturgyMusic: v('childrenLiturgyMusic'),
     childrenLiturgyMusicComposer: v('childrenLiturgyMusicComposer'),
     childrenLiturgyLeader: v('childrenLiturgyLeader'),
@@ -1748,7 +1760,15 @@ function populateForm(data) {
   const _clCb = document.getElementById('childrenLiturgyEnabled');
   if (_clCb) _clCb.dataset.userSet = (data.childrenLiturgyEnabled !== undefined) ? '1' : '';
   updateChildrenLiturgyAutoNote(data.childrenLiturgyEnabled !== undefined);
-  sv('childrenLiturgyMassTime', data.childrenLiturgyMassTime);
+  // Children's Liturgy can happen at any number of Masses. New drafts use
+  // childrenLiturgyMassTimes (array); legacy drafts have a single
+  // childrenLiturgyMassTime string — migrate it on load so the user sees
+  // the right boxes ticked.
+  applyChildrenLiturgyTimes(
+    Array.isArray(data.childrenLiturgyMassTimes) && data.childrenLiturgyMassTimes.length
+      ? data.childrenLiturgyMassTimes
+      : (data.childrenLiturgyMassTime ? [data.childrenLiturgyMassTime] : [])
+  );
   sv('childrenLiturgyMusic', data.childrenLiturgyMusic);
   sv('childrenLiturgyMusicComposer', data.childrenLiturgyMusicComposer);
   sv('childrenLiturgyLeader', data.childrenLiturgyLeader);
@@ -1759,6 +1779,45 @@ function populateForm(data) {
   window._attachmentRefs = Array.isArray(data.attachmentRefs) ? data.attachmentRefs.slice() : [];
   renderAttachmentRefList();
   updateSeasonUI();
+  // After loading a saved draft, force the liturgical season to track the
+  // saved date.  The date is the source of truth — if a draft was saved
+  // with a stale or incorrect season, loading it should fix the field
+  // automatically.  This runs async; it does NOT clobber the user's
+  // saved seasonal sub-settings (Gloria, creed, settings names) because
+  // we only call onSeasonChange() if the season selector value actually
+  // changes, which preserves manual overrides.
+  if (data.liturgicalDate) {
+    reconcileSeasonAndFeastFromDate({ feastFillIfEmpty: true });
+  }
+}
+
+// Re-derive the liturgical season + feast name from the current date and
+// apply them.  Used both when the user changes the date and when loading
+// a saved draft.  By default the feast name is filled only when empty,
+// matching the date-change behavior.
+async function reconcileSeasonAndFeastFromDate(opts) {
+  const date = v('liturgicalDate');
+  if (!date) return;
+  let info = null;
+  try {
+    const r = await fetch('/api/liturgical-info?date=' + encodeURIComponent(date));
+    if (r.ok) info = await r.json();
+  } catch (e) { /* network blip — leave fields alone */ }
+  if (!info) return;
+  const seasonSel = document.getElementById('liturgicalSeason');
+  if (info.liturgicalSeason && seasonSel && seasonSel.value !== info.liturgicalSeason) {
+    seasonSel.value = info.liturgicalSeason;
+    // Don't run onSeasonChange here — we don't want to overwrite the
+    // user's saved seasonal sub-settings on draft load.  The season
+    // selector itself reflects the date; the rest is preserved.
+    updateSeasonUI();
+  }
+  if (opts && opts.feastFillIfEmpty) {
+    const feastEl = document.getElementById('feastName');
+    if (info.feastName && feastEl && !feastEl.value.trim()) {
+      feastEl.value = info.feastName;
+    }
+  }
 }
 
 // --- Season auto-rules ---
@@ -1837,6 +1896,45 @@ function onChildrenLiturgyToggle() {
   const cb = document.getElementById('childrenLiturgyEnabled');
   if (cb) cb.dataset.userSet = '1';
   updateChildrenLiturgyAutoNote(true);
+}
+
+// Collect every checked "Mass Time" box plus the free-form "Other"
+// list, deduped, in the order checkbox-first then custom entries.
+function collectChildrenLiturgyTimes() {
+  const out = [];
+  const seen = new Set();
+  document.querySelectorAll('.cl-time:checked').forEach(cb => {
+    const v = (cb.value || '').trim();
+    if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+  });
+  const other = (document.getElementById('childrenLiturgyOtherTimes') || {}).value || '';
+  other.split(',').map(s => s.trim()).filter(Boolean).forEach(v => {
+    if (!seen.has(v)) { seen.add(v); out.push(v); }
+  });
+  return out;
+}
+
+// Tick the right "Mass Time" boxes for an array of labels; anything not in
+// the standard list goes into the "Other" text input.
+function applyChildrenLiturgyTimes(times) {
+  const standard = new Set();
+  document.querySelectorAll('.cl-time').forEach(cb => {
+    standard.add(cb.value);
+    cb.checked = false;
+  });
+  const others = [];
+  (times || []).forEach(t => {
+    const v = String(t || '').trim();
+    if (!v) return;
+    if (standard.has(v)) {
+      const cb = document.querySelector('.cl-time[value="' + v.replace(/"/g, '\\"') + '"]');
+      if (cb) cb.checked = true;
+    } else {
+      others.push(v);
+    }
+  });
+  const otherEl = document.getElementById('childrenLiturgyOtherTimes');
+  if (otherEl) otherEl.value = others.join(', ');
 }
 
 // --- Liturgical date / season auto-detection ---
@@ -1924,11 +2022,20 @@ async function onLiturgicalDateChange() {
   } catch (e) { /* fall back to local season detection */ }
   const detected = (info && info.liturgicalSeason) || detectLiturgicalSeason(date);
   const seasonSel = document.getElementById('liturgicalSeason');
-  if (detected && seasonSel && seasonSel.value !== detected) {
-    seasonSel.value = detected;
-    await onSeasonChange(); // applies seasonal defaults + cascades to children's liturgy
-  } else {
-    applyChildrenLiturgyAutoDefault();
+  // Liturgical season ALWAYS tracks the date — even if the field already
+  // has a value.  We still only run onSeasonChange (which resets seasonal
+  // defaults) when the season actually changes, so manual seasonal
+  // overrides aren't clobbered on every date tweak.
+  if (detected && seasonSel) {
+    if (seasonSel.value !== detected) {
+      seasonSel.value = detected;
+      await onSeasonChange(); // applies seasonal defaults + cascades to children's liturgy
+    } else {
+      // Same season — but make sure the selector is visibly correct and
+      // re-run the children's-liturgy school-calendar check.
+      seasonSel.value = detected;
+      applyChildrenLiturgyAutoDefault();
+    }
   }
   // Fill the feast/Sunday name only when the field is empty.  This way a
   // manually-typed override is preserved, but starting fresh (or clearing the

@@ -515,5 +515,99 @@ Feature summary:
 - Branch: `claude/add-file-uploads-yxr13`
 - Pushed: yes (origin matches)
 - Working tree: clean
-- Tests: 168/168 passing
+- Tests: 170/170 passing
+
+### Session 5 follow-up commits (April 30, 2026, same branch)
+
+After the initial session shipped, two follow-up issues surfaced and
+were fixed in `claude/add-file-uploads-yxr13`:
+
+1. **Readings panel layout collapse.** The 3-column toolbar grid
+   (translation / button / status) overflowed the 380px sidebar and
+   crushed every reading input below it into a 1-character vertical
+   strip on the right edge. Restructured as a 2-column grid
+   (`minmax(0, 1fr) auto`) for translation + button, with the status
+   message on its own line below. Regression test in
+   `attachments-and-calendar.test.js` asserts the new markup.
+
+2. **Liturgical season didn't track the date when loading a saved
+   draft.** The date-change handler already auto-detected the season,
+   but loading a draft via `populateForm()` set the season directly
+   from saved data and never reconciled it against the date.
+   Introduced `reconcileSeasonAndFeastFromDate({ feastFillIfEmpty })`,
+   which fetches `/api/liturgical-info` and forces the season selector
+   to match the date — without clobbering the saved seasonal
+   sub-settings (Gloria, creed, music settings) because we only run
+   `onSeasonChange()` when the season actually changes. Called from
+   both `populateForm` (after a draft loads) and the date-change
+   handler. Regression test asserts the function is wired up.
+
+Manual smoke test against a fresh server boot:
+- All six default users (`jd`, `morris`, `vincent`, `frlarry`, `kari`,
+  `donna`) authenticate.
+- 20 calendar dates from Christmas 2025 through Immaculate Conception
+  2026 return the correct feast name + season (Christmas, Mary Mother
+  of God, Epiphany, Ash Wednesday, every Sunday of Lent, Triduum,
+  Easter, Divine Mercy, Pentecost, Trinity, Corpus Christi,
+  Assumption, All Saints, Christ the King, First Sunday of Advent,
+  Immaculate Conception).
+- Attachments full CRUD round-trip (upload → list → download →
+  update → delete) with disk file removed.
+- Preview rendering with parish default `defaultSanctusLanguage=latin`
+  + per-aid override `holyHolyLanguage=english` correctly produces
+  English Sanctus (per-aid > parish precedence verified).
+
+### Session 5 follow-up #3: Children's Liturgy at multiple Mass times
+
+**User feedback:** "childrens liturgy can happen at any masses... not
+just one."  The original implementation locked the worship aid to a
+single Mass time (free-text input).
+
+**Shipped:**
+
+- Schema gains `childrenLiturgyMassTimes: string[]`. The legacy
+  single-string `childrenLiturgyMassTime` field stays in the schema
+  for back-compat and is migrated on draft load.
+- Editor replaces the single text input with three checkboxes for the
+  parish's standard times (Sat 5:00 PM, Sun 9:00 AM, Sun 11:00 AM)
+  plus a free-form "Other Mass times, comma-separated" field for
+  ad-hoc entries (e.g. holy day vigil, daily Mass).
+- `collectChildrenLiturgyTimes()` walks the checkboxes + the "Other"
+  string into a deduped array on save.
+- `applyChildrenLiturgyTimes(times)` ticks the right boxes and routes
+  unknown labels into the "Other" field on draft load.  Migration:
+  if a saved draft only carries `childrenLiturgyMassTime` (singular),
+  it's wrapped into a one-element array before applying.
+- Template renderer joins all selected times with " & "
+  (e.g. "Sat 5:00 PM & Sun 9:00 AM & Sun 11:00 AM").  Falls back to
+  the legacy single string and finally "Sun 9:00 AM" if nothing
+  configured.
+- PDF generator follows the same fallback chain.
+
+**Tests added (7 new):**
+
+- Single-time render hits the right block (and uses a precise regex
+  so it doesn't false-match the cover-page Mass times).
+- All-three-Masses render contains every label.
+- Back-compat: legacy single-string field still renders.
+- Empty array falls back to default.
+- `childrenLiturgyEnabled=false` suppresses the block entirely.
+- Editor UI exposes the checkboxes + "Other" input.
+- Editor exposes `collectChildrenLiturgyTimes` and
+  `applyChildrenLiturgyTimes` helper functions.
+
+End-to-end smoke run:
+
+```
+POST /api/preview {childrenLiturgyMassTimes: ["Sat 5:00 PM","Sun 9:00 AM","Sun 11:00 AM"]}
+  → "Children's Liturgy of the Word — Sat 5:00 PM & Sun 9:00 AM & Sun 11:00 AM"
+POST /api/preview {childrenLiturgyMassTimes: ["Sat 5:00 PM"]}
+  → "Children's Liturgy of the Word — Sat 5:00 PM"
+POST /api/preview {childrenLiturgyMassTime: "Sun 9:00 AM"}      # legacy field
+  → "Children's Liturgy of the Word — Sun 9:00 AM"
+POST /api/generate-pdf {childrenLiturgyMassTimes: ["Sat 5:00 PM","Sun 9:00 AM"]}
+  → success, both labels printed in the booklet box
+```
+
+**Tests now: 177/177 passing.**
 

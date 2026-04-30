@@ -84,7 +84,13 @@ const inputSchema = {
 
     // Children's Liturgy — PRD Section 4.1
     childrenLiturgyEnabled: { type: 'boolean' },
-    childrenLiturgyMassTime: { type: 'string' },
+    // Multiple-mass-time list. Children's Liturgy can run at any subset
+    // of the parish's Masses (not just one). Each entry is a free-text
+    // label ("Sat 5:00 PM", "Sun 9:00 AM", etc.) so it survives a parish
+    // changing its Mass schedule. The legacy single-string field below
+    // is preserved for old saved drafts and migrated on load.
+    childrenLiturgyMassTimes: { type: 'array', items: { type: 'string' } },
+    childrenLiturgyMassTime: { type: 'string' },  // legacy, back-compat
     childrenLiturgyMusic: { type: 'string' },
     childrenLiturgyMusicComposer: { type: 'string' },
     childrenLiturgyLeader: { type: 'string' },

@@ -67,7 +67,7 @@ A structured form with clearly labeled sections for all variable content. Organi
   - Postlude include / omit
   - Advent Wreath lighting include / omit
   - Lenten acclamation choice (when in Lent)
-- **Children's Liturgy Block** — Toggle on/off; if on: Mass time (defaults to Sun 9AM), **Leader (optional)**, music title + composer, **Notes** (printed under the entry)
+- **Children's Liturgy Block** — Toggle on/off; if on: **Mass times (checkboxes — any subset of the parish's Masses, plus a free-form "Other" comma list, since Children's Liturgy can run at any number of Masses)**, **Leader (optional)**, music title + composer, **Notes** (printed under the entry)
 - **Announcements** — Free text area (optional)
 - **Special Notes** — Free text for any one-off variations (optional)
 
@@ -151,9 +151,9 @@ Based on analysis of existing worship aids (952×1260px JPEG renders = 5.5"×8.5
 
 ### 5.7 Date-Driven Liturgical Calendar
 - A built-in liturgical calendar (`src/liturgical-calendar.js`, US General Roman Calendar) computes both the season and the feast / Sunday name for any date.
-- On every date change, the editor calls `/api/liturgical-info?date=YYYY-MM-DD` and:
-  - Auto-selects the season unless the user already picked a different one.
-  - Fills the **Feast / Sunday Name** field — but only if it is currently empty. A typed override is preserved; clearing the field then changing the date re-fills it.
+- On every date change AND on saved-draft load, the editor calls `/api/liturgical-info?date=YYYY-MM-DD` and:
+  - **Always sets the season to match the date — even if the field already has a value.** The selector is the source of truth for "what season is this aid in," but the date determines that season; a stale or wrong season on a saved draft is auto-corrected on load. Manual overrides of the *seasonal sub-settings* (Gloria, creed, Holy Holy setting, etc.) are preserved because the season-defaults cascade only fires when the season actually changes.
+  - Fills the **Feast / Sunday Name** field only if it is currently empty. A typed override is preserved; clearing the field then changing the date re-fills it.
 - Coverage: Sundays of Advent / Lent / Easter (numbered), Triduum, Easter Sunday, Divine Mercy, Ascension, Pentecost, Trinity, Corpus Christi, Sacred Heart, Christ the King, Holy Family, Baptism of the Lord, Epiphany, Nicene fixed feasts (Annunciation, Assumption, All Saints, Immaculate Conception, etc.), and numbered Sundays in Ordinary Time anchored so Christ the King = 34th Sunday.
 
 ### 5.8 Sanctus Language Toggle
@@ -225,7 +225,8 @@ worship_aid {
   music_sun_11am: MusicBlock
   
   children_liturgy_enabled: boolean
-  children_liturgy_mass_time: string
+  children_liturgy_mass_times: [string]              // NEW — list of Mass times that will host CLOTW
+  children_liturgy_mass_time: string                 // legacy single-string field, still accepted
   children_liturgy_music: string
   children_liturgy_music_composer: string
   children_liturgy_leader: string (nullable)         // NEW
