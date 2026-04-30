@@ -541,6 +541,9 @@ function renderBookletHtml(data, options = {}) {
   <div class="sub-heading">Communion Hymn</div>
   ${renderMusicSection(d, 'communionHymn', 'communionHymnComposer', 'Communion')}
 
+  <div class="sub-heading">Choral Anthem</div>
+  ${renderMusicSection(d, 'choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem')}
+
   <div class="page-number">6</div>
 </div>
 
@@ -550,9 +553,6 @@ function renderBookletHtml(data, options = {}) {
 
   <div class="sub-heading">Hymn of Thanksgiving</div>
   ${renderMusicSection(d, 'hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving')}
-
-  <div class="sub-heading">Choral Anthem</div>
-  ${renderMusicSection(d, 'choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem')}
 
   <p class="rubric">${RUBRICS.stand}</p>
 

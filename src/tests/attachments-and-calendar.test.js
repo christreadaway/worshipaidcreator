@@ -327,45 +327,66 @@ describe('Parish settings on cover', () => {
   });
 });
 
-describe('Music section restructure: shared hymns vs per-Mass', () => {
-  it('editor exposes shared hymn inputs', async () => {
+describe('Music section restructure: shared everything except anthems', () => {
+  it('Shared Music section exposes prelude, processional, kyrie, communion, thanksgiving, postlude inputs', async () => {
     const html = (await fetch('/')).text();
+    assert.ok(/id="shared_organPrelude"/.test(html));
     assert.ok(/id="shared_processional"/.test(html));
+    assert.ok(/id="shared_kyrie"/.test(html));
     assert.ok(/id="shared_communion"/.test(html));
     assert.ok(/id="shared_thanksgiving"/.test(html));
-    assert.ok(/id="shared_processionalComposer"/.test(html));
-    assert.ok(html.includes('Shared Hymns (sung by the assembly)'));
+    assert.ok(/id="shared_postlude"/.test(html));
+    assert.ok(html.includes('Shared Music (same at every Mass)'));
   });
 
-  it('per-Mass music blocks no longer contain hymn inputs', async () => {
+  it('per-Mass music blocks contain ONLY offertory + choral anthems', async () => {
     const html = (await fetch('/')).text();
-    // No per-Mass id="sat5pm_processional", "sun9am_communion", etc.
-    assert.ok(!/id="sat5pm_processional"/.test(html), 'no per-Mass processional hymn');
-    assert.ok(!/id="sun9am_communion"/.test(html), 'no per-Mass communion hymn');
-    assert.ok(!/id="sun11am_thanksgiving"/.test(html), 'no per-Mass thanksgiving hymn');
-  });
-
-  it('per-Mass music blocks still contain non-hymn slots', async () => {
-    const html = (await fetch('/')).text();
-    // Anthem + organ + kyrie are per-Mass.
-    assert.ok(/id="sat5pm_organPrelude"/.test(html));
-    assert.ok(/id="sat5pm_kyrie"/.test(html));
+    // The two slots that may differ per Mass:
     assert.ok(/id="sat5pm_offertory"/.test(html));
-    assert.ok(/id="sat5pm_postlude"/.test(html));
     assert.ok(/id="sat5pm_choral"/.test(html));
     assert.ok(/id="sun9am_offertory"/.test(html));
     assert.ok(/id="sun11am_choral"/.test(html));
+    // Everything else has been moved to Shared Music.
+    assert.ok(!/id="sat5pm_organPrelude"/.test(html), 'no per-Mass prelude');
+    assert.ok(!/id="sat5pm_kyrie"/.test(html),        'no per-Mass kyrie');
+    assert.ok(!/id="sat5pm_postlude"/.test(html),     'no per-Mass postlude');
+    assert.ok(!/id="sat5pm_processional"/.test(html), 'no per-Mass processional hymn');
+    assert.ok(!/id="sun9am_communion"/.test(html),    'no per-Mass communion hymn');
+    assert.ok(!/id="sun11am_thanksgiving"/.test(html),'no per-Mass thanksgiving hymn');
   });
 
-  it('hymn-search autocomplete is wired to the shared hymn fields only', async () => {
+  it('hymn-search typeahead is wired to shared hymn fields (not the organ/kyrie inputs)', async () => {
     const html = (await fetch('/')).text();
-    // shared_* inputs carry data-hymn-search; per-Mass non-hymn inputs do not.
     assert.ok(/id="shared_processional"[^>]*data-hymn-search="title"/.test(html));
     assert.ok(/id="shared_communion"[^>]*data-hymn-search="title"/.test(html));
     assert.ok(/id="shared_thanksgiving"[^>]*data-hymn-search="title"/.test(html));
-    // None of the per-Mass non-hymn inputs should have data-hymn-search.
-    const perMassWithHymn = html.match(/id="(?:sat5pm|sun9am|sun11am)_(?:organPrelude|kyrie|offertory|postlude|choral)"[^>]*data-hymn-search/);
-    assert.equal(perMassWithHymn, null, 'per-Mass non-hymn inputs should not search the hymn library');
+    // Organ + kyrie are not hymns and should not pull from the hymn library.
+    assert.ok(!/id="shared_organPrelude"[^>]*data-hymn-search/.test(html));
+    assert.ok(!/id="shared_kyrie"[^>]*data-hymn-search/.test(html));
+    assert.ok(!/id="shared_postlude"[^>]*data-hymn-search/.test(html));
+    // No per-Mass input pulls from the hymn library.
+    const perMassWithHymn = html.match(/id="(?:sat5pm|sun9am|sun11am)_(?:offertory|choral)"[^>]*data-hymn-search/);
+    assert.equal(perMassWithHymn, null);
+  });
+
+  it('Choral Anthem renders on page 6 (Communion Rite), not page 7', () => {
+    const data = {
+      feastName: 'Test', liturgicalDate: '2026-04-05', liturgicalSeason: 'easter',
+      seasonalSettings: {},
+      readings: {},
+      musicSat5pm:  { choralAnthemConcluding: 'O Sacrum Convivium', choralAnthemConcludingComposer: 'Thomas Tallis' },
+      musicSun9am:  { choralAnthemConcluding: 'O Sacrum Convivium', choralAnthemConcludingComposer: 'Thomas Tallis' },
+      musicSun11am: { choralAnthemConcluding: 'O Sacrum Convivium', choralAnthemConcludingComposer: 'Thomas Tallis' }
+    };
+    const { html } = renderBookletHtml(data);
+    // Find the page-6 block; it should contain "Choral Anthem".
+    const page6 = html.match(/id="page-6"[\s\S]*?<\/div>\s*<!-- PAGE 7/);
+    assert.ok(page6, 'page-6 region should be present');
+    assert.ok(/Choral Anthem/.test(page6[0]), 'Choral Anthem should be on page 6');
+    // Page 7 (Concluding Rites) should NOT mention "Choral Anthem".
+    const page7 = html.match(/id="page-7"[\s\S]*?<\/div>\s*<!-- PAGE 8/);
+    assert.ok(page7);
+    assert.ok(!/Choral Anthem/.test(page7[0]), 'Choral Anthem should NOT be on page 7');
   });
 });
 

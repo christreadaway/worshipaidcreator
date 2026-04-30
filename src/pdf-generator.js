@@ -532,6 +532,9 @@ class WorshipAidPdfGenerator {
     this.subHeading('Communion Hymn');
     this.musicLine('communionHymn', 'communionHymnComposer', 'Communion');
 
+    this.subHeading('Choral Anthem');
+    this.musicLine('choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem');
+
     this.pageNumber(6);
   }
 
@@ -541,9 +544,6 @@ class WorshipAidPdfGenerator {
 
     this.subHeading('Hymn of Thanksgiving');
     this.musicLine('hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving');
-
-    this.subHeading('Choral Anthem');
-    this.musicLine('choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem');
 
     this.rubric(RUBRICS.stand);
 
