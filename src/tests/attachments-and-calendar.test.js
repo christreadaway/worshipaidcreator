@@ -327,6 +327,136 @@ describe('Parish settings on cover', () => {
   });
 });
 
+describe('Music section restructure: shared hymns vs per-Mass', () => {
+  it('editor exposes shared hymn inputs', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(/id="shared_processional"/.test(html));
+    assert.ok(/id="shared_communion"/.test(html));
+    assert.ok(/id="shared_thanksgiving"/.test(html));
+    assert.ok(/id="shared_processionalComposer"/.test(html));
+    assert.ok(html.includes('Shared Hymns (sung by the assembly)'));
+  });
+
+  it('per-Mass music blocks no longer contain hymn inputs', async () => {
+    const html = (await fetch('/')).text();
+    // No per-Mass id="sat5pm_processional", "sun9am_communion", etc.
+    assert.ok(!/id="sat5pm_processional"/.test(html), 'no per-Mass processional hymn');
+    assert.ok(!/id="sun9am_communion"/.test(html), 'no per-Mass communion hymn');
+    assert.ok(!/id="sun11am_thanksgiving"/.test(html), 'no per-Mass thanksgiving hymn');
+  });
+
+  it('per-Mass music blocks still contain non-hymn slots', async () => {
+    const html = (await fetch('/')).text();
+    // Anthem + organ + kyrie are per-Mass.
+    assert.ok(/id="sat5pm_organPrelude"/.test(html));
+    assert.ok(/id="sat5pm_kyrie"/.test(html));
+    assert.ok(/id="sat5pm_offertory"/.test(html));
+    assert.ok(/id="sat5pm_postlude"/.test(html));
+    assert.ok(/id="sat5pm_choral"/.test(html));
+    assert.ok(/id="sun9am_offertory"/.test(html));
+    assert.ok(/id="sun11am_choral"/.test(html));
+  });
+
+  it('hymn-search autocomplete is wired to the shared hymn fields only', async () => {
+    const html = (await fetch('/')).text();
+    // shared_* inputs carry data-hymn-search; per-Mass non-hymn inputs do not.
+    assert.ok(/id="shared_processional"[^>]*data-hymn-search="title"/.test(html));
+    assert.ok(/id="shared_communion"[^>]*data-hymn-search="title"/.test(html));
+    assert.ok(/id="shared_thanksgiving"[^>]*data-hymn-search="title"/.test(html));
+    // None of the per-Mass non-hymn inputs should have data-hymn-search.
+    const perMassWithHymn = html.match(/id="(?:sat5pm|sun9am|sun11am)_(?:organPrelude|kyrie|offertory|postlude|choral)"[^>]*data-hymn-search/);
+    assert.equal(perMassWithHymn, null, 'per-Mass non-hymn inputs should not search the hymn library');
+  });
+});
+
+describe('Seasonal UI: Advent Wreath visibility', () => {
+  it('Advent Wreath checkbox row starts hidden', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(/id="adventWreathRow"[^>]*style="display:none;"/.test(html),
+      'adventWreathRow should default to display:none');
+  });
+
+  it('updateSeasonUI toggles wreath row based on season', async () => {
+    const html = (await fetch('/')).text();
+    // Function flips the row visibility based on the season selector.
+    assert.ok(/wreathRow\.style\.display\s*=\s*\(season === 'advent'\)/.test(html),
+      'updateSeasonUI should set display based on season===advent');
+  });
+});
+
+describe('Readings: button rename + dual-source note', () => {
+  it('button is labeled "Refresh readings" not "Fetch from USCCB"', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(/<button[^>]*id="fetchReadingsBtn"[^>]*>Refresh readings<\/button>/.test(html));
+    assert.ok(!/Fetch from USCCB</.test(html), 'old "Fetch from USCCB" label should be gone');
+  });
+
+  it('section note describes both sources (USCCB for NABRE, bible-api for others)', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(/bible\.usccb\.org/.test(html));
+    assert.ok(/bible-api\.com/.test(html));
+  });
+
+  it('changing the translation triggers a re-fetch', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(/id="bibleTranslation"[^>]*onchange="fetchReadingsFromUsccb\(\)"/.test(html));
+  });
+});
+
+describe("Children's Liturgy auto-rule (Christmas Day + Easter Sunday + summer)", () => {
+  // The function lives client-side; verify the served SPA carries the
+  // updated logic (no whole-Easter-season suppression, explicit Easter
+  // Sunday + Christmas Day suppression).
+  it('uses computed Easter Sunday, not the whole Easter season', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(/Off — Easter Sunday/.test(html), 'Easter Sunday-only off-rule present');
+    assert.ok(/computeEaster\(year\)/.test(html), 'computes Easter from the date');
+    // No more whole-Easter-season blanket-off rule.
+    assert.ok(!/Off during Easter season/.test(html));
+    // Whole-Christmas-season blanket-off rule is also gone (the school
+    // break + Christmas Day rules cover the actual no-CLOTW days).
+    assert.ok(!/Off during Christmas season/.test(html));
+  });
+
+  it('keeps the summer-break and school-Christmas-break rules', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(/Off — school summer break/.test(html));
+    assert.ok(/Off — school Christmas break/.test(html));
+  });
+});
+
+describe('Cover suggestions: Catholic-friendly art sources', () => {
+  it('returns Wikimedia, Web Gallery of Art, Met OA, Vatican links', async () => {
+    const res = await fetch('/api/cover-suggestions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ feastName: 'Easter Sunday', liturgicalSeason: 'easter', tone: 'joyful' })
+    });
+    assert.equal(res.status, 200);
+    const data = res.json();
+    const link = data.searchLinks[0];
+    assert.ok(link.wikimedia.startsWith('https://commons.wikimedia.org/'));
+    assert.ok(link.wga.startsWith('https://www.wga.hu/'));
+    assert.ok(link.met.includes('metmuseum.org'));
+    assert.ok(link.met.includes('showOnly=openAccess'));
+    assert.ok(link.vatican.includes('museivaticani.va'));
+    // Old generic stock sites are gone.
+    assert.equal(link.unsplash, undefined);
+    assert.equal(link.pexels,   undefined);
+  });
+
+  it('SPA renders the Catholic-friendly source links', async () => {
+    const html = (await fetch('/')).text();
+    // Old labels are gone.
+    assert.ok(!/>Unsplash</.test(html));
+    assert.ok(!/>Pexels</.test(html));
+    // New labels are present.
+    assert.ok(/>Wikimedia Commons</.test(html));
+    assert.ok(/>Web Gallery of Art</.test(html));
+    assert.ok(/>The Met \(Open Access\)</.test(html));
+    assert.ok(/>Vatican Museums</.test(html));
+  });
+});
+
 describe("Children's Liturgy: multi-Mass-time support", () => {
   const baseData = {
     feastName: 'Sunday Test', liturgicalDate: '2026-03-01', liturgicalSeason: 'lent',

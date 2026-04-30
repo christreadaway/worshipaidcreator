@@ -493,11 +493,21 @@ app.post('/api/cover-suggestions', (req, res) => {
     liturgicalSeason + ' liturgy',
     baseImagery[0]
   ].filter(Boolean).map(s => s.trim());
+  // Generic stock-photo sites (Unsplash, Pexels) returned worthless results
+  // for liturgical subjects.  Point users at sources with substantial sacred
+  // / Catholic art holdings instead — all permit free reuse for parish
+  // bulletins and worship aids:
+  //   * Wikimedia Commons      — public-domain icons, paintings, architecture
+  //   * Web Gallery of Art     — Renaissance / Baroque religious painting
+  //   * The Met (open access)  — open-access images, religious painting
+  //     and sculpture from across the world
+  //   * Vatican Museums        — search browser (no direct image API)
   const searchLinks = searchTerms.map(q => ({
     query: q,
-    unsplash: 'https://unsplash.com/s/photos/' + encodeURIComponent(q),
-    pexels:   'https://www.pexels.com/search/' + encodeURIComponent(q),
-    wikimedia: 'https://commons.wikimedia.org/w/index.php?search=' + encodeURIComponent(q) + '&title=Special:MediaSearch&go=Go&type=image'
+    wikimedia: 'https://commons.wikimedia.org/w/index.php?search=' + encodeURIComponent(q) + '&title=Special:MediaSearch&go=Go&type=image',
+    wga:       'https://www.wga.hu/cgi-bin/search.cgi?Search&Author=&Title=' + encodeURIComponent(q) + '&Comment=&Time=Any&School=Any&Form=Any&Type=Any&Technique=&Location=',
+    met:       'https://www.metmuseum.org/art/collection/search?searchField=All&showOnly=openAccess&q=' + encodeURIComponent(q),
+    vatican:   'https://www.museivaticani.va/content/museivaticani/en/search.html?q=' + encodeURIComponent(q)
   }));
   res.json({ subject, tone, style, concepts, searchLinks });
 });
@@ -1083,7 +1093,7 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
         <div class="fg"><label>Lamb of God Setting</label><input type="text" id="lambOfGodSetting"></div>
         <div class="fg"><label>Penitential Act</label><select id="penitentialAct"><option value="confiteor">Confiteor (I confess)</option><option value="kyrie_only">Kyrie Only</option></select></div>
         <div class="fg-check"><input type="checkbox" id="includePostlude"><label for="includePostlude">Include Organ Postlude</label></div>
-        <div class="fg-check"><input type="checkbox" id="adventWreath"><label for="adventWreath">Lighting of the Advent Wreath</label></div>
+        <div class="fg-check" id="adventWreathRow" style="display:none;"><input type="checkbox" id="adventWreath"><label for="adventWreath">Lighting of the Advent Wreath</label></div>
         <div class="fg" id="lentenAcclamationGroup" style="display:none;">
           <label>Lenten Gospel Acclamation</label>
           <select id="lentenAcclamation">
@@ -1098,15 +1108,15 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
     <div class="form-section" id="section-readings">
       <div class="form-section-hdr" onclick="toggle(this)">Readings <span>&#9660;</span></div>
       <div class="form-section-body">
-        <p class="section-lock">Auto-pulled from <strong>bible.usccb.org</strong> the moment a date is set. Switch translations or click <em>Fetch from USCCB</em> to re-fetch. All fields are editable.</p>
+        <p class="section-lock">Auto-fetched the moment a date is set — NABRE comes from <strong>bible.usccb.org</strong> (the U.S. Lectionary) and other translations come from <strong>bible-api.com</strong> using the same citations. Switch translations to re-fetch in that translation. Use the button to refresh manually. All fields are editable.</p>
         <div class="readings-toolbar">
           <div class="fg">
             <label>Bible Translation</label>
-            <select id="bibleTranslation"></select>
+            <select id="bibleTranslation" onchange="fetchReadingsFromUsccb()"></select>
           </div>
           <div class="fg">
             <label>&nbsp;</label>
-            <button type="button" class="btn btn-outline btn-sm" id="fetchReadingsBtn" onclick="fetchReadingsFromUsccb()">Fetch from USCCB</button>
+            <button type="button" class="btn btn-outline btn-sm" id="fetchReadingsBtn" onclick="fetchReadingsFromUsccb()">Refresh readings</button>
           </div>
         </div>
         <p class="readings-status" id="fetchReadingsStatus"></p>
@@ -1125,10 +1135,20 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
       </div>
     </div>
 
+    <!-- SHARED HYMNS — sung by the assembly, identical at every Mass -->
+    <div class="form-section" id="section-shared-hymns">
+      <div class="form-section-hdr" onclick="toggle(this)">Shared Hymns (sung by the assembly) <span>&#9660;</span></div>
+      <div class="form-section-body">
+        <p class="section-lock">Hymns are sung by the whole assembly, so they're identical at every Mass — enter once here.  Per-Mass differences (organ pieces, the Kyrie setting, anthems) live in the three blocks below.</p>
+        ${sharedHymnFields()}
+      </div>
+    </div>
+
     <!-- MUSIC: SAT 5PM -->
     <div class="form-section" id="section-music-sat5pm">
       <div class="form-section-hdr" onclick="toggle(this)">Music — Sat 5:00 PM <span>&#9660;</span></div>
       <div class="form-section-body" id="music-sat5pm-body">
+        <p class="section-lock">Organ pieces, Kyrie setting, and anthems may differ at this Mass — fill in only what's specific to it.</p>
         ${musicBlockFields('sat5pm')}
       </div>
     </div>
@@ -1137,6 +1157,7 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
     <div class="form-section" id="section-music-sun9am">
       <div class="form-section-hdr" onclick="toggle(this)">Music — Sun 9:00 AM <span>&#9660;</span></div>
       <div class="form-section-body" id="music-sun9am-body">
+        <p class="section-lock">Organ pieces, Kyrie setting, and anthems may differ at this Mass — fill in only what's specific to it.</p>
         ${musicBlockFields('sun9am')}
       </div>
     </div>
@@ -1145,6 +1166,7 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
     <div class="form-section" id="section-music-sun11am">
       <div class="form-section-hdr" onclick="toggle(this)">Music — Sun 11:00 AM <span>&#9660;</span></div>
       <div class="form-section-body" id="music-sun11am-body">
+        <p class="section-lock">Organ pieces, Kyrie setting, and anthems may differ at this Mass — fill in only what's specific to it.</p>
         ${musicBlockFields('sun11am')}
       </div>
     </div>
@@ -1654,19 +1676,29 @@ function sv(id, val) { const el = document.getElementById(id); if (el) el.value 
 function sc(id, val) { const el = document.getElementById(id); if (el) el.checked = !!val; }
 
 function buildMusicBlock(prefix) {
+  // Hymns (processional, communion, thanksgiving) are sung by the assembly
+  // and shared across every Mass — they're entered ONCE in the Shared Hymns
+  // section and copied into every per-Mass block here, so the renderer's
+  // consolidation logic still produces a single line per hymn slot.
+  const sharedProcTitle    = v('shared_processional');
+  const sharedProcComposer = v('shared_processionalComposer');
+  const sharedCommTitle    = v('shared_communion');
+  const sharedCommComposer = v('shared_communionComposer');
+  const sharedThanksTitle  = v('shared_thanksgiving');
+  const sharedThanksComposer = v('shared_thanksgivingComposer');
   return {
     organPrelude: v(prefix + '_organPrelude'),
     organPreludeComposer: v(prefix + '_organPreludeComposer'),
-    processionalOrEntrance: v(prefix + '_processional'),
-    processionalOrEntranceComposer: v(prefix + '_processionalComposer'),
+    processionalOrEntrance: sharedProcTitle,
+    processionalOrEntranceComposer: sharedProcComposer,
     kyrieSetting: v(prefix + '_kyrie'),
     kyrieComposer: v(prefix + '_kyrieComposer'),
     offertoryAnthem: v(prefix + '_offertory'),
     offertoryAnthemComposer: v(prefix + '_offertoryComposer'),
-    communionHymn: v(prefix + '_communion'),
-    communionHymnComposer: v(prefix + '_communionComposer'),
-    hymnOfThanksgiving: v(prefix + '_thanksgiving'),
-    hymnOfThanksgivingComposer: v(prefix + '_thanksgivingComposer'),
+    communionHymn: sharedCommTitle,
+    communionHymnComposer: sharedCommComposer,
+    hymnOfThanksgiving: sharedThanksTitle,
+    hymnOfThanksgivingComposer: sharedThanksComposer,
     organPostlude: v(prefix + '_postlude'),
     organPostludeComposer: v(prefix + '_postludeComposer'),
     choralAnthemConcluding: v(prefix + '_choral'),
@@ -1676,22 +1708,37 @@ function buildMusicBlock(prefix) {
 
 function populateMusicBlock(prefix, block) {
   if (!block) return;
+  // Per-Mass non-hymn slots only.  Hymn fields are populated separately
+  // via populateSharedHymns() so the value lives in one place in the UI.
   sv(prefix + '_organPrelude', block.organPrelude);
   sv(prefix + '_organPreludeComposer', block.organPreludeComposer);
-  sv(prefix + '_processional', block.processionalOrEntrance);
-  sv(prefix + '_processionalComposer', block.processionalOrEntranceComposer);
   sv(prefix + '_kyrie', block.kyrieSetting);
   sv(prefix + '_kyrieComposer', block.kyrieComposer);
   sv(prefix + '_offertory', block.offertoryAnthem);
   sv(prefix + '_offertoryComposer', block.offertoryAnthemComposer);
-  sv(prefix + '_communion', block.communionHymn);
-  sv(prefix + '_communionComposer', block.communionHymnComposer);
-  sv(prefix + '_thanksgiving', block.hymnOfThanksgiving);
-  sv(prefix + '_thanksgivingComposer', block.hymnOfThanksgivingComposer);
   sv(prefix + '_postlude', block.organPostlude);
   sv(prefix + '_postludeComposer', block.organPostludeComposer);
   sv(prefix + '_choral', block.choralAnthemConcluding);
   sv(prefix + '_choralComposer', block.choralAnthemConcludingComposer);
+}
+
+// Pull the shared hymn values out of a saved draft.  Prefer Sat 5pm if its
+// hymn fields are filled; fall back to whichever block has a value (legacy
+// drafts may have the same hymn in all blocks).
+function populateSharedHymns(data) {
+  function pickFromBlocks(field) {
+    for (const key of ['musicSat5pm', 'musicSun9am', 'musicSun11am']) {
+      const v = data && data[key] && data[key][field];
+      if (v) return v;
+    }
+    return '';
+  }
+  sv('shared_processional',         pickFromBlocks('processionalOrEntrance'));
+  sv('shared_processionalComposer', pickFromBlocks('processionalOrEntranceComposer'));
+  sv('shared_communion',            pickFromBlocks('communionHymn'));
+  sv('shared_communionComposer',    pickFromBlocks('communionHymnComposer'));
+  sv('shared_thanksgiving',         pickFromBlocks('hymnOfThanksgiving'));
+  sv('shared_thanksgivingComposer', pickFromBlocks('hymnOfThanksgivingComposer'));
 }
 
 function buildData() {
@@ -1777,6 +1824,7 @@ function populateForm(data) {
   populateMusicBlock('sat5pm', data.musicSat5pm);
   populateMusicBlock('sun9am', data.musicSun9am);
   populateMusicBlock('sun11am', data.musicSun11am);
+  populateSharedHymns(data);
   sc('childrenLiturgyEnabled', data.childrenLiturgyEnabled);
   // If the saved doc carries an explicit value, respect it; otherwise the
   // load is a no-op and auto-defaults will run on date/season change.
@@ -1873,6 +1921,15 @@ function updateSeasonUI() {
   const season = v('liturgicalSeason');
   // Show Lenten acclamation choice only during Lent
   document.getElementById('lentenAcclamationGroup').style.display = (season === 'lent') ? '' : 'none';
+  // Lighting of the Advent Wreath is only meaningful during Advent.
+  const wreathRow = document.getElementById('adventWreathRow');
+  if (wreathRow) {
+    wreathRow.style.display = (season === 'advent') ? '' : 'none';
+    if (season !== 'advent') {
+      const cb = document.getElementById('adventWreath');
+      if (cb) cb.checked = false;
+    }
+  }
 }
 
 // --- Children's Liturgy auto-defaults ---
@@ -1880,16 +1937,33 @@ function updateSeasonUI() {
 // Off during summer (Jun-Aug), Christmas season, and Easter season.
 function suggestChildrenLiturgyDefault(dateStr, season) {
   if (!dateStr) return { enabled: false, reason: 'No date set' };
-  if (season === 'christmas') return { enabled: false, reason: 'Off during Christmas season' };
-  if (season === 'easter')    return { enabled: false, reason: 'Off during Easter season' };
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
   if (!m) return { enabled: false, reason: 'No date set' };
+  const year  = parseInt(m[1], 10);
   const month = parseInt(m[2], 10);
   const day   = parseInt(m[3], 10);
+  // Christmas Day itself: no Children's Liturgy.  (The school-Christmas-break
+  // rule below covers it, but we keep an explicit check for clarity.)
+  if (month === 12 && day === 25) return { enabled: false, reason: 'Off — Christmas Day' };
+  // Easter Sunday itself: no Children's Liturgy.  Other Sundays in the
+  // Easter season DO get it (kids are back from school break by then).
+  const easter = computeEaster(year);
+  if (date_isSameUTC(year, month, day, easter)) {
+    return { enabled: false, reason: 'Off — Easter Sunday' };
+  }
+  // Summer break — kids are out of town / on vacation.
   if (month >= 6 && month <= 8) return { enabled: false, reason: 'Off — school summer break' };
+  // School Christmas break (covers Dec 25 above + the surrounding window).
   if (month === 12 && day >= 22) return { enabled: false, reason: 'Off — school Christmas break' };
   if (month === 1 && day <= 6)   return { enabled: false, reason: 'Off — school Christmas break' };
   return { enabled: true, reason: 'School in session' };
+}
+
+// Compare a calendar y/m/d to a Date object treating both as UTC midnight.
+function date_isSameUTC(y, m, d, dateObj) {
+  return dateObj.getUTCFullYear() === y &&
+         (dateObj.getUTCMonth() + 1) === m &&
+         dateObj.getUTCDate() === d;
 }
 
 function applyChildrenLiturgyAutoDefault(force) {
@@ -2108,9 +2182,10 @@ async function suggestCoverImages() {
     const linkHtml = data.searchLinks.map(s => (
       '<div style="font-size:11px;margin-bottom:3px;">' +
         '<strong>' + esc(s.query) + ':</strong> ' +
-        '<a href="' + s.unsplash + '" target="_blank" rel="noopener">Unsplash</a> &middot; ' +
-        '<a href="' + s.pexels + '" target="_blank" rel="noopener">Pexels</a> &middot; ' +
-        '<a href="' + s.wikimedia + '" target="_blank" rel="noopener">Wikimedia</a>' +
+        '<a href="' + s.wikimedia + '" target="_blank" rel="noopener">Wikimedia Commons</a> &middot; ' +
+        '<a href="' + s.wga + '" target="_blank" rel="noopener">Web Gallery of Art</a> &middot; ' +
+        '<a href="' + s.met + '" target="_blank" rel="noopener">The Met (Open Access)</a> &middot; ' +
+        '<a href="' + s.vatican + '" target="_blank" rel="noopener">Vatican Museums</a>' +
       '</div>'
     )).join('');
     target.innerHTML =
@@ -2986,52 +3061,60 @@ setTimeout(initGoogleSignIn, 500);
 </html>`;
 }
 
-// Helper: generates the per-mass-time music fields HTML.
-//
-// The third tuple entry is the source — 'hymn' wires the hymn-library
-// autocomplete; an attachment-kind string (e.g. 'prelude') wires a quick-pick
-// dropdown sourced from the parish attachments library instead.  Postludes,
-// preludes, anthems, and mass settings are NOT hymns and so don't pull from
-// the hymn catalog.
+// Helper: per-Mass music fields (non-hymn slots only).  Hymns
+// (processional, communion, thanksgiving) are sung by the assembly so they
+// must be the same at every Mass — they live in the shared-hymns section
+// above this, not inside per-Mass blocks.  These slots can legitimately
+// vary per Mass (organist's choice, choir scheduling, ensemble availability),
+// so each Mass keeps its own inputs:
 function musicBlockFields(prefix) {
   const fields = [
     // [titleId, composerId, label, source]
     ['organPrelude',  'organPreludeComposer',  'Organ Prelude',                  'prelude'],
-    ['processional',  'processionalComposer',  'Processional / Entrance',        'hymn'],
     ['kyrie',         'kyrieComposer',         'Lord, Have Mercy (Kyrie)',       'kyrie'],
     ['offertory',     'offertoryComposer',     'Offertory Anthem',               'offertory_anthem'],
-    ['communion',     'communionComposer',     'Communion Hymn',                 'hymn'],
-    ['thanksgiving',  'thanksgivingComposer',  'Hymn of Thanksgiving',           'hymn'],
     ['postlude',      'postludeComposer',      'Organ Postlude',                 'postlude'],
     ['choral',        'choralComposer',        'Choral Anthem (Concluding)',     'choral_anthem']
   ];
   return fields.map(([titleId, compId, label, source]) => {
-    const titleAttrs = source === 'hymn'
-      ? `data-hymn-search="title" data-pair-composer="${prefix}_${compId}"`
-      : `data-pair-composer="${prefix}_${compId}"`;
-    const helper = source === 'hymn'
-      ? ''
-      : `
+    const helper = `
         <div class="attachment-pick-row">
           <select data-attachment-slot="${prefix}_${titleId}" data-attachment-kind="${source}" id="${prefix}_${titleId}_attachmentSelect" onchange="pickAttachmentIntoMusicSlot('${prefix}', '${titleId}', '${source}')">
             <option value="">— pick from library —</option>
           </select>
         </div>`;
-    const sourceLabel = source === 'hymn'
-      ? '<span style="font-size:9px;color:var(--gray);">type to search hymns</span>'
-      : `<span style="font-size:9px;color:var(--gray);">not a hymn — pulls from Music &amp; Document Library</span>`;
     return `
       <div class="fg-row">
         <div class="fg" style="position:relative;">
           <label>${label}</label>
-          <input type="text" id="${prefix}_${titleId}" placeholder="Title" autocomplete="off" ${titleAttrs}>
-          ${sourceLabel}
+          <input type="text" id="${prefix}_${titleId}" placeholder="Title" autocomplete="off" data-pair-composer="${prefix}_${compId}">
+          <span style="font-size:9px;color:var(--gray);">not a hymn — pulls from the Library</span>
           ${helper}
         </div>
         <div class="fg"><label>&nbsp;</label><input type="text" id="${prefix}_${compId}" placeholder="Composer"></div>
       </div>
     `;
   }).join('');
+}
+
+// Helper: shared-hymn fields — sung by the assembly, identical across every
+// Mass.  Wired to the hymn-library typeahead.
+function sharedHymnFields() {
+  const fields = [
+    ['processional', 'processionalComposer', 'Processional / Entrance Hymn'],
+    ['communion',    'communionComposer',    'Communion Hymn'],
+    ['thanksgiving', 'thanksgivingComposer', 'Hymn of Thanksgiving']
+  ];
+  return fields.map(([titleId, compId, label]) => `
+    <div class="fg-row">
+      <div class="fg" style="position:relative;">
+        <label>${label}</label>
+        <input type="text" id="shared_${titleId}" placeholder="Title" autocomplete="off" data-hymn-search="title" data-pair-composer="shared_${compId}">
+        <span style="font-size:9px;color:var(--gray);">type to search the hymn library</span>
+      </div>
+      <div class="fg"><label>&nbsp;</label><input type="text" id="shared_${compId}" placeholder="Composer"></div>
+    </div>
+  `).join('');
 }
 
 module.exports = app;
