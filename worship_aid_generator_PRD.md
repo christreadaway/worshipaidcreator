@@ -1,13 +1,15 @@
 # Worship Aid Generator — Product Requirements Document
 
-**Version:** 1.3
-**Date:** April 30, 2026
+**Version:** 1.4
+**Date:** June 9, 2026
 **Owner:** COO, [Parish Name]
 **Status:** Active development — Publisher-replacement (Microsoft is discontinuing Publisher in fall 2026; this app is the primary substitute).
 
-> See `product_spec.md` for the implementation-level reference and the **Future Build Requirements** section for the prioritized backlog (OneLicense automation, wedding/funeral variants, true imposition, proofing workflow, etc.).
+> See `product_spec.md` for the implementation-level reference and the **Future Build Requirements** section for the prioritized backlog (wedding/funeral variants, true imposition, proofing workflow, etc.).
 
-> **v1.3 (April 30, 2026)** addresses post-pilot feedback: readings reflow lectionary sense-lines into normal paragraphs, hymn library carries hymnal+number with OneLicense search helpers, new Responsorial Psalm setting slot prefilled from the refrain, preview matches the selected booklet trim, stateless HMAC sessions fix the "Not authenticated" upload bug, per-user preferences persist across drafts. 240 tests passing.
+> **v1.4 (June 9, 2026)** — **decision: no programmatic hymn-music integration.** OneLicense has no public API and automating it isn't worth pursuing. The app builds the entire booklet *except* the hymn notation; each congregational hymn slot (processional, communion, thanksgiving) reserves a blank paste area of reasonable size so the user copies the licensed music in by hand after export. Also in v1.4: a **hard 8-page guarantee** (margins relax to 0.5" — sides and bottom first, top last — before body type shrinks, never below 75% so it stays legible; remaining overflow is truncated with an explicit warning), a full-product code review with security hardening (auth gates on drafts/settings/export, path-traversal fixes, pastor-approval bypass closed), HTML-preview/PDF parity fixes (Sanctus language, mass times, clergy, closing message, third creed), and US liturgical-calendar corrections (Holy Family, Epiphany/Baptism transfers, Immaculate Conception transfer, Ascension Sunday default). 290 tests passing.
+
+> **v1.3 (April 30, 2026)** addresses post-pilot feedback: readings reflow lectionary sense-lines into normal paragraphs, hymn library carries hymnal+number with OneLicense search helpers, new Responsorial Psalm setting slot prefilled from the refrain, preview matches the selected booklet trim, stateless HMAC sessions fix the "Not authenticated" upload bug, per-user preferences persist across drafts.
 
 ---
 
@@ -120,13 +122,17 @@ When the user selects a liturgical season, the following defaults apply automati
 | Children's Liturgy | Optional | No | No | YES (Sun 9AM default) | Optional |
 
 ### 5.2 Page Overflow Prevention
-The HARDEST constraint: content must fit in exactly 8 pages. Rules:
+The HARDEST constraint: content must fit in exactly 8 pages. **v1.4 makes this a hard guarantee** — the exported PDF is always exactly 8 pages. Fitting order when a page overflows:
 
-- Each page has a fixed content area. The app tracks character/line estimates per block.
-- **If a page overflows:** The app will NOT auto-shrink text below a minimum font size (set in template settings, default 9pt body). Instead, it surfaces a specific overflow warning: "Page 3 overflow: First Reading text is approximately 8 lines over capacity. Consider shortening or reformatting."
-- Long readings are the most common overflow risk (especially Ordinary Time, when the Gospel can be very long). The app must warn early — before export — which content is causing the issue.
-- The two pages most at risk of overflow: **Page 3** (readings-heavy) and **Page 4** (Gospel + Creed). Both must have explicit capacity indicators in the preview.
-- The app does NOT automatically reflow content between pages. Pages have fixed roles. The coordinator must resolve overflows manually in the form.
+1. **Relax margins to 0.5" on all sides — top last.** Side and bottom margins relax first, then the top margin. (Half-letter already uses 0.5" everywhere; on tabloid this grows the content area from 6.5"×9" to 7.5"×10", which absorbs a full Sunday lectionary at normal type.)
+2. **Shrink body type — floor 75% of normal.** Type must stay legible; the generator never goes below 75% of the base size.
+3. **Truncate with a warning.** Anything still over capacity is cut with an ellipsis and a per-page warning ("Page 3: content was truncated to keep the booklet at 8 pages — shorten the text on this page") surfaced in the editor preview and the export response.
+
+Additional rules:
+- Each page has a fixed content area. The app tracks character/line estimates per block for early warnings.
+- Long readings are the most common overflow risk (especially Ordinary Time, when the Gospel can be very long). The app warns early — before export — which content is causing the issue.
+- The two pages most at risk of overflow: **Page 3** (readings-heavy) and **Page 4** (Gospel + Creed). Both have explicit capacity indicators in the preview.
+- The app does NOT automatically reflow content between pages. Pages have fixed roles. The coordinator resolves residual overflows manually in the form.
 
 ### 5.3 Print Format Specification
 Based on analysis of existing worship aids (952×1260px JPEG renders = 5.5"×8.5" at ~173dpi):
@@ -145,6 +151,7 @@ Based on analysis of existing worship aids (952×1260px JPEG renders = 5.5"×8.5
 - If Mass times differ, display each with its qualifier (e.g., "Offertory Anthem — Title A, composer (Sat, 5 PM & Sun, 11 AM) / Title B, composer (Sun, 9 AM)")
 - Formatting matches current pattern exactly: Title first (italics), then composer, then Mass times in parentheses
 - **Hymnal citation (v1.3):** if a hymn entry carries a hymnal name + number (e.g. "Worship IV" + "612"), the rendered line shows `Title [Hymnal #N], Composer`.  This is what the assembly looks up in the pew rack.
+- **Hymn-music paste areas (v1.4):** under each congregational hymn slot (processional, communion, thanksgiving) the booklet reserves a dashed blank area (~2.2" half-letter / ~2.9" tabloid) where the user pastes the licensed notation by hand after export. Per-aid toggle `reserveHymnSpace`, default on. The app deliberately does NOT fetch or embed hymn music programmatically (no OneLicense API exists).
 
 ### 5.5 Readings Sourcing
 - **Auto-fetch is the default behavior.** The moment a liturgical date is set, the readings are pulled — there's no "Fetch" button required for normal use.  NABRE comes from `bible.usccb.org/bible/readings/MMDDYY.cfm` (the U.S. Lectionary); alternate translations come from `bible-api.com` using the same citations, while Lectionary-only items (psalm refrain, gospel acclamation verse) are preserved.

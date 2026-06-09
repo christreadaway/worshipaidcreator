@@ -941,3 +941,107 @@ Pilot feedback after a music director and admin tested the editor:
 - Consider a similar 401-recovery in the editor's draft-save path
   (currently the auto-save endpoint doesn't require auth).
 
+
+---
+
+## Session 7 (June 9, 2026): Hymn Paste Areas, Hard 8-Page Guarantee, Full Code Review
+
+**Branch:** `claude/youthful-mayer-sxg6du`
+**Tests:** 290/290 passing (was 240 at start; serialized with a shared-state lock)
+
+### Decision: programmatic OneLicense integration dropped
+
+User direction: automating music from OneLicense isn't worth the effort.
+The app now builds everything EXCEPT the hymn notation. Each congregational
+hymn slot (processional, communion, thanksgiving) reserves a dashed blank
+paste area (~2.2" half-letter / ~2.9" tabloid) in both the HTML preview and
+the PDF; the user pastes licensed notation in by hand after export. New
+top-level `reserveHymnSpace` flag (default true) with a checkbox in the
+Shared Music section; round-trips through drafts. The OneLicense *search*
+buttons remain as manual-workflow helpers. The OneLicense automation roadmap
+(Hymnary client, arrangements table, version picker) was removed from
+`product_spec.md` Future Build Requirements.
+
+### Hard 8-page guarantee (user requirement: "limited to 8 pages at all times")
+
+The PDF can no longer exceed 8 pages. Fitting order per user direction —
+margins first, type later, legibility floor:
+1. Relax side + bottom margins to 0.5" (no-op on half-letter; tabloid grows
+   to a 7.5"x10" content area — absorbs a full Sunday lectionary at normal
+   type with zero warnings).
+2. Relax the top margin to 0.5" (top last).
+3. Shrink body text, never below 75% of normal.
+4. Truncate with an ellipsis + per-page warning.
+Implementation: every text primitive measures (dry-run) before writing and
+clamps to the page bottom; `_fitPageText` wraps pages 3, 4, 7; cover blurbs,
+back-cover notes, and custom copyright blocks are clamped too. Also fixed the
+historical phantom-page bug: folios and the page-7 copyright line were
+written inside the bottom margin band and made PDFKit auto-add a near-blank
+page after every section (a "16-page" export is now 8). Layout tests assert
+`pageCount === 8` unconditionally, including long-content stress cases.
+
+### Full code review (4 parallel review passes) — all low→critical findings fixed
+
+**Security (critical/high):**
+- Path-traversal WRITE via draft id (`POST /api/drafts {"id":"../../x"}`)
+  — KV keys now validated at the storage boundary; unsafe ids → 400.
+- Path-traversal READ via encoded slashes in upload-serving routes
+  (`/api/uploads/attachments/..%2f..%2f...`) — basename + safe-key check.
+- Draft routes, `PUT /api/settings` (manage_settings), and
+  `POST /api/generate-pdf` (export_pdf) now require auth; the
+  pastor-approval gate can no longer be bypassed by exporting unsaved
+  content. SPA sends tokens on all those calls with 401 recovery.
+- Settings saves merge instead of full-replace (logoPath no longer reset).
+- SVG uploads served with sandbox CSP + nosniff (stored-XSS hardening).
+- Loud startup error when SESSION_SECRET is missing in production.
+- Exclusive-login race: same-millisecond logins could leave the displaced
+  session alive; issue timestamps are now strictly monotonic.
+
+**Renderer parity (HTML preview vs PDF now produce the same booklet):**
+- Season defaults (gloria/creedType/entranceType) were written to the top
+  level where neither renderer read them — Advent/Lent/Easter drafts created
+  via API silently got the Nicene Creed and wrong entrance heading. Fixed;
+  `applySeasonDefaults` also no longer mutates the caller's draft.
+- PDF now renders: Sanctus language + congregational text, parish mass
+  times, clergy lines, welcome + closing messages, gospel-acclamation
+  reference, children's-liturgy leader/notes. HTML preview now uses the
+  uploaded parish logo and drops the '[Parish Name]' placeholder; the
+  baptismal-vows creed renders in the preview (was Nicene).
+- Shared single-source default copyright text; double-escaping fixed;
+  page-7 copyright clamped to one line (folio overlap).
+- Hymns entered for only some Masses now carry their time qualifier.
+- bookletSize added to schema; both renderers share the tabloid default.
+
+**Liturgical calendar (all hand-verified):**
+- Sunday feasts no longer lose to minor fixed feasts: Holy Family on
+  Dec 26/28/31, 4th Sunday of Advent on Dec 24.
+- Epiphany on Jan 7/8 → Baptism of the Lord the following Monday.
+- Immaculate Conception transfers to Dec 9 when Dec 8 is an Advent Sunday.
+- Ascension defaults to the Sunday transfer (most US provinces); Thursday
+  available via `ascensionOnThursday` option. Chair of St. Peter Feb 22.
+
+**Readings/utilities:**
+- Psalm verses no longer paragraph-reflowed for non-NABRE translations
+  (stanzas were being collapsed); citations normalized for bible-api.com
+  ("Cf.", verse letters, em-dashes); translation label only set on success;
+  USCCB parse failures surface as errors instead of silently-empty readings.
+- Entity decoding order + hex entities; redirect caps; EXIF rotation before
+  notation auto-crop; CLI arg parsing (-o value no longer eaten as input);
+  fetch-hymns relative-redirect fix; Dockerfile npm ci lockfile fix.
+- 'Copy prompt' button in cover suggestions was dead (quote escaping);
+  Netlify upload listings returned 'unknown' filenames; corrupt KV records
+  no longer break every list() caller (one bad user file used to break all
+  logins).
+
+### Deliberately NOT changed
+- Beta passwordless login + username-list error message (intentional beta
+  features; production checklist still applies).
+- Read access to GET /api/settings and POST /api/preview remains open (the
+  editor uses them pre-auth-free; no sensitive data).
+- Known-limitation race conditions on Netlify Blobs read-modify-write
+  (single-parish write volume; documented).
+
+### Branch state at end of session
+- Branch: `claude/youthful-mayer-sxg6du`, pushed.
+- Docs updated: `product_spec.md` (v1.4), `worship_aid_generator_PRD.md`
+  (v1.4), this file.
