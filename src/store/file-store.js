@@ -21,6 +21,13 @@ function generateId() {
 // --- DRAFTS ---
 
 async function saveDraft(data) {
+  // The id becomes a KV key (a file path locally) — never accept one that
+  // kv would reject, or a crafted id could write outside the drafts dir.
+  if (data.id && !kv.isSafeKey(data.id)) {
+    const err = new Error('Invalid draft id');
+    err.statusCode = 400;
+    throw err;
+  }
   const id = data.id || generateId();
   const now = new Date().toISOString();
   const record = {
@@ -35,6 +42,7 @@ async function saveDraft(data) {
 }
 
 async function loadDraft(id) {
+  if (!kv.isSafeKey(id)) return null;
   return kv.get('drafts', id);
 }
 
@@ -57,6 +65,7 @@ async function listDrafts() {
 }
 
 async function deleteDraft(id) {
+  if (!kv.isSafeKey(id)) return false;
   await kv.del('drafts', id);
   return true;
 }
@@ -89,8 +98,13 @@ async function loadSettings() {
 }
 
 async function saveSettings(settings) {
-  await kv.set('settings', 'parish', settings);
-  return settings;
+  // Merge over what's already stored: the admin form only posts the fields
+  // it knows about, and a full replace would silently reset everything else
+  // (logoPath, future fields) to defaults on every save.
+  const existing = await loadSettings();
+  const merged = { ...existing, ...settings };
+  await kv.set('settings', 'parish', merged);
+  return merged;
 }
 
 // --- EXPORTS ---

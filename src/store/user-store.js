@@ -137,15 +137,34 @@ function sanitizeUser(user) {
 
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
+let _warnedDefaultSecret = false;
 function getSessionSecret() {
   // Process env first (set in production); fall back to a fixed dev secret so
   // local restarts don't invalidate every session. NOT a security boundary
   // for parish use — it just stops accidental cross-user impersonation.
-  return process.env.SESSION_SECRET || 'wa-default-dev-secret-please-set-SESSION_SECRET-in-prod';
+  if (!process.env.SESSION_SECRET) {
+    const kv = require('./kv');
+    if (kv.IS_NETLIFY && !_warnedDefaultSecret) {
+      _warnedDefaultSecret = true;
+      console.error('[AUTH] SESSION_SECRET is not set in a production environment — session tokens are forgeable with the public dev secret. Set SESSION_SECRET in the Netlify environment.');
+    }
+    return 'wa-default-dev-secret-please-set-SESSION_SECRET-in-prod';
+  }
+  return process.env.SESSION_SECRET;
 }
 
-function signSessionToken(userId) {
-  const issued = Date.now();
+// Strictly increasing issue timestamps within this process. Two logins in
+// the same millisecond used to produce a token with issued === the
+// revokedBefore cutoff of the session it was meant to displace, so the old
+// session survived the `issued < revokedBefore` check intermittently.
+let _lastIssued = 0;
+function nextIssuedTs() {
+  const now = Date.now();
+  _lastIssued = now > _lastIssued ? now : _lastIssued + 1;
+  return _lastIssued;
+}
+
+function signSessionToken(userId, issued = nextIssuedTs()) {
   const payload = `${userId}.${issued}`;
   const sig = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('hex');
   return `${payload}.${sig}`;
@@ -185,17 +204,21 @@ async function createSession(userId) {
   // Implementation: bump revokedBefore on every same-role user so any
   // token issued earlier no longer validates.
   const user = await getUser(userId);
+  // The new token's issue time doubles as the revocation cutoff: every
+  // same-role token issued strictly before it dies, and nextIssuedTs()
+  // guarantees the cutoff is strictly later than any token already issued
+  // by this process (same-millisecond logins included).
+  const issued = nextIssuedTs();
   if (user) {
     const all = await listUsersRaw();
     const sameRole = all.filter(u => u.role === user.role && u.id !== userId);
-    const now = Date.now();
     for (const u of sameRole) {
-      if (!u.revokedBefore || u.revokedBefore < now) {
-        await kv.set('users', u.id, { ...u, revokedBefore: now });
+      if (!u.revokedBefore || u.revokedBefore < issued) {
+        await kv.set('users', u.id, { ...u, revokedBefore: issued });
       }
     }
   }
-  return signSessionToken(userId);
+  return signSessionToken(userId, issued);
 }
 
 async function getSessionUser(token) {

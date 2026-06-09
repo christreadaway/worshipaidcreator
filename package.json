@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node src/server.js",
     "generate": "node src/cli.js",
-    "test": "node --test src/tests/*.test.js",
+    "test": "node --test --test-concurrency=1 src/tests/*.test.js",
     "build": "node scripts/extract-html.js",
     "dev": "node src/server.js",
     "fetch-hymns": "node scripts/fetch-hymns.js"
