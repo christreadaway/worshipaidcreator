@@ -46,6 +46,9 @@ const inputSchema = {
     liturgicalDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
     liturgicalSeason: { type: 'string', enum: ['ordinary', 'advent', 'christmas', 'lent', 'easter'] },
 
+    // Finished booklet size for preview/export (defaults to tabloid).
+    bookletSize: { type: 'string', enum: ['half-letter', 'tabloid'] },
+
     // Workflow: who last edited, assigned to
     lastEditedBy: { type: 'string' },
     assignedTo: { type: 'string' },

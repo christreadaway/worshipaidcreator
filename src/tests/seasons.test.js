@@ -57,18 +57,39 @@ describe('Season auto-rules', () => {
     assert.equal(d.includePostlude, true);
   });
 
-  it('should apply season defaults to data', () => {
+  it('should apply season defaults to seasonalSettings (where renderers read them)', () => {
     const data = { liturgicalSeason: 'lent' };
     const result = applySeasonDefaults(data);
-    assert.equal(result.gloria, false);
-    assert.equal(result.creedType, 'apostles');
+    assert.equal(result.seasonalSettings.gloria, false);
+    assert.equal(result.seasonalSettings.creedType, 'apostles');
+    assert.equal(result.seasonalSettings.entranceType, 'antiphon');
+  });
+
+  it('should default creedType=apostles into seasonalSettings for Advent/Lent/Easter', () => {
+    for (const season of ['advent', 'lent', 'easter']) {
+      const result = applySeasonDefaults({ liturgicalSeason: season });
+      assert.equal(result.seasonalSettings.creedType, 'apostles',
+        `${season} should default to Apostles' Creed per worksheet`);
+    }
+    assert.equal(applySeasonDefaults({ liturgicalSeason: 'ordinary' }).seasonalSettings.creedType, 'nicene');
+    assert.equal(applySeasonDefaults({ liturgicalSeason: 'christmas' }).seasonalSettings.creedType, 'nicene');
   });
 
   it('should not override user-set values', () => {
-    const data = { liturgicalSeason: 'lent', gloria: true, creedType: 'nicene' };
+    const data = { liturgicalSeason: 'lent', seasonalSettings: { gloria: true, creedType: 'nicene' } };
     const result = applySeasonDefaults(data);
-    assert.equal(result.gloria, true); // user override preserved
-    assert.equal(result.creedType, 'nicene'); // user override preserved
+    assert.equal(result.seasonalSettings.gloria, true); // user override preserved
+    assert.equal(result.seasonalSettings.creedType, 'nicene'); // user override preserved
+  });
+
+  it('should not mutate the caller\'s data or seasonalSettings object', () => {
+    const ss = { gloria: true };
+    const data = { liturgicalSeason: 'lent', seasonalSettings: ss };
+    const result = applySeasonDefaults(data);
+    assert.notEqual(result.seasonalSettings, ss, 'seasonalSettings must be cloned');
+    assert.deepEqual(ss, { gloria: true }, 'input seasonalSettings must not be mutated');
+    assert.deepEqual(data, { liturgicalSeason: 'lent', seasonalSettings: { gloria: true } });
+    assert.equal(result.seasonalSettings.creedType, 'apostles'); // defaults applied to the clone
   });
 
   it('should apply includePostlude and adventWreath defaults', () => {
@@ -108,6 +129,28 @@ describe('Music formatter', () => {
     assert.equal(items.length, 1);
     assert.equal(items[0].title, 'Test');
     assert.equal(items[0].timeLabel, '');
+  });
+
+  it('should keep the time label when only some Masses have the slot filled', () => {
+    // Regression: a hymn entered for just one Mass used to print with no
+    // time qualifier, implying it was sung at all three Masses.
+    const data = {
+      musicSat5pm: { offertoryAnthem: 'Solo Hymn', offertoryAnthemComposer: 'Bach' }
+    };
+    const items = formatMusicSlot(data, 'offertoryAnthem', 'offertoryAnthemComposer');
+    assert.equal(items.length, 1);
+    assert.equal(items[0].title, 'Solo Hymn');
+    assert.equal(items[0].timeLabel, 'Sat, 5 PM');
+  });
+
+  it('should keep time labels when two of three Masses share the same selection', () => {
+    const data = {
+      musicSat5pm: { communionHymn: 'Shared Hymn' },
+      musicSun9am: { communionHymn: 'Shared Hymn' }
+    };
+    const items = formatMusicSlot(data, 'communionHymn', 'communionHymnComposer');
+    assert.equal(items.length, 1);
+    assert.equal(items[0].timeLabel, 'Sat, 5 PM & Sun, 9 AM');
   });
 
   it('should group by selection when different', () => {

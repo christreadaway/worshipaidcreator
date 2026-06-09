@@ -63,7 +63,10 @@ function buildMultipart(fields, file) {
   return { contentType: 'multipart/form-data; boundary=' + boundary, body: Buffer.concat(parts) };
 }
 
+let releaseLock;
 before(async () => {
+  // Serialize against the other suites that share the on-disk data/ dir.
+  releaseLock = await require('./_shared-state-lock').acquireSharedStateLock();
   await app.seedReady;
   await new Promise(resolve => {
     server = app.listen(0, '127.0.0.1', () => {
@@ -81,6 +84,7 @@ before(async () => {
 
 after(async () => {
   await new Promise(resolve => server.close(resolve));
+  if (releaseLock) releaseLock();
 });
 
 describe('GET /api/liturgical-info', () => {

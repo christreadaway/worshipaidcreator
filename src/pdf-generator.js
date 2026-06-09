@@ -11,7 +11,8 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 const { APOSTLES_CREED, NICENE_CREED, RENEWAL_OF_BAPTISMAL_VOWS } = require('./assets/text/creeds');
-const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER } = require('./assets/text/mass-texts');
+const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER, getHolyHolyHolyText } = require('./assets/text/mass-texts');
+const { getDefaultCopyrightFull, getDefaultCopyrightShort } = require('./assets/text/copyright');
 const { formatMusicSlot, renderMusicLineText } = require('./music-formatter');
 const { applySeasonDefaults } = require('./config/seasons');
 const { detectOverflows } = require('./validator');
@@ -71,7 +72,8 @@ class WorshipAidPdfGenerator {
     this.r = this.data.readings || {};
     this.parishSettings = options.parishSettings || {};
 
-    this.bookletSize = options.bookletSize || 'half-letter';
+    // Match the HTML renderer: caller option > per-aid field > tabloid.
+    this.bookletSize = options.bookletSize || data.bookletSize || 'tabloid';
     const L = resolveLayout(this.bookletSize);
     this.PAGE_WIDTH    = L.pageWidth;
     this.PAGE_HEIGHT   = L.pageHeight;
@@ -176,7 +178,8 @@ class WorshipAidPdfGenerator {
     this.doc.page.margins.bottom = 0;
     this.doc.fontSize(opts.size || this.s(7)).fillColor(opts.color || COLORS.light)
       .text(str, opts.x !== undefined ? opts.x : this.MARGIN_SIDE, y,
-        { width: opts.width !== undefined ? opts.width : this.CONTENT_WIDTH, align: 'center' });
+        { width: opts.width !== undefined ? opts.width : this.CONTENT_WIDTH, align: 'center',
+          lineBreak: opts.lineBreak !== false });
     this.doc.page.margins.bottom = prevBottom;
   }
 
@@ -285,13 +288,47 @@ class WorshipAidPdfGenerator {
     this.doc.font('Helvetica');
   }
 
-  // Shrink-to-fit: dry-run the page body to measure its height; if it would
-  // overflow the page, reduce the body-text scale (down to 0.7 of normal)
-  // and re-measure, then render for real. Anything that still doesn't fit at
-  // minimum scale gets truncated by _textBlock with a warning, so the
-  // booklet is always exactly 8 pages.
-  _fitPageText(renderFn) {
-    const available = this._bottom() - this.y;
+  // Shrink-to-fit, in order of preference:
+  //   1. Normal margins, normal type.
+  //   2. Relax the side and bottom margins to 0.5" (wider + taller text
+  //      area; a no-op on half-letter, which is already at 0.5").
+  //   3. Relax the top margin to 0.5" as well — top last so the page
+  //      keeps its visual anchor as long as possible.
+  //   4. Only then reduce the body-text scale, never below 0.75 of normal
+  //      so the type stays legible.
+  // Anything that still doesn't fit at minimum scale gets truncated by
+  // _textBlock with a warning, so the booklet is always exactly 8 pages.
+  _fitPageText(renderFn, opts = {}) {
+    const MIN_MARGIN = 0.5 * PT;
+    const orig = {
+      side: this.MARGIN_SIDE, top: this.MARGIN_TOP, bottom: this.MARGIN,
+      width: this.CONTENT_WIDTH, y: this.y
+    };
+    // Pages with furniture anchored inside the bottom margin band (the
+    // page-7 copyright line) keep their bottom margin so content can't
+    // collide with it.
+    const minBottom = opts.keepBottom ? orig.bottom : Math.min(orig.bottom, MIN_MARGIN);
+    const stages = [
+      [orig.side, orig.top, orig.bottom],
+      [Math.min(orig.side, MIN_MARGIN), orig.top, minBottom],
+      [Math.min(orig.side, MIN_MARGIN), Math.min(orig.top, MIN_MARGIN), minBottom]
+    ];
+    const applyMargins = ([side, top, bottom]) => {
+      this.MARGIN_SIDE = side;
+      this.MARGIN_TOP = top;
+      this.MARGIN = bottom;
+      this.CONTENT_WIDTH = this.PAGE_WIDTH - 2 * side;
+      // PDFKit auto-page-breaks any text that crosses its own bottom
+      // margin, so the document margins must follow the relaxed values or
+      // text written into the reclaimed band would spawn a ninth page.
+      this.doc.page.margins.left = side;
+      this.doc.page.margins.right = side;
+      this.doc.page.margins.top = top;
+      this.doc.page.margins.bottom = bottom;
+      // _fitPageText runs immediately after newPage(), so nothing has been
+      // drawn yet and the content start can follow the relaxed top margin.
+      this.y = top;
+    };
     const measure = () => {
       this._dryRun = true;
       const y0 = this.y;
@@ -301,14 +338,33 @@ class WorshipAidPdfGenerator {
       this.y = y0;
       return needed;
     };
+
     this.textScale = 1;
-    let needed = measure();
-    for (let i = 0; i < 2 && needed > available && this.textScale > 0.7; i++) {
-      this.textScale = Math.max(0.7, this.textScale * Math.max(0.7, available / needed));
+    let needed = 0;
+    let fits = false;
+    for (const stage of stages) {
+      applyMargins(stage);
       needed = measure();
+      if (needed <= this._bottom() - this.y) { fits = true; break; }
+    }
+    if (!fits) {
+      // Fully relaxed margins weren't enough — shrink type, floor 0.75.
+      const available = this._bottom() - this.y;
+      for (let i = 0; i < 2 && needed > available && this.textScale > 0.75; i++) {
+        this.textScale = Math.max(0.75, this.textScale * Math.max(0.75, available / needed));
+        needed = measure();
+      }
     }
     renderFn();
     this.textScale = 1;
+    // Restore layout margins so footers (folio, copyright) sit at the same
+    // place on every page. The doc-level bottom margin stays relaxed for
+    // the rest of this page — restoring it mid-page would re-trigger
+    // PDFKit's page break for content already placed in the relaxed band.
+    this.MARGIN_SIDE = orig.side;
+    this.MARGIN_TOP = orig.top;
+    this.MARGIN = orig.bottom;
+    this.CONTENT_WIDTH = orig.width;
   }
 
   // Reserved blank area under a congregational hymn slot. OneLicense has no
@@ -428,9 +484,31 @@ class WorshipAidPdfGenerator {
       .text(formatDate(this.data.liturgicalDate), this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center' });
     this.y = this.doc.y + this.s(3);
 
+    // Mass times: parish setting (newline-separated), like the HTML cover.
+    const massTimesLines = String(this.parishSettings.massTimes || 'Sat 5:00 PM\nSun 9:00 AM\nSun 11:00 AM')
+      .split('\n').map(t => t.trim()).filter(Boolean);
     this.doc.fontSize(this.s(9)).fillColor(COLORS.light)
-      .text('Sat 5:00 PM  •  Sun 9:00 AM  •  Sun 11:00 AM', this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center' });
-    this.y = this.doc.y + this.s(10);
+      .text(massTimesLines.join(' • '), this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center' });
+    this.y = this.doc.y + this.s(4);
+
+    // Clergy lines under the times, mirroring the HTML cover.
+    const clergyLines = [];
+    if (this.parishSettings.pastor) clergyLines.push(`${this.parishSettings.pastor}, ${this.parishSettings.pastorTitle || 'Pastor'}`);
+    if (this.parishSettings.associates) String(this.parishSettings.associates).split('\n').forEach(l => { if (l.trim()) clergyLines.push(l.trim()); });
+    if (this.parishSettings.deacons) String(this.parishSettings.deacons).split('\n').forEach(l => { if (l.trim()) clergyLines.push(l.trim()); });
+    if (this.parishSettings.musicDirector) clergyLines.push(this.parishSettings.musicDirector + ', Music Director');
+    if (clergyLines.length) {
+      const clergyRoom = this._bottom() - this.y;
+      if (clergyRoom > this.s(10)) {
+        this.doc.fontSize(this.s(8)).fillColor(COLORS.muted).font('Helvetica')
+          .text(clergyLines.join('\n'), this.MARGIN_SIDE, this.y,
+            { width: this.CONTENT_WIDTH, align: 'center', lineGap: this.s(1), height: clergyRoom, ellipsis: true });
+        this.y = Math.min(this.doc.y, this._bottom());
+      } else {
+        this._warnClipped();
+      }
+    }
+    this.y += this.s(6);
 
     this.doc.save()
       .moveTo(this.MARGIN_SIDE + this.s(60), this.y)
@@ -450,6 +528,10 @@ class WorshipAidPdfGenerator {
     const gridGap = this.s(12);
     const colW = (this.CONTENT_WIDTH - gridGap) / 2;
     let rowY = this.y;
+    // Track the max bottom across BOTH columns of the row — advancing off
+    // column 1 alone lets a taller column-0 blurb get overprinted by the
+    // next row.
+    let rowBottom = rowY;
     for (let i = 0; i < infos.length; i++) {
       const col = i % 2;
       const x = this.MARGIN_SIDE + col * (colW + gridGap);
@@ -464,14 +546,33 @@ class WorshipAidPdfGenerator {
       if (cellRemaining > this.s(8)) {
         this.doc.fontSize(this.s(8)).fillColor('#444444').font('Helvetica')
           .text(infos[i][1], x, labelBottom, { width: colW, lineGap: this.s(1), height: cellRemaining, ellipsis: true });
+        rowBottom = Math.max(rowBottom, this.doc.y);
       } else {
         this._warnClipped();
+        rowBottom = Math.max(rowBottom, labelBottom);
       }
       if (col === 1) {
-        rowY = this.doc.y + this.s(6);
+        rowY = rowBottom + this.s(6);
+        rowBottom = rowY;
       }
     }
     this.y = Math.min(rowY, this._bottom());
+
+    // Welcome message block under the info grid (like the HTML cover),
+    // clamped to the bottom margin.
+    if (ps.welcomeMessage) {
+      this.y += this.s(2);
+      const welcomeRoom = this._bottom() - this.y;
+      if (welcomeRoom > this.s(10)) {
+        this.doc.fontSize(this.s(8)).fillColor(COLORS.text).font('Helvetica-Oblique')
+          .text(ps.welcomeMessage, this.MARGIN_SIDE, this.y,
+            { width: this.CONTENT_WIDTH, align: 'center', lineGap: this.s(1), height: welcomeRoom, ellipsis: true });
+        this.doc.font('Helvetica');
+        this.y = Math.min(this.doc.y, this._bottom());
+      } else {
+        this._warnClipped();
+      }
+    }
     this._trackY();
   }
 
@@ -552,6 +653,10 @@ class WorshipAidPdfGenerator {
         acclamationText = GOSPEL_ACCLAMATION_STANDARD;
       }
       this.bodyText(acclamationText, { bold: true, size: 9 });
+      // Order mirrors the HTML renderer: acclamation, reference, verse.
+      if (this.r.gospelAcclamationReference) {
+        this.citation(this.r.gospelAcclamationReference);
+      }
       if (this.r.gospelAcclamationVerse) {
         this.bodyText(this.r.gospelAcclamationVerse, { italic: true, size: 8.5 });
       }
@@ -603,25 +708,54 @@ class WorshipAidPdfGenerator {
 
     if (this.data.childrenLiturgyEnabled) {
       this.y += this.s(3);
-      const boxH = this.s(22);
-      this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, boxH)
-        .fillColor('#f5f0e6').fill().restore();
       // Children's Liturgy can run at any subset of Masses — render every
       // selected time, joined by " & " (or fall back to the legacy single
       // string field for old saved drafts).
       const _clTimes = (Array.isArray(this.data.childrenLiturgyMassTimes) && this.data.childrenLiturgyMassTimes.length)
         ? this.data.childrenLiturgyMassTimes
         : (this.data.childrenLiturgyMassTime ? [this.data.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
-      this.doc.fontSize(this.s(8)).fillColor(COLORS.text).font('Helvetica-Bold')
-        .text(`Children's Liturgy of the Word — ${_clTimes.join(' & ')}`,
-          this.MARGIN_SIDE + this.s(4), this.y + this.s(4), { width: this.CONTENT_WIDTH - this.s(8) });
+      const innerX = this.MARGIN_SIDE + this.s(4);
+      const innerW = this.CONTENT_WIDTH - this.s(8);
+      // Mirrors the HTML children's-liturgy box: title, leader, music, notes.
+      const clLines = [
+        [`Children's Liturgy of the Word — ${_clTimes.join(' & ')}`, 'Helvetica-Bold', 8]
+      ];
+      if (this.data.childrenLiturgyLeader) {
+        clLines.push([`Led by ${this.data.childrenLiturgyLeader}`, 'Helvetica', 7.5]);
+      }
       if (this.data.childrenLiturgyMusic) {
-        this.doc.font('Helvetica-Oblique').fontSize(this.s(7.5))
-          .text(`${this.data.childrenLiturgyMusic}${this.data.childrenLiturgyMusicComposer ? ', ' + this.data.childrenLiturgyMusicComposer : ''}`,
-            this.MARGIN_SIDE + this.s(4), this.doc.y, { width: this.CONTENT_WIDTH - this.s(8) });
+        clLines.push([`${this.data.childrenLiturgyMusic}${this.data.childrenLiturgyMusicComposer ? ', ' + this.data.childrenLiturgyMusicComposer : ''}`, 'Helvetica-Oblique', 7.5]);
+      }
+      if (this.data.childrenLiturgyNotes) {
+        clLines.push([String(this.data.childrenLiturgyNotes), 'Helvetica-Oblique', 7]);
+      }
+      // Size the box to its content (dry measure), clamped to the page
+      // bottom so the box never escapes the page.
+      let contentH = 0;
+      for (const [text, font, size] of clLines) {
+        this.doc.font(font).fontSize(this.s(size));
+        contentH += this.doc.heightOfString(text, { width: innerW });
+      }
+      const boxH = Math.min(contentH + this.s(8), Math.max(0, this._bottom() - this.y));
+      if (boxH > this.s(10)) {
+        this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, boxH)
+          .fillColor('#f5f0e6').fill().restore();
+        const boxBottom = this.y + boxH;
+        let cursorY = this.y + this.s(4);
+        for (const [text, font, size] of clLines) {
+          this.doc.font(font).fontSize(this.s(size)).fillColor(COLORS.text);
+          const remaining = boxBottom - cursorY;
+          if (remaining < this.doc.currentLineHeight(true)) { this._warnClipped(); break; }
+          this.doc.text(text, innerX, cursorY, { width: innerW, height: remaining, ellipsis: true });
+          cursorY = this.doc.y;
+        }
+        this.y = boxBottom + this.s(6);
+      } else {
+        this._warnClipped();
+        this.y = this._bottom();
       }
       this.doc.font('Helvetica');
-      this.y = Math.max(this.doc.y, this.y + boxH) + this.s(6);
+      this._trackY();
     }
 
     this.rubric(RUBRICS.stand);
@@ -630,8 +764,12 @@ class WorshipAidPdfGenerator {
     this.bodyText(`Priest: ${INVITATION_TO_PRAYER.priest}`, { size: 8 });
     this.bodyText(`All: ${INVITATION_TO_PRAYER.all}`, { bold: true, size: 8 });
 
-    this.subHeading('Holy, Holy, Holy');
+    // Sanctus language: per-aid override > parish default > English
+    // (mirrors the HTML renderer, including the Latin heading).
+    const holyHolyLanguage = this.ss.holyHolyLanguage || this.parishSettings.defaultSanctusLanguage || 'english';
+    this.subHeading(holyHolyLanguage === 'latin' ? 'Sanctus' : 'Holy, Holy, Holy');
     this.bodyText(this.ss.holyHolySetting || 'Mass of St. Theresa', { italic: true, size: 8.5 });
+    this.bodyText(getHolyHolyHolyText(holyHolyLanguage), { size: 8 });
 
     this.rubric(RUBRICS.kneel);
 
@@ -672,6 +810,8 @@ class WorshipAidPdfGenerator {
 
   renderPage7ConcludingRites() {
     this.newPage();
+    // keepBottom: the copyright line is anchored inside the bottom margin
+    // band on this page, so the content area must not grow down into it.
     this._fitPageText(() => {
       this.sectionHeader('The Concluding Rites');
 
@@ -708,10 +848,20 @@ class WorshipAidPdfGenerator {
         this.subHeading('Announcements');
         this.bodyText(this.data.announcements, { size: 7.5 });
       }
-    });
+    }, { keepBottom: true });
 
-    const copyrightShort = this.parishSettings.copyrightShort || 'Music reprinted under OneLicense #A-702171. All rights reserved.';
-    this._footerText(copyrightShort, this.PAGE_HEIGHT - this.MARGIN * 0.85);
+    // Single line only — a wrapped copyright line would overlap the folio.
+    // Manually truncate with an ellipsis if it can't fit the content width.
+    let copyrightShort = String(this.parishSettings.copyrightShort ||
+      getDefaultCopyrightShort(this.parishSettings.onelicenseNumber)).replace(/\s+/g, ' ').trim();
+    this.doc.font('Helvetica').fontSize(this.s(7));
+    if (this.doc.widthOfString(copyrightShort) > this.CONTENT_WIDTH) {
+      while (copyrightShort.length > 1 && this.doc.widthOfString(copyrightShort + '…') > this.CONTENT_WIDTH) {
+        copyrightShort = copyrightShort.slice(0, -1);
+      }
+      copyrightShort = copyrightShort.trimEnd() + '…';
+    }
+    this._footerText(copyrightShort, this.PAGE_HEIGHT - this.MARGIN * 0.85, { lineBreak: false });
 
     this.pageNumber(7);
   }
@@ -744,8 +894,8 @@ class WorshipAidPdfGenerator {
     const copyrightBlockHeight = this.s(90);
     const copyrightY = this.PAGE_HEIGHT - this.MARGIN - copyrightBlockHeight;
 
+    this.y = this.doc.y + this.s(14);
     if (this.data.specialNotes) {
-      this.y = this.doc.y + this.s(14);
       // Clamp to the top of the copyright block so long notes can't push
       // the back cover onto a ninth page.
       const notesRoom = copyrightY - this.s(6) - this.y;
@@ -753,14 +903,30 @@ class WorshipAidPdfGenerator {
         this.doc.fontSize(this.s(9)).fillColor(COLORS.muted).font('Helvetica-Oblique')
           .text(this.data.specialNotes, this.MARGIN_SIDE + this.s(20), this.y,
             { width: this.CONTENT_WIDTH - this.s(40), align: 'center', height: notesRoom, ellipsis: true });
+        this.y = Math.min(this.doc.y, copyrightY - this.s(6)) + this.s(8);
       } else {
         this._warnClipped();
       }
       this.doc.font('Helvetica');
     }
 
+    // Standing closing message (like the HTML back cover), above the
+    // copyright block and clamped to it.
+    if (this.parishSettings.closingMessage) {
+      const closingRoom = copyrightY - this.s(6) - this.y;
+      if (closingRoom > this.s(12)) {
+        this.doc.fontSize(this.s(8)).fillColor(COLORS.muted).font('Helvetica')
+          .text(this.parishSettings.closingMessage, this.MARGIN_SIDE + this.s(20), this.y,
+            { width: this.CONTENT_WIDTH - this.s(40), align: 'center', height: closingRoom, ellipsis: true });
+      } else {
+        this._warnClipped();
+      }
+    }
+
+    // Default wording shared with the HTML renderer (single source:
+    // DEFAULT_PARISH_SETTINGS in config/defaults.js).
     const copyrightFull = this.parishSettings.copyrightFull ||
-      `Excerpts from the Lectionary for Mass © 2001, 1998, 1997, 1986, 1970 Confraternity of Christian Doctrine, Inc. Used with permission. All rights reserved.\n\nExcerpts from The Roman Missal © 2010, ICEL. All rights reserved.\n\nMusic reprinted under OneLicense #${this.parishSettings.onelicenseNumber || 'A-702171'}. All rights reserved.`;
+      getDefaultCopyrightFull(this.parishSettings.onelicenseNumber);
     // Footer-style write: a custom copyright block longer than the reserved
     // space is clipped at the page edge instead of spilling to a new page.
     const prevBottom = this.doc.page.margins.bottom;

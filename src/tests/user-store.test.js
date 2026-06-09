@@ -20,6 +20,14 @@ async function track(user) {
   return user;
 }
 
+// Serialize against the other suites that share the on-disk data/ dir —
+// session-creation tests here revoke same-role tokens used by the server
+// suites when run concurrently.
+let releaseLock;
+before(async () => {
+  releaseLock = await require('./_shared-state-lock').acquireSharedStateLock();
+});
+
 after(async () => {
   for (const id of testUserIds) {
     try { await userStore.deleteUser(id); } catch (_) { /* ignore */ }
@@ -39,6 +47,7 @@ after(async () => {
       } catch (_) { /* skip malformed */ }
     }
   }
+  if (releaseLock) releaseLock();
 });
 
 describe('User Store', () => {

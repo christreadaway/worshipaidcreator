@@ -47,7 +47,10 @@ function fetch(urlPath, options = {}) {
   });
 }
 
+let releaseLock;
 before(async () => {
+  // Serialize against the other suites that share the on-disk data/ dir.
+  releaseLock = await require('./_shared-state-lock').acquireSharedStateLock();
   await app.seedReady;
   await new Promise(resolve => {
     server = app.listen(0, '127.0.0.1', () => {
@@ -64,6 +67,7 @@ before(async () => {
 
 after(async () => {
   await new Promise(resolve => server.close(resolve));
+  if (releaseLock) releaseLock();
 });
 
 describe('Hymn library: hymnal + number fields', () => {

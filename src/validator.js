@@ -3,6 +3,7 @@
 
 const Ajv = require('ajv');
 const { inputSchema } = require('./schema');
+const { RENEWAL_OF_BAPTISMAL_VOWS } = require('./assets/text/creeds');
 
 const ajv = new Ajv({ allErrors: true, useDefaults: true });
 const validate = ajv.compile(inputSchema);
@@ -56,7 +57,10 @@ function detectOverflows(data) {
   }
 
   // Page 4: Gospel + Creed
-  const creedLines = (data.seasonalSettings?.creedType === 'apostles') ? 18 : 32;
+  const creedType = data.seasonalSettings?.creedType;
+  const creedLines = creedType === 'apostles' ? 18
+    : creedType === 'baptismal_vows' ? estimateLines(RENEWAL_OF_BAPTISMAL_VOWS)
+    : 32; // nicene (default)
   const page4Blocks = [
     { name: 'Gospel', lines: estimateLines(r.gospelText) },
     { name: 'Creed', lines: creedLines }

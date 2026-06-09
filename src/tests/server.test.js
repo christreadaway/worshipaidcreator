@@ -38,7 +38,10 @@ function authed(extra = {}) {
   return { 'x-session-token': token, ...extra };
 }
 
+let releaseLock;
 before(async () => {
+  // Serialize against the other suites that share the on-disk data/ dir.
+  releaseLock = await require('./_shared-state-lock').acquireSharedStateLock();
   // Wait for user seeding to complete before starting tests
   await app.seedReady;
   await new Promise((resolve) => {
@@ -55,7 +58,10 @@ before(async () => {
   token = login.json().token;
 });
 
-after(async () => { await new Promise(resolve => server.close(resolve)); });
+after(async () => {
+  await new Promise(resolve => server.close(resolve));
+  if (releaseLock) releaseLock();
+});
 
 const validBody = JSON.stringify({
   feastName: 'Test Sunday',

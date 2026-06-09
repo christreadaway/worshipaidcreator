@@ -96,21 +96,26 @@ function applySeasonDefaults(data) {
   const defaults = getSeasonDefaults(data.liturgicalSeason);
   const merged = { ...data };
 
-  // Only apply defaults for fields the user hasn't explicitly set
-  if (merged.gloria === undefined) merged.gloria = defaults.gloria;
-  if (!merged.creedType) merged.creedType = defaults.creedType;
-  if (!merged.entranceType) merged.entranceType = defaults.entranceType;
-  if (!merged.seasonalSettings) merged.seasonalSettings = {};
-  if (!merged.seasonalSettings.holyHolySetting) merged.seasonalSettings.holyHolySetting = defaults.holyHolySetting;
+  // Clone seasonalSettings so we never mutate the caller's object.
+  merged.seasonalSettings = { ...(data.seasonalSettings || {}) };
+  const ss = merged.seasonalSettings;
+
+  // Only apply defaults for fields the user hasn't explicitly set.
+  // Both renderers read these from seasonalSettings, so the defaults must
+  // land there (not on the top level of the merged object).
+  if (ss.gloria === undefined) ss.gloria = defaults.gloria;
+  if (!ss.creedType) ss.creedType = defaults.creedType;
+  if (!ss.entranceType) ss.entranceType = defaults.entranceType;
+  if (!ss.holyHolySetting) ss.holyHolySetting = defaults.holyHolySetting;
   // NB: `holyHolyLanguage` is intentionally NOT defaulted here — the renderer
   // resolves the fallback chain (per-aid override > parish default > English)
   // so that a parish-wide Latin preference can take effect when the aid
   // didn't pick a language explicitly.
-  if (!merged.seasonalSettings.mysteryOfFaithSetting) merged.seasonalSettings.mysteryOfFaithSetting = defaults.mysteryOfFaithSetting;
-  if (!merged.seasonalSettings.lambOfGodSetting) merged.seasonalSettings.lambOfGodSetting = defaults.lambOfGodSetting;
-  if (!merged.seasonalSettings.penitentialAct) merged.seasonalSettings.penitentialAct = defaults.penitentialAct;
-  if (merged.seasonalSettings.includePostlude === undefined) merged.seasonalSettings.includePostlude = defaults.includePostlude;
-  if (merged.seasonalSettings.adventWreath === undefined) merged.seasonalSettings.adventWreath = defaults.adventWreath;
+  if (!ss.mysteryOfFaithSetting) ss.mysteryOfFaithSetting = defaults.mysteryOfFaithSetting;
+  if (!ss.lambOfGodSetting) ss.lambOfGodSetting = defaults.lambOfGodSetting;
+  if (!ss.penitentialAct) ss.penitentialAct = defaults.penitentialAct;
+  if (ss.includePostlude === undefined) ss.includePostlude = defaults.includePostlude;
+  if (ss.adventWreath === undefined) ss.adventWreath = defaults.adventWreath;
 
   return merged;
 }

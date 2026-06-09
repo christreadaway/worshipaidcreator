@@ -11,6 +11,7 @@ const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOS
 const { formatMusicSlot, renderMusicLineHtml } = require('./music-formatter');
 const { applySeasonDefaults } = require('./config/seasons');
 const { detectOverflows } = require('./validator');
+const { getDefaultCopyrightFull, getDefaultCopyrightShort } = require('./assets/text/copyright');
 
 function escapeHtml(str) {
   if (!str) return '';
@@ -32,6 +33,15 @@ function getLogoSvg() {
   const logoPath = path.join(__dirname, 'assets', 'logo', 'jerusalem-cross.svg');
   if (fs.existsSync(logoPath)) return fs.readFileSync(logoPath, 'utf8');
   return '';
+}
+
+// Parish-uploaded logo when configured (so the preview matches the PDF),
+// otherwise the bundled Jerusalem cross.
+function getLogoHtml(settings) {
+  if (settings && settings.logoPath) {
+    return `<img src="${escapeHtml(settings.logoPath)}" alt="Parish logo" style="width:60px;height:60px;object-fit:contain;">`;
+  }
+  return getLogoSvg();
 }
 
 function renderMusicSection(data, titleField, composerField, label) {
@@ -109,14 +119,17 @@ function renderBookletHtml(data, options = {}) {
   overflows.forEach(o => warnings.push(o.message));
   const overflowPages = new Set(overflows.map(o => o.page));
 
-  // Parish info
-  const parishName = settings.parishName || '[Parish Name]';
+  // Parish info — only print a parish name when one is actually configured.
+  const parishName = settings.parishName || '';
   const nurseryBlurb = settings.nurseryBlurb || 'A nursery is available during the 9:00 AM and 11:00 AM Masses.';
   const connectBlurb = settings.connectBlurb || 'New to the parish? Visit the Welcome Desk after Mass.';
   const restroomsBlurb = settings.restroomsBlurb || 'Restrooms are located in the narthex and lower level.';
   const prayerBlurb = settings.prayerBlurb || 'For prayer requests, contact the parish office.';
-  const copyrightShort = settings.copyrightShort || 'Music reprinted under OneLicense #A-702171. All rights reserved.';
-  const copyrightFull = settings.copyrightFull || `Excerpts from the Lectionary for Mass for Use in the Dioceses of the United States of America, second typical edition © 2001, 1998, 1997, 1986, 1970 Confraternity of Christian Doctrine, Inc., Washington, DC. Used with permission. All rights reserved.\n\nExcerpts from the English translation of The Roman Missal © 2010, International Commission on English in the Liturgy Corporation. All rights reserved.\n\nMusic reprinted under OneLicense #${escapeHtml(settings.onelicenseNumber || 'A-702171')}. All rights reserved.`;
+  // Default copyright wording is shared with the PDF generator (single
+  // source: DEFAULT_PARISH_SETTINGS in config/defaults.js). The text is
+  // plain — nl2br/escapeHtml escape it exactly once at render time.
+  const copyrightShort = settings.copyrightShort || getDefaultCopyrightShort(settings.onelicenseNumber);
+  const copyrightFull = settings.copyrightFull || getDefaultCopyrightFull(settings.onelicenseNumber);
 
   // Mass schedule, clergy, and standing messages (cover page).  Each section
   // is optional — a parish that doesn't fill these in still renders cleanly.
@@ -409,7 +422,7 @@ function renderBookletHtml(data, options = {}) {
 <div class="page" id="page-1">
   <div class="cover-page">
     <div class="cover-top">
-      <div class="cover-logo">${getLogoSvg()}</div>
+      <div class="cover-logo">${getLogoHtml(settings)}</div>
       ${parishName ? `<div style="font-family:'Cinzel',serif;font-size:11pt;color:#6B1A1A;text-align:center;margin-top:6pt;letter-spacing:1pt;">${escapeHtml(parishName)}</div>` : ''}
       ${coverTagline ? `<div style="font-size:8pt;color:#777;text-align:center;font-style:italic;margin-top:1pt;">${escapeHtml(coverTagline)}</div>` : ''}
       <div class="cover-feast">${escapeHtml(d.feastName)}</div>
@@ -631,7 +644,7 @@ function renderBookletHtml(data, options = {}) {
 <!-- PAGE 8: BACK COVER -->
 <div class="page" id="page-8">
   <div class="back-cover">
-    <div class="cover-logo" style="margin-top:30pt;">${getLogoSvg()}</div>
+    <div class="cover-logo" style="margin-top:30pt;">${getLogoHtml(settings)}</div>
     <div style="margin:10pt 0;">
       <div class="cover-feast" style="font-size:13pt;">${escapeHtml(d.feastName)}</div>
       <div class="cover-date" style="font-size:9pt;">${escapeHtml(formatDate(d.liturgicalDate))}</div>
