@@ -4,3 +4,9 @@ exports/*.pdf
 exports/*.html
 exports/*.log
 settings/*.json
+attachments/
+users/
+sessions/
+uploads/
+hymn-library/
+_health/
