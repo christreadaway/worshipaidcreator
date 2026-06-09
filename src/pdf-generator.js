@@ -92,6 +92,12 @@ class WorshipAidPdfGenerator {
     // Page-level state used by tests and bounds tracking
     this._maxYReached = 0;
     this.pageEvents = [];
+
+    // 8-page guarantee state: shrink-to-fit factor for body text and the
+    // dry-run flag used while measuring a page before rendering it.
+    this.textScale = 1;
+    this._dryRun = false;
+    this._clipWarnedPage = 0;
   }
 
   // Scale a base font/spacing value by the layout's scale factor.
@@ -178,51 +184,90 @@ class WorshipAidPdfGenerator {
     this._footerText(String(num), this.PAGE_HEIGHT - this.MARGIN * 0.6, { x: 0, width: this.PAGE_WIDTH });
   }
 
-  sectionHeader(text) {
-    this.doc.fontSize(this.s(11)).fillColor(COLORS.navy).font('Helvetica-Bold')
-      .text(text.toUpperCase(), this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center', characterSpacing: 1.5 });
-    this.y = this.doc.y + this.s(2);
-    this.doc.save()
-      .moveTo(this.MARGIN_SIDE + this.s(40), this.y)
-      .lineTo(this.PAGE_WIDTH - this.MARGIN_SIDE - this.s(40), this.y)
-      .lineWidth(0.5).strokeColor(COLORS.gold).stroke().restore();
-    this.y += this.s(6);
-    this.doc.font('Helvetica');
+  // Bottom edge of the writable area on the current page.
+  _bottom() { return this.PAGE_HEIGHT - this.MARGIN; }
+
+  // Warn (once per logical page) that content had to be truncated to keep
+  // the booklet at exactly 8 pages.
+  _warnClipped() {
+    if (this._dryRun) return;
+    const page = this.pageEvents.length + 1;
+    if (this._clipWarnedPage === page) return;
+    this._clipWarnedPage = page;
+    this.warnings.push(`Page ${page}: content was truncated to keep the booklet at 8 pages — shorten the text on this page.`);
+  }
+
+  // Write a text block at this.y, clamped to the current page. Never lets
+  // PDFKit auto-add a page: if the block doesn't fully fit it is truncated
+  // with an ellipsis and a warning is recorded. In dry-run mode nothing is
+  // drawn — this.y just advances by the measured height (used by
+  // _fitPageText to shrink-to-fit a page before really rendering it).
+  // Returns the measured height of the full (unclamped) block.
+  _textBlock(text, x, textOpts, advanceAfter) {
+    const h = this.doc.heightOfString(text, textOpts);
+    if (this._dryRun) {
+      this.y += h + advanceAfter;
+      return h;
+    }
+    const remaining = this._bottom() - this.y;
+    if (remaining < this.doc.currentLineHeight(true)) {
+      this._warnClipped();
+      return h;
+    }
+    const opts = { ...textOpts };
+    if (h > remaining) {
+      opts.height = remaining;
+      opts.ellipsis = true;
+      this._warnClipped();
+    }
+    this.doc.text(text, x, this.y, opts);
+    this.y = Math.min(this.doc.y, this._bottom()) + advanceAfter;
     this._trackY();
+    return h;
+  }
+
+  sectionHeader(text) {
+    this.doc.fontSize(this.s(11)).fillColor(COLORS.navy).font('Helvetica-Bold');
+    const ruleY = this.y + this.doc.heightOfString(text.toUpperCase(), { width: this.CONTENT_WIDTH, align: 'center', characterSpacing: 1.5 }) + this.s(2);
+    this._textBlock(text.toUpperCase(), this.MARGIN_SIDE,
+      { width: this.CONTENT_WIDTH, align: 'center', characterSpacing: 1.5 }, this.s(8));
+    if (!this._dryRun) {
+      this.doc.save()
+        .moveTo(this.MARGIN_SIDE + this.s(40), ruleY)
+        .lineTo(this.PAGE_WIDTH - this.MARGIN_SIDE - this.s(40), ruleY)
+        .lineWidth(0.5).strokeColor(COLORS.gold).stroke().restore();
+    }
+    this.doc.font('Helvetica');
   }
 
   subHeading(text) {
-    this.doc.fontSize(this.s(8)).fillColor(COLORS.burgundy).font('Helvetica-Bold')
-      .text(text.toUpperCase(), this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, characterSpacing: 0.8 });
-    this.y = this.doc.y + this.s(2);
+    this.doc.fontSize(this.s(8)).fillColor(COLORS.burgundy).font('Helvetica-Bold');
+    this._textBlock(text.toUpperCase(), this.MARGIN_SIDE,
+      { width: this.CONTENT_WIDTH, characterSpacing: 0.8 }, this.s(2));
     this.doc.font('Helvetica');
-    this._trackY();
   }
 
   rubric(text) {
-    this.doc.fontSize(this.s(7.5)).fillColor('#8B0000').font('Helvetica-Oblique')
-      .text(text, this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH });
-    this.y = this.doc.y + this.s(2);
+    this.doc.fontSize(this.s(7.5)).fillColor('#8B0000').font('Helvetica-Oblique');
+    this._textBlock(text, this.MARGIN_SIDE, { width: this.CONTENT_WIDTH }, this.s(2));
     this.doc.font('Helvetica');
-    this._trackY();
   }
 
   bodyText(text, opts = {}) {
     if (!text) return;
     const baseSize = opts.size || 9;
-    this.doc.fontSize(this.s(baseSize))
+    // textScale is the shrink-to-fit factor (1 unless _fitPageText reduced it).
+    this.doc.fontSize(this.s(baseSize) * this.textScale)
       .fillColor(opts.color || COLORS.text)
       .font(opts.bold ? 'Helvetica-Bold' : opts.italic ? 'Helvetica-Oblique' : 'Helvetica');
     const x = opts.x !== undefined ? opts.x : this.MARGIN_SIDE;
     const width = opts.width !== undefined ? opts.width : this.CONTENT_WIDTH;
-    this.doc.text(text, x, this.y, {
+    this._textBlock(text, x, {
       width,
       align: opts.align || 'left',
-      lineGap: this.s(1)
-    });
-    this.y = this.doc.y + this.s(opts.gap !== undefined ? opts.gap : 3);
+      lineGap: this.s(1) * this.textScale
+    }, this.s(opts.gap !== undefined ? opts.gap : 3));
     this.doc.font('Helvetica');
-    this._trackY();
   }
 
   citation(text) {
@@ -234,12 +279,36 @@ class WorshipAidPdfGenerator {
     if (items.length === 0) return;
     for (const item of items) {
       const text = `${label} — ${renderMusicLineText(item)}`;
-      this.doc.fontSize(this.s(8.5)).fillColor(COLORS.text).font('Helvetica-Oblique')
-        .text(text, this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH });
-      this.y = this.doc.y + this.s(2);
-      this._trackY();
+      this.doc.fontSize(this.s(8.5)).fillColor(COLORS.text).font('Helvetica-Oblique');
+      this._textBlock(text, this.MARGIN_SIDE, { width: this.CONTENT_WIDTH }, this.s(2));
     }
     this.doc.font('Helvetica');
+  }
+
+  // Shrink-to-fit: dry-run the page body to measure its height; if it would
+  // overflow the page, reduce the body-text scale (down to 0.7 of normal)
+  // and re-measure, then render for real. Anything that still doesn't fit at
+  // minimum scale gets truncated by _textBlock with a warning, so the
+  // booklet is always exactly 8 pages.
+  _fitPageText(renderFn) {
+    const available = this._bottom() - this.y;
+    const measure = () => {
+      this._dryRun = true;
+      const y0 = this.y;
+      renderFn();
+      const needed = this.y - y0;
+      this._dryRun = false;
+      this.y = y0;
+      return needed;
+    };
+    this.textScale = 1;
+    let needed = measure();
+    for (let i = 0; i < 2 && needed > available && this.textScale > 0.7; i++) {
+      this.textScale = Math.max(0.7, this.textScale * Math.max(0.7, available / needed));
+      needed = measure();
+    }
+    renderFn();
+    this.textScale = 1;
   }
 
   // Reserved blank area under a congregational hymn slot. OneLicense has no
@@ -255,7 +324,11 @@ class WorshipAidPdfGenerator {
     const available = this.PAGE_HEIGHT - this.MARGIN - reserveBelow - this.y;
     const h = Math.min(desired, available);
     if (h < this.s(50)) {
-      this.warnings.push('Page is too full to reserve space for pasted hymn music.');
+      if (!this._dryRun) this.warnings.push('Page is too full to reserve space for pasted hymn music.');
+      return;
+    }
+    if (this._dryRun) {
+      this.y += h + this.s(6);
       return;
     }
     this.doc.save()
@@ -381,16 +454,24 @@ class WorshipAidPdfGenerator {
       const col = i % 2;
       const x = this.MARGIN_SIDE + col * (colW + gridGap);
 
+      // Clamp each cell to the bottom margin so a long parish blurb can
+      // never push the cover onto a second page.
+      if (rowY > this._bottom() - this.s(14)) { this._warnClipped(); break; }
       this.doc.fontSize(this.s(7)).fillColor(COLORS.gold).font('Helvetica-Bold')
-        .text(infos[i][0], x, rowY, { width: colW, characterSpacing: 1 });
+        .text(infos[i][0], x, rowY, { width: colW, characterSpacing: 1, lineBreak: false });
       const labelBottom = this.doc.y + this.s(1);
-      this.doc.fontSize(this.s(8)).fillColor('#444444').font('Helvetica')
-        .text(infos[i][1], x, labelBottom, { width: colW, lineGap: this.s(1) });
+      const cellRemaining = this._bottom() - labelBottom;
+      if (cellRemaining > this.s(8)) {
+        this.doc.fontSize(this.s(8)).fillColor('#444444').font('Helvetica')
+          .text(infos[i][1], x, labelBottom, { width: colW, lineGap: this.s(1), height: cellRemaining, ellipsis: true });
+      } else {
+        this._warnClipped();
+      }
       if (col === 1) {
         rowY = this.doc.y + this.s(6);
       }
     }
-    this.y = rowY;
+    this.y = Math.min(rowY, this._bottom());
     this._trackY();
   }
 
@@ -441,70 +522,73 @@ class WorshipAidPdfGenerator {
 
   renderPage3LiturgyOfWord() {
     this.newPage();
-    this.sectionHeader('The Liturgy of the Word');
-    this.rubric(RUBRICS.sit);
+    this._fitPageText(() => {
+      this.sectionHeader('The Liturgy of the Word');
+      this.rubric(RUBRICS.sit);
 
-    this.subHeading('First Reading');
-    this.citation(this.r.firstReadingCitation);
-    this.bodyText(this.r.firstReadingText, { size: 9 });
+      this.subHeading('First Reading');
+      this.citation(this.r.firstReadingCitation);
+      this.bodyText(this.r.firstReadingText, { size: 9 });
 
-    this.subHeading('Responsorial Psalm');
-    this.citation(this.r.psalmCitation);
-    this.musicLine('responsorialPsalmSetting', 'responsorialPsalmSettingComposer', 'Setting');
-    if (this.r.psalmRefrain) this.bodyText(`R. ${this.r.psalmRefrain}`, { bold: true, size: 9 });
-    if (this.r.psalmVerses) this.bodyText(this.r.psalmVerses, { size: 8.5, x: this.MARGIN_SIDE + this.s(10), width: this.CONTENT_WIDTH - this.s(10) });
+      this.subHeading('Responsorial Psalm');
+      this.citation(this.r.psalmCitation);
+      this.musicLine('responsorialPsalmSetting', 'responsorialPsalmSettingComposer', 'Setting');
+      if (this.r.psalmRefrain) this.bodyText(`R. ${this.r.psalmRefrain}`, { bold: true, size: 9 });
+      if (this.r.psalmVerses) this.bodyText(this.r.psalmVerses, { size: 8.5, x: this.MARGIN_SIDE + this.s(10), width: this.CONTENT_WIDTH - this.s(10) });
 
-    if (!this.r.noSecondReading && this.r.secondReadingCitation) {
-      this.subHeading('Second Reading');
-      this.citation(this.r.secondReadingCitation);
-      this.bodyText(this.r.secondReadingText, { size: 9 });
-    }
+      if (!this.r.noSecondReading && this.r.secondReadingCitation) {
+        this.subHeading('Second Reading');
+        this.citation(this.r.secondReadingCitation);
+        this.bodyText(this.r.secondReadingText, { size: 9 });
+      }
 
-    this.rubric(RUBRICS.stand);
-    this.subHeading('Gospel Acclamation');
-    const isLenten = this.data.liturgicalSeason === 'lent';
-    let acclamationText;
-    if (isLenten) {
-      acclamationText = (this.ss.lentenAcclamation === 'alternate') ? GOSPEL_ACCLAMATION_LENTEN_ALT : GOSPEL_ACCLAMATION_LENTEN;
-    } else {
-      acclamationText = GOSPEL_ACCLAMATION_STANDARD;
-    }
-    this.bodyText(acclamationText, { bold: true, size: 9 });
-    if (this.r.gospelAcclamationVerse) {
-      this.bodyText(this.r.gospelAcclamationVerse, { italic: true, size: 8.5 });
-    }
+      this.rubric(RUBRICS.stand);
+      this.subHeading('Gospel Acclamation');
+      const isLenten = this.data.liturgicalSeason === 'lent';
+      let acclamationText;
+      if (isLenten) {
+        acclamationText = (this.ss.lentenAcclamation === 'alternate') ? GOSPEL_ACCLAMATION_LENTEN_ALT : GOSPEL_ACCLAMATION_LENTEN;
+      } else {
+        acclamationText = GOSPEL_ACCLAMATION_STANDARD;
+      }
+      this.bodyText(acclamationText, { bold: true, size: 9 });
+      if (this.r.gospelAcclamationVerse) {
+        this.bodyText(this.r.gospelAcclamationVerse, { italic: true, size: 8.5 });
+      }
+    });
 
     this.pageNumber(3);
   }
 
   renderPage4GospelCreed() {
     this.newPage();
+    this._fitPageText(() => {
+      this.subHeading('Gospel');
+      this.citation(this.r.gospelCitation);
+      this.bodyText(this.r.gospelText, { size: 9.5 });
 
-    this.subHeading('Gospel');
-    this.citation(this.r.gospelCitation);
-    this.bodyText(this.r.gospelText, { size: 9.5 });
+      this.subHeading('Homily');
+      this.rubric(RUBRICS.sit);
+      this.y += this.s(4);
+      this.rubric(RUBRICS.stand);
 
-    this.subHeading('Homily');
-    this.rubric(RUBRICS.sit);
-    this.y += this.s(4);
-    this.rubric(RUBRICS.stand);
+      const creedType = this.ss.creedType || 'nicene';
+      const creedHeading = {
+        apostles:       "The Apostles' Creed",
+        baptismal_vows: 'Renewal of Baptismal Vows',
+        nicene:         'The Nicene Creed'
+      }[creedType] || 'The Nicene Creed';
+      const creedText = {
+        apostles:       APOSTLES_CREED,
+        baptismal_vows: RENEWAL_OF_BAPTISMAL_VOWS,
+        nicene:         NICENE_CREED
+      }[creedType] || NICENE_CREED;
+      this.subHeading(creedHeading);
+      this.bodyText(creedText, { size: 7.5 });
 
-    const creedType = this.ss.creedType || 'nicene';
-    const creedHeading = {
-      apostles:       "The Apostles' Creed",
-      baptismal_vows: 'Renewal of Baptismal Vows',
-      nicene:         'The Nicene Creed'
-    }[creedType] || 'The Nicene Creed';
-    const creedText = {
-      apostles:       APOSTLES_CREED,
-      baptismal_vows: RENEWAL_OF_BAPTISMAL_VOWS,
-      nicene:         NICENE_CREED
-    }[creedType] || NICENE_CREED;
-    this.subHeading(creedHeading);
-    this.bodyText(creedText, { size: 7.5 });
-
-    this.subHeading('Prayer of the Faithful');
-    this.bodyText('The intentions are read; the assembly responds.', { italic: true, size: 8 });
+      this.subHeading('Prayer of the Faithful');
+      this.bodyText('The intentions are read; the assembly responds.', { italic: true, size: 8 });
+    });
 
     this.pageNumber(4);
   }
@@ -588,39 +672,43 @@ class WorshipAidPdfGenerator {
 
   renderPage7ConcludingRites() {
     this.newPage();
-    this.sectionHeader('The Concluding Rites');
+    this._fitPageText(() => {
+      this.sectionHeader('The Concluding Rites');
 
-    this.subHeading('Hymn of Thanksgiving');
-    this.musicLine('hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving');
-    // Leave room below for the blessing & dismissal, postlude, announcements
-    // (estimated from text length), and the copyright line.
-    const announcementReserve = this.data.announcements
-      ? Math.min(120, Math.ceil(String(this.data.announcements).length / 80) * 10 + 25)
-      : 0;
-    this.hymnMusicSpace({ reserveBelow: 130 + announcementReserve });
+      this.subHeading('Hymn of Thanksgiving');
+      this.musicLine('hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving');
+      // Leave room below for the blessing & dismissal, postlude, announcements
+      // (estimated from text length), and the copyright line.
+      const announcementReserve = this.data.announcements
+        ? Math.min(120, Math.ceil(String(this.data.announcements).length / 80) * 10 + 25)
+        : 0;
+      this.hymnMusicSpace({ reserveBelow: 130 + announcementReserve });
 
-    this.rubric(RUBRICS.stand);
+      this.rubric(RUBRICS.stand);
 
-    this.subHeading('Blessing & Dismissal');
-    this.bodyText('Priest: The Lord be with you. All: And with your spirit.', { size: 8 });
-    this.bodyText('Priest: May almighty God bless you, the Father, and the Son, ✠ and the Holy Spirit. All: Amen.', { size: 8 });
-    this.bodyText('Deacon: Go forth, the Mass is ended. All: Thanks be to God.', { size: 8 });
+      this.subHeading('Blessing & Dismissal');
+      this.bodyText('Priest: The Lord be with you. All: And with your spirit.', { size: 8 });
+      this.bodyText('Priest: May almighty God bless you, the Father, and the Son, ✠ and the Holy Spirit. All: Amen.', { size: 8 });
+      this.bodyText('Deacon: Go forth, the Mass is ended. All: Thanks be to God.', { size: 8 });
 
-    if (this.includePostlude) {
-      this.subHeading('Organ Postlude');
-      this.musicLine('organPostlude', 'organPostludeComposer', 'Postlude');
-    }
+      if (this.includePostlude) {
+        this.subHeading('Organ Postlude');
+        this.musicLine('organPostlude', 'organPostludeComposer', 'Postlude');
+      }
 
-    if (this.data.announcements) {
-      this.y += this.s(4);
-      this.doc.save()
-        .moveTo(this.MARGIN_SIDE, this.y)
-        .lineTo(this.PAGE_WIDTH - this.MARGIN_SIDE, this.y)
-        .lineWidth(0.5).strokeColor(COLORS.gold).stroke().restore();
-      this.y += this.s(4);
-      this.subHeading('Announcements');
-      this.bodyText(this.data.announcements, { size: 7.5 });
-    }
+      if (this.data.announcements) {
+        this.y += this.s(4);
+        if (!this._dryRun) {
+          this.doc.save()
+            .moveTo(this.MARGIN_SIDE, this.y)
+            .lineTo(this.PAGE_WIDTH - this.MARGIN_SIDE, this.y)
+            .lineWidth(0.5).strokeColor(COLORS.gold).stroke().restore();
+        }
+        this.y += this.s(4);
+        this.subHeading('Announcements');
+        this.bodyText(this.data.announcements, { size: 7.5 });
+      }
+    });
 
     const copyrightShort = this.parishSettings.copyrightShort || 'Music reprinted under OneLicense #A-702171. All rights reserved.';
     this._footerText(copyrightShort, this.PAGE_HEIGHT - this.MARGIN * 0.85);
@@ -652,22 +740,37 @@ class WorshipAidPdfGenerator {
     this.doc.fontSize(this.s(10)).fillColor(COLORS.muted).font('Helvetica')
       .text(formatDate(this.data.liturgicalDate), this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center' });
 
+    // Anchor copyright above the bottom margin so it never crosses it.
+    const copyrightBlockHeight = this.s(90);
+    const copyrightY = this.PAGE_HEIGHT - this.MARGIN - copyrightBlockHeight;
+
     if (this.data.specialNotes) {
       this.y = this.doc.y + this.s(14);
-      this.doc.fontSize(this.s(9)).fillColor(COLORS.muted).font('Helvetica-Oblique')
-        .text(this.data.specialNotes, this.MARGIN_SIDE + this.s(20), this.y, { width: this.CONTENT_WIDTH - this.s(40), align: 'center' });
+      // Clamp to the top of the copyright block so long notes can't push
+      // the back cover onto a ninth page.
+      const notesRoom = copyrightY - this.s(6) - this.y;
+      if (notesRoom > this.s(12)) {
+        this.doc.fontSize(this.s(9)).fillColor(COLORS.muted).font('Helvetica-Oblique')
+          .text(this.data.specialNotes, this.MARGIN_SIDE + this.s(20), this.y,
+            { width: this.CONTENT_WIDTH - this.s(40), align: 'center', height: notesRoom, ellipsis: true });
+      } else {
+        this._warnClipped();
+      }
       this.doc.font('Helvetica');
     }
 
     const copyrightFull = this.parishSettings.copyrightFull ||
       `Excerpts from the Lectionary for Mass © 2001, 1998, 1997, 1986, 1970 Confraternity of Christian Doctrine, Inc. Used with permission. All rights reserved.\n\nExcerpts from The Roman Missal © 2010, ICEL. All rights reserved.\n\nMusic reprinted under OneLicense #${this.parishSettings.onelicenseNumber || 'A-702171'}. All rights reserved.`;
-    // Anchor copyright above the bottom margin so it never crosses it.
-    const copyrightBlockHeight = this.s(90);
-    const copyrightY = this.PAGE_HEIGHT - this.MARGIN - copyrightBlockHeight;
+    // Footer-style write: a custom copyright block longer than the reserved
+    // space is clipped at the page edge instead of spilling to a new page.
+    const prevBottom = this.doc.page.margins.bottom;
+    this.doc.page.margins.bottom = 0;
     this.doc.fontSize(this.s(6.5)).fillColor(COLORS.light)
       .text(copyrightFull, this.MARGIN_SIDE + this.s(10), copyrightY, {
-        width: this.CONTENT_WIDTH - this.s(20), align: 'center', lineGap: this.s(1.5)
+        width: this.CONTENT_WIDTH - this.s(20), align: 'center', lineGap: this.s(1.5),
+        height: this.PAGE_HEIGHT - copyrightY, ellipsis: true
       });
+    this.doc.page.margins.bottom = prevBottom;
   }
 }
 

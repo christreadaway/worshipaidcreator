@@ -53,11 +53,11 @@ describe('PDF layout — half-letter (5.5x8.5)', () => {
     assert.equal(gen1.result.pageMaxY.length, 8);
   });
 
-  it('renders within a sensible upper bound', () => {
-    // Content can spill into extra pages if a Mass has unusually long
-    // readings. We just guard against runaway output.
-    assert.ok(gen1.result.pageCount >= 8, 'at least 8 pages');
-    assert.ok(gen1.result.pageCount <= 24, `pageCount ${gen1.result.pageCount} exceeds 24`);
+  it('is always exactly 8 pages', () => {
+    // Hard requirement: the booklet never exceeds 8 pages. Long content is
+    // shrunk to fit (down to 70% body-text scale) and then truncated with
+    // a warning rather than spilling onto extra pages.
+    assert.equal(gen1.result.pageCount, 8);
   });
 
   it('content stays above the bottom margin on every page', () => {
@@ -92,9 +92,8 @@ describe('PDF layout — tabloid (8.5x11)', () => {
     assert.equal(g.result.pageHeight, 792);
   });
 
-  it('renders within a sensible upper bound', () => {
-    assert.ok(g.result.pageCount >= 8);
-    assert.ok(g.result.pageCount <= 24, `pageCount ${g.result.pageCount} exceeds 24`);
+  it('is always exactly 8 pages', () => {
+    assert.equal(g.result.pageCount, 8);
   });
 
   it('content stays above the bottom margin on every page', () => {
@@ -110,7 +109,7 @@ describe('PDF layout — tabloid (8.5x11)', () => {
 });
 
 describe('PDF layout — long-content stress', () => {
-  it('long readings render without crash on half-letter', async () => {
+  it('long readings still produce exactly 8 pages on half-letter (with truncation warnings)', async () => {
     const longText = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. '.repeat(60);
     const r = await gen('half-letter', 'stress-half', {
       readings: Object.assign({}, sample.readings, {
@@ -120,10 +119,12 @@ describe('PDF layout — long-content stress', () => {
       })
     });
     assert.ok(fs.existsSync(r.out));
-    assert.ok(Array.isArray(r.result.warnings));
+    assert.equal(r.result.pageCount, 8);
+    assert.ok(r.result.warnings.some(w => /truncated/.test(w)),
+      'expected a truncation warning for content that cannot fit');
   });
 
-  it('long readings render without crash on tabloid', async () => {
+  it('long readings still produce exactly 8 pages on tabloid', async () => {
     const longText = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. '.repeat(80);
     const r = await gen('tabloid', 'stress-tabloid', {
       readings: Object.assign({}, sample.readings, {
@@ -133,6 +134,24 @@ describe('PDF layout — long-content stress', () => {
       })
     });
     assert.ok(fs.existsSync(r.out));
+    assert.equal(r.result.pageCount, 8);
+  });
+
+  it('long announcements, blurbs, notes, and copyright never add pages', async () => {
+    const long = 'This is a very long block of parish text that keeps going. '.repeat(40);
+    const r = await gen('half-letter', 'stress-misc', {
+      announcements: long,
+      specialNotes: long
+    });
+    // Long parish-settings text is exercised through generatePdf options.
+    const out = path.join(outputDir, 'stress-settings.pdf');
+    const { generatePdf } = require('../pdf-generator');
+    const r2 = await generatePdf(sample, out, {
+      bookletSize: 'half-letter',
+      parishSettings: { connectBlurb: long, nurseryBlurb: long, copyrightFull: long }
+    });
+    assert.equal(r.result.pageCount, 8);
+    assert.equal(r2.pageCount, 8);
   });
 });
 
