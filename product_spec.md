@@ -1,10 +1,10 @@
 # Worship Aid Generator — Product Specification
 
-**Version:** 1.4.0
+**Version:** 1.5.0
 **Last Updated:** June 9, 2026
 **Status:** Active development — replacing Microsoft Publisher in fall 2026
 
-> **Pick-up note for next session:** see `session_notes.md` § "Session 7 (June 9, 2026)" for v1.4 — hymn-music paste areas (programmatic OneLicense integration dropped by decision), hard 8-page guarantee (margins relax to 0.5" before type shrinks, never below 75%), full-product code review with security hardening (auth gates, path-traversal fixes), renderer parity fixes, and US liturgical-calendar corrections. Branch `claude/youthful-mayer-sxg6du`. 290/290 tests passing.
+> **Pick-up note for next session:** see `session_notes.md` § "Session 8 (June 9, 2026)" for v1.5 — Unicode PDF fonts (Liberation Sans, fixing encoding bugs), single 9 pt body text, conditional hymn paste area (antiphon suppresses page 2 box), Children's Liturgy placement fix (dismissal on page 2 after Opening Prayer, return note on page 5 at Offertory), rubric alignment setting, two-column Creed layout, Kyrie/Sanctus/Agnus ordinary-music paste areas. Branch `claude/youthful-mayer-sxg6du`. 298/298 tests passing.
 
 > **Decision (June 2026): no programmatic hymn-music integration.** OneLicense has no public API, and automating it is not worth the effort. Instead the booklet **reserves a blank paste area** under each congregational hymn slot (processional, communion, thanksgiving) — a dashed guide box sized for hymn notation — and the user pastes the licensed music in by hand after export (Acrobat, or print + paste). The OneLicense *search* buttons remain as a convenience for finding the music to paste. Controlled per-aid by `reserveHymnSpace` (default on; checkbox in the Shared Music section).
 

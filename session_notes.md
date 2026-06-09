@@ -1045,3 +1045,92 @@ page after every section (a "16-page" export is now 8). Layout tests assert
 - Branch: `claude/youthful-mayer-sxg6du`, pushed.
 - Docs updated: `product_spec.md` (v1.4), `worship_aid_generator_PRD.md`
   (v1.4), this file.
+
+---
+
+## Session 8 (June 9, 2026) — v1.5: Next-Version Improvements
+
+**Branch:** `claude/youthful-mayer-sxg6du`
+**Starting test count:** 290/290
+
+### Changes Made
+
+#### 1. PDF Encoding Fix (Item 1)
+- Replaced Helvetica (WinAnsi, 256-char limit) with embedded Liberation Sans TTF
+  (`/usr/share/fonts/truetype/liberation/LiberationSans-*.ttf`) in all four
+  weights (Regular, Bold, Italic, BoldItalic). Full Unicode Latin coverage
+  eliminates the character-rendering problems seen in the v1.4 PDF sample.
+- Added `_normalizeText()` to map decorative liturgical cross symbols (☩ ✝ ✠)
+  to the dagger (†) which Liberation Sans includes.
+- `_textBlock()` now calls `_normalizeText()` before every draw.
+
+#### 2. Single Consistent Font Size (Item 2)
+- `bodyText()` always uses 9 pt regardless of any `opts.size` passed by the
+  caller. Body text (readings, creed, prayers, rubrics) is now a uniform 9 pt.
+- `musicLine()` updated from 8.5 pt to 9 pt for consistency.
+- `citation()` and heading methods keep their separate sizing (these are
+  structural, not body copy).
+
+#### 3. More Room for Hymns / Better Page Fill (Item 3)
+- Ordinary-music paste areas (Kyrie, Holy Holy Holy, Lamb of God) freed the
+  previous per-element `size` noise that was squeezing pages; uniform 9 pt
+  body means `_fitPageText` has more room before shrinking type.
+- Page 6 `reserveBelow` reduced 70 → 50 pt (choral anthem is just one
+  heading + line).
+- Page 2: `reserveBelow` made dynamic: 150 pt normally, +75 pt when
+  Children's Liturgy dismissal box is enabled (since the box is now on p. 2).
+
+#### 4. Kyrie / Holy Holy Holy / Lamb of God Music (Item 4)
+- Added `ordinaryMusicSpace(label)` method (PDF) and `.ordinary-music-space`
+  CSS class (HTML): 0.6 in tall dashed box, also gated by `reserveHymnSpace`.
+- Called after: Kyrie (page 2), Holy Holy Holy (page 5), Lamb of God (page 6).
+- Allows parish to paste weekly Mass ordinary notation in these fixed slots.
+
+#### 5. Conditional Hymn Paste Area (Item 5)
+- Processional hymn paste area now only renders when `entranceType ===
+  'processional'`. No paste area is shown when the antiphon mode is active
+  (the antiphon has no separate notation to paste).
+- HTML: new `processionalHymnSpaceHtml` variable replaces `hymnSpaceHtml` on
+  page 2.
+- PDF: `if (entranceType === 'processional') hymnMusicSpace(...)`.
+
+#### 6. Rubric Alignment (Item 6)
+- New `seasonalSettings.rubricAlignment` field (enum: `left` | `center` |
+  `right`; default `left`).
+- Schema: added to `seasonalSettings` definition.
+- PDF: `rubric(text, align)` takes override; falls back to `ss.rubricAlignment`.
+- HTML: all `<p class="rubric">` lines use `RP` helper variable = `<p
+  class="rubric" style="text-align:${rubricAlign}>`.
+- Editor: `<select id="rubricAlignment">` added to Seasonal Settings section.
+- `buildData()` and `populateForm()` include the new field.
+
+#### 7. Two-Column Creed (Item 7)
+- New `seasonalSettings.twoColumnCreed` boolean (default false).
+- Schema: added.
+- PDF: `_renderCreedTwoColumn()` splits lines at mid-point and renders two
+  side-by-side columns using PDFKit direct coordinates. Skipped for
+  `baptismal_vows` (too short to benefit).
+- HTML: `.creed-text.two-column` CSS rule uses `columns: 2; column-gap: 14pt`.
+  Class added when `ss.twoColumnCreed && creedType !== 'baptismal_vows'`.
+- Editor: checkbox added to Seasonal Settings.
+
+#### 8. Children's Liturgy Placement (Item 8)
+- **Before:** Children's Liturgy block rendered on page 5 (Liturgy of the
+  Eucharist), at the Offertory — liturgically incorrect.
+- **After:** Dismissal box on page 2 (end of Introductory Rites, after Gloria
+  / Opening Prayer, before First Reading). Return note on page 5 at Offertory
+  (single rubric line, not a full box).
+- PDF and HTML renderers both updated.
+- Default dismissal note: "Children are dismissed after the Opening Prayer and
+  will rejoin during the Offertory." (customizable via `childrenLiturgyNotes`).
+
+### Tests
+- Updated `hymn-space.test.js` to reflect conditional processional paste area
+  and new ordinary-music paste areas (added `processionalSample` fixture with
+  `entranceType: 'processional'`).
+- 8 new tests; all 298 pass.
+
+### Deliberately NOT changed
+- Beta passwordless login (same as before).
+- `reserveHymnSpace` checkbox in editor still controls all paste areas
+  (hymn + ordinary).

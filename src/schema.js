@@ -87,7 +87,9 @@ const inputSchema = {
         penitentialAct: { type: 'string', enum: ['confiteor', 'kyrie_only'] },
         includePostlude: { type: 'boolean' },
         adventWreath: { type: 'boolean' },
-        lentenAcclamation: { type: 'string', enum: ['standard', 'alternate'] }
+        lentenAcclamation: { type: 'string', enum: ['standard', 'alternate'] },
+        rubricAlignment: { type: 'string', enum: ['left', 'center', 'right'] },
+        twoColumnCreed: { type: 'boolean' }
       }
     },
 

@@ -20,6 +20,17 @@ const { detectOverflows } = require('./validator');
 // 72pt = 1 inch
 const PT = 72;
 
+// Embedded TrueType fonts — Liberation Sans covers the full Latin Unicode
+// range (curly quotes, em/en dashes, accented chars, currency symbols)
+// that Helvetica's WinAnsi encoding silently drops.
+const FONT_DIR = '/usr/share/fonts/truetype/liberation';
+const FONT_PATHS = {
+  'Sans':          `${FONT_DIR}/LiberationSans-Regular.ttf`,
+  'Sans-Bold':     `${FONT_DIR}/LiberationSans-Bold.ttf`,
+  'Sans-Italic':   `${FONT_DIR}/LiberationSans-Italic.ttf`,
+  'Sans-BoldItalic': `${FONT_DIR}/LiberationSans-BoldItalic.ttf`
+};
+
 // Layouts. All values in PDF points (72 = 1 inch).
 // Tabloid uses 1" margins (page is large enough that this still leaves a
 // comfortable 6.5"×9" content rectangle). Half-letter would be too tight at
@@ -119,6 +130,10 @@ class WorshipAidPdfGenerator {
         }
       });
 
+      for (const [name, filePath] of Object.entries(FONT_PATHS)) {
+        doc.registerFont(name, filePath);
+      }
+
       const stream = fs.createWriteStream(outputPath);
       doc.pipe(stream);
       this.doc = doc;
@@ -200,6 +215,16 @@ class WorshipAidPdfGenerator {
     this.warnings.push(`Page ${page}: content was truncated to keep the booklet at 8 pages — shorten the text on this page.`);
   }
 
+  // Normalize text for the embedded Liberation Sans font.  The only common
+  // characters outside its coverage are decorative liturgical crosses.
+  _normalizeText(str) {
+    if (!str) return str;
+    return String(str)
+      .replace(/☩/g, '†')   // Cross of Jerusalem → dagger (†)
+      .replace(/✝/g, '†')  // Latin cross → dagger
+      .replace(/✠/g, '†'); // Maltese cross → dagger
+  }
+
   // Write a text block at this.y, clamped to the current page. Never lets
   // PDFKit auto-add a page: if the block doesn't fully fit it is truncated
   // with an ellipsis and a warning is recorded. In dry-run mode nothing is
@@ -207,6 +232,7 @@ class WorshipAidPdfGenerator {
   // _fitPageText to shrink-to-fit a page before really rendering it).
   // Returns the measured height of the full (unclamped) block.
   _textBlock(text, x, textOpts, advanceAfter) {
+    text = this._normalizeText(text);
     const h = this.doc.heightOfString(text, textOpts);
     if (this._dryRun) {
       this.y += h + advanceAfter;
@@ -230,7 +256,7 @@ class WorshipAidPdfGenerator {
   }
 
   sectionHeader(text) {
-    this.doc.fontSize(this.s(11)).fillColor(COLORS.navy).font('Helvetica-Bold');
+    this.doc.fontSize(this.s(11)).fillColor(COLORS.navy).font('Sans-Bold');
     const ruleY = this.y + this.doc.heightOfString(text.toUpperCase(), { width: this.CONTENT_WIDTH, align: 'center', characterSpacing: 1.5 }) + this.s(2);
     this._textBlock(text.toUpperCase(), this.MARGIN_SIDE,
       { width: this.CONTENT_WIDTH, align: 'center', characterSpacing: 1.5 }, this.s(8));
@@ -240,29 +266,31 @@ class WorshipAidPdfGenerator {
         .lineTo(this.PAGE_WIDTH - this.MARGIN_SIDE - this.s(40), ruleY)
         .lineWidth(0.5).strokeColor(COLORS.gold).stroke().restore();
     }
-    this.doc.font('Helvetica');
+    this.doc.font('Sans');
   }
 
   subHeading(text) {
-    this.doc.fontSize(this.s(8)).fillColor(COLORS.burgundy).font('Helvetica-Bold');
+    this.doc.fontSize(this.s(8)).fillColor(COLORS.burgundy).font('Sans-Bold');
     this._textBlock(text.toUpperCase(), this.MARGIN_SIDE,
       { width: this.CONTENT_WIDTH, characterSpacing: 0.8 }, this.s(2));
-    this.doc.font('Helvetica');
+    this.doc.font('Sans');
   }
 
-  rubric(text) {
-    this.doc.fontSize(this.s(7.5)).fillColor('#8B0000').font('Helvetica-Oblique');
-    this._textBlock(text, this.MARGIN_SIDE, { width: this.CONTENT_WIDTH }, this.s(2));
-    this.doc.font('Helvetica');
+  rubric(text, align) {
+    const a = align || this.ss.rubricAlignment || 'left';
+    this.doc.fontSize(this.s(7.5)).fillColor('#8B0000').font('Sans-Italic');
+    this._textBlock(text, this.MARGIN_SIDE, { width: this.CONTENT_WIDTH, align: a }, this.s(2));
+    this.doc.font('Sans');
   }
 
   bodyText(text, opts = {}) {
     if (!text) return;
-    const baseSize = opts.size || 9;
-    // textScale is the shrink-to-fit factor (1 unless _fitPageText reduced it).
+    // Single consistent body-text size throughout — textScale shrinks it
+    // only when _fitPageText needs to fit a page.
+    const baseSize = 9;
     this.doc.fontSize(this.s(baseSize) * this.textScale)
       .fillColor(opts.color || COLORS.text)
-      .font(opts.bold ? 'Helvetica-Bold' : opts.italic ? 'Helvetica-Oblique' : 'Helvetica');
+      .font(opts.bold ? 'Sans-Bold' : opts.italic ? 'Sans-Italic' : 'Sans');
     const x = opts.x !== undefined ? opts.x : this.MARGIN_SIDE;
     const width = opts.width !== undefined ? opts.width : this.CONTENT_WIDTH;
     this._textBlock(text, x, {
@@ -270,7 +298,7 @@ class WorshipAidPdfGenerator {
       align: opts.align || 'left',
       lineGap: this.s(1) * this.textScale
     }, this.s(opts.gap !== undefined ? opts.gap : 3));
-    this.doc.font('Helvetica');
+    this.doc.font('Sans');
   }
 
   citation(text) {
@@ -282,10 +310,10 @@ class WorshipAidPdfGenerator {
     if (items.length === 0) return;
     for (const item of items) {
       const text = `${label} — ${renderMusicLineText(item)}`;
-      this.doc.fontSize(this.s(8.5)).fillColor(COLORS.text).font('Helvetica-Oblique');
+      this.doc.fontSize(this.s(9) * this.textScale).fillColor(COLORS.text).font('Sans-Italic');
       this._textBlock(text, this.MARGIN_SIDE, { width: this.CONTENT_WIDTH }, this.s(2));
     }
-    this.doc.font('Helvetica');
+    this.doc.font('Sans');
   }
 
   // Shrink-to-fit, in order of preference:
@@ -391,12 +419,66 @@ class WorshipAidPdfGenerator {
       .rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, h)
       .dash(3, { space: 3 }).lineWidth(0.5).strokeColor('#C9C9C9').stroke()
       .undash().restore();
-    this.doc.fontSize(this.s(6.5)).fillColor('#B5B5B5').font('Helvetica-Oblique')
+    this.doc.fontSize(this.s(6.5)).fillColor('#B5B5B5').font('Sans-Italic')
       .text('Reserved for hymn music — paste licensed notation here',
         this.MARGIN_SIDE, this.y + h / 2 - this.s(4),
         { width: this.CONTENT_WIDTH, align: 'center' });
-    this.doc.font('Helvetica');
+    this.doc.font('Sans');
     this.y += h + this.s(6);
+    this._trackY();
+  }
+
+  // Two-column layout for the Nicene/Apostles' Creed. Splits the text at the
+  // midpoint and renders left/right columns side by side to conserve vertical
+  // space on page 4 when the creed + gospel are both present.
+  _renderCreedTwoColumn(text) {
+    const lines = text.split('\n');
+    const half = Math.ceil(lines.length / 2);
+    const leftText  = lines.slice(0, half).join('\n');
+    const rightText = lines.slice(half).join('\n');
+    const gap  = this.s(10);
+    const colW = (this.CONTENT_WIDTH - gap) / 2;
+    const x1   = this.MARGIN_SIDE;
+    const x2   = this.MARGIN_SIDE + colW + gap;
+    const lineOpts = { lineGap: this.s(0.8) * this.textScale };
+    this.doc.fontSize(this.s(9) * this.textScale).fillColor(COLORS.text).font('Sans');
+    if (this._dryRun) {
+      const lh = this.doc.heightOfString(leftText,  { ...lineOpts, width: colW });
+      const rh = this.doc.heightOfString(rightText, { ...lineOpts, width: colW });
+      this.y += Math.max(lh, rh) + this.s(3);
+      return;
+    }
+    const startY = this.y;
+    const lh = this.doc.heightOfString(leftText,  { ...lineOpts, width: colW });
+    const rh = this.doc.heightOfString(rightText, { ...lineOpts, width: colW });
+    const maxH = Math.min(Math.max(lh, rh), this._bottom() - startY);
+    if (lh > 0) this.doc.text(leftText,  x1, startY, { ...lineOpts, width: colW, height: maxH, ellipsis: true });
+    if (rh > 0) this.doc.text(rightText, x2, startY, { ...lineOpts, width: colW, height: maxH, ellipsis: true });
+    this.y = startY + maxH + this.s(3);
+    this._trackY();
+  }
+
+  // Small reserved area under a Mass ordinary part (Kyrie, Holy Holy Holy,
+  // Lamb of God) so the parish can paste the week's musical setting in by
+  // hand after export — smaller than hymn spaces since ordinary settings are
+  // the same every week and already identified by name above.
+  ordinaryMusicSpace(label) {
+    if (this.data.reserveHymnSpace === false) return;
+    const h = this.s(55);
+    const available = this._bottom() - this.y;
+    if (available < this.s(30)) return;
+    const drawH = Math.min(h, available);
+    if (this._dryRun) { this.y += drawH + this.s(4); return; }
+    this.doc.save()
+      .rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, drawH)
+      .dash(2, { space: 3 }).lineWidth(0.4).strokeColor('#DEDEDE').stroke()
+      .undash().restore();
+    this.doc.fontSize(this.s(6)).fillColor('#C8C8C8').font('Sans-Italic')
+      .text(label || 'Music notation', this.MARGIN_SIDE,
+        this.y + drawH / 2 - this.s(3),
+        { width: this.CONTENT_WIDTH, align: 'center' });
+    this.doc.font('Sans');
+    this.y += drawH + this.s(4);
     this._trackY();
   }
 
@@ -461,12 +543,12 @@ class WorshipAidPdfGenerator {
     // Parish name (if persistent branding is configured)
     let nameY = usableTop + this.s(95);
     if (this.parishSettings.parishName) {
-      this.doc.fontSize(this.s(11)).fillColor(COLORS.gold).font('Helvetica-Bold')
+      this.doc.fontSize(this.s(11)).fillColor(COLORS.gold).font('Sans-Bold')
         .text(this.parishSettings.parishName.toUpperCase(), this.MARGIN_SIDE, nameY,
           { width: this.CONTENT_WIDTH, align: 'center', characterSpacing: 1.5 });
       nameY = this.doc.y + this.s(2);
       if (this.parishSettings.coverTagline) {
-        this.doc.fontSize(this.s(8)).fillColor(COLORS.muted).font('Helvetica-Oblique')
+        this.doc.fontSize(this.s(8)).fillColor(COLORS.muted).font('Sans-Italic')
           .text(this.parishSettings.coverTagline, this.MARGIN_SIDE, nameY,
             { width: this.CONTENT_WIDTH, align: 'center' });
         nameY = this.doc.y + this.s(4);
@@ -476,11 +558,11 @@ class WorshipAidPdfGenerator {
 
     // Feast name
     this.y = nameY;
-    this.doc.fontSize(this.s(20)).fillColor(COLORS.navy).font('Helvetica-Bold')
+    this.doc.fontSize(this.s(20)).fillColor(COLORS.navy).font('Sans-Bold')
       .text(this.data.feastName, this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center' });
     this.y = this.doc.y + this.s(6);
 
-    this.doc.fontSize(this.s(11)).fillColor(COLORS.muted).font('Helvetica')
+    this.doc.fontSize(this.s(11)).fillColor(COLORS.muted).font('Sans')
       .text(formatDate(this.data.liturgicalDate), this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center' });
     this.y = this.doc.y + this.s(3);
 
@@ -500,7 +582,7 @@ class WorshipAidPdfGenerator {
     if (clergyLines.length) {
       const clergyRoom = this._bottom() - this.y;
       if (clergyRoom > this.s(10)) {
-        this.doc.fontSize(this.s(8)).fillColor(COLORS.muted).font('Helvetica')
+        this.doc.fontSize(this.s(8)).fillColor(COLORS.muted).font('Sans')
           .text(clergyLines.join('\n'), this.MARGIN_SIDE, this.y,
             { width: this.CONTENT_WIDTH, align: 'center', lineGap: this.s(1), height: clergyRoom, ellipsis: true });
         this.y = Math.min(this.doc.y, this._bottom());
@@ -539,12 +621,12 @@ class WorshipAidPdfGenerator {
       // Clamp each cell to the bottom margin so a long parish blurb can
       // never push the cover onto a second page.
       if (rowY > this._bottom() - this.s(14)) { this._warnClipped(); break; }
-      this.doc.fontSize(this.s(7)).fillColor(COLORS.gold).font('Helvetica-Bold')
+      this.doc.fontSize(this.s(7)).fillColor(COLORS.gold).font('Sans-Bold')
         .text(infos[i][0], x, rowY, { width: colW, characterSpacing: 1, lineBreak: false });
       const labelBottom = this.doc.y + this.s(1);
       const cellRemaining = this._bottom() - labelBottom;
       if (cellRemaining > this.s(8)) {
-        this.doc.fontSize(this.s(8)).fillColor('#444444').font('Helvetica')
+        this.doc.fontSize(this.s(8)).fillColor('#444444').font('Sans')
           .text(infos[i][1], x, labelBottom, { width: colW, lineGap: this.s(1), height: cellRemaining, ellipsis: true });
         rowBottom = Math.max(rowBottom, this.doc.y);
       } else {
@@ -564,10 +646,10 @@ class WorshipAidPdfGenerator {
       this.y += this.s(2);
       const welcomeRoom = this._bottom() - this.y;
       if (welcomeRoom > this.s(10)) {
-        this.doc.fontSize(this.s(8)).fillColor(COLORS.text).font('Helvetica-Oblique')
+        this.doc.fontSize(this.s(8)).fillColor(COLORS.text).font('Sans-Italic')
           .text(ps.welcomeMessage, this.MARGIN_SIDE, this.y,
             { width: this.CONTENT_WIDTH, align: 'center', lineGap: this.s(1), height: welcomeRoom, ellipsis: true });
-        this.doc.font('Helvetica');
+        this.doc.font('Sans');
         this.y = Math.min(this.doc.y, this._bottom());
       } else {
         this._warnClipped();
@@ -589,17 +671,21 @@ class WorshipAidPdfGenerator {
     this.subHeading(entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon');
     this.musicLine('processionalOrEntrance', 'processionalOrEntranceComposer',
       entranceType === 'processional' ? 'Processional' : 'Antiphon');
-    // Leave room below for the penitential act, Kyrie, Gloria, and (in
-    // Advent) the wreath box that still have to fit on this page.
-    this.hymnMusicSpace({ reserveBelow: 165 });
+    // Hymn paste area only when a processional hymn is sung (not antiphon).
+    // Reserve space for penitential act, Kyrie, Gloria, optional Advent wreath,
+    // and optional Children's Liturgy dismissal box.
+    if (entranceType === 'processional') {
+      const clReserve = this.data.childrenLiturgyEnabled ? 75 : 0;
+      this.hymnMusicSpace({ reserveBelow: 150 + clReserve });
+    }
 
     if (this.showAdventWreath) {
       this.y += this.s(3);
       this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, this.s(18))
         .fillColor('#f0eaf5').fill().restore();
-      this.doc.fontSize(this.s(9)).fillColor(COLORS.purple).font('Helvetica-Bold')
+      this.doc.fontSize(this.s(9)).fillColor(COLORS.purple).font('Sans-Bold')
         .text('Lighting of the Advent Wreath', this.MARGIN_SIDE, this.y + this.s(4), { width: this.CONTENT_WIDTH, align: 'center' });
-      this.doc.font('Helvetica');
+      this.doc.font('Sans');
       this.y = this.doc.y + this.s(8);
     }
 
@@ -610,12 +696,61 @@ class WorshipAidPdfGenerator {
 
     this.subHeading('Lord, Have Mercy');
     this.musicLine('kyrieSetting', 'kyrieComposer', 'Kyrie');
+    this.ordinaryMusicSpace('Kyrie — music notation');
 
     const showGloria = this.ss.gloria !== undefined ? this.ss.gloria :
       (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
     if (showGloria) {
       this.subHeading('Gloria');
-      this.bodyText('Glory to God in the highest, and on earth peace to people of good will.', { size: 8 });
+      this.bodyText('Glory to God in the highest, and on earth peace to people of good will.');
+    }
+
+    // Children's Liturgy dismissal — placed here because children are
+    // dismissed AFTER the Opening Prayer (end of Introductory Rites),
+    // BEFORE the First Reading. They return at the Offertory (page 5).
+    if (this.data.childrenLiturgyEnabled) {
+      this.y += this.s(4);
+      const _clTimes = (Array.isArray(this.data.childrenLiturgyMassTimes) && this.data.childrenLiturgyMassTimes.length)
+        ? this.data.childrenLiturgyMassTimes
+        : (this.data.childrenLiturgyMassTime ? [this.data.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
+      const innerX = this.MARGIN_SIDE + this.s(4);
+      const innerW = this.CONTENT_WIDTH - this.s(8);
+      const clLines = [
+        [`Children's Liturgy of the Word — ${_clTimes.join(' & ')}`, 'Sans-Bold', 8]
+      ];
+      if (this.data.childrenLiturgyLeader)
+        clLines.push([`Led by ${this.data.childrenLiturgyLeader}`, 'Sans', 7.5]);
+      if (this.data.childrenLiturgyMusic) {
+        clLines.push([`${this.data.childrenLiturgyMusic}${this.data.childrenLiturgyMusicComposer ? ', ' + this.data.childrenLiturgyMusicComposer : ''}`, 'Sans-Italic', 7.5]);
+      }
+      const notes = this.data.childrenLiturgyNotes ||
+        'Children are dismissed after the Opening Prayer and will rejoin during the Offertory.';
+      clLines.push([notes, 'Sans-Italic', 7]);
+      let contentH = 0;
+      for (const [text, font, size] of clLines) {
+        this.doc.font(font).fontSize(this.s(size));
+        contentH += this.doc.heightOfString(text, { width: innerW });
+      }
+      const boxH = Math.min(contentH + this.s(8), Math.max(0, this._bottom() - this.y));
+      if (boxH > this.s(10)) {
+        if (!this._dryRun) {
+          this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, boxH)
+            .fillColor('#f5f0e6').fill().restore();
+          const boxBottom = this.y + boxH;
+          let cursorY = this.y + this.s(4);
+          for (const [text, font, size] of clLines) {
+            this.doc.font(font).fontSize(this.s(size)).fillColor(COLORS.text);
+            const remaining = boxBottom - cursorY;
+            if (remaining < this.doc.currentLineHeight(true)) { this._warnClipped(); break; }
+            this.doc.text(text, innerX, cursorY, { width: innerW, height: remaining, ellipsis: true });
+            cursorY = this.doc.y;
+          }
+        }
+        this.y += boxH + this.s(4);
+      }
+      if (this._dryRun) this.y += contentH + this.s(12);
+      this.doc.font('Sans');
+      this._trackY();
     }
 
     this.pageNumber(2);
@@ -689,7 +824,11 @@ class WorshipAidPdfGenerator {
         nicene:         NICENE_CREED
       }[creedType] || NICENE_CREED;
       this.subHeading(creedHeading);
-      this.bodyText(creedText, { size: 7.5 });
+      if (this.ss.twoColumnCreed && creedType !== 'baptismal_vows') {
+        this._renderCreedTwoColumn(creedText);
+      } else {
+        this.bodyText(creedText);
+      }
 
       this.subHeading('Prayer of the Faithful');
       this.bodyText('The intentions are read; the assembly responds.', { italic: true, size: 8 });
@@ -706,75 +845,31 @@ class WorshipAidPdfGenerator {
     this.subHeading('Offertory');
     this.musicLine('offertoryAnthem', 'offertoryAnthemComposer', 'Offertory Anthem');
 
+    // Children return from Children's Liturgy of the Word at the Offertory.
     if (this.data.childrenLiturgyEnabled) {
-      this.y += this.s(3);
-      // Children's Liturgy can run at any subset of Masses — render every
-      // selected time, joined by " & " (or fall back to the legacy single
-      // string field for old saved drafts).
       const _clTimes = (Array.isArray(this.data.childrenLiturgyMassTimes) && this.data.childrenLiturgyMassTimes.length)
         ? this.data.childrenLiturgyMassTimes
         : (this.data.childrenLiturgyMassTime ? [this.data.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
-      const innerX = this.MARGIN_SIDE + this.s(4);
-      const innerW = this.CONTENT_WIDTH - this.s(8);
-      // Mirrors the HTML children's-liturgy box: title, leader, music, notes.
-      const clLines = [
-        [`Children's Liturgy of the Word — ${_clTimes.join(' & ')}`, 'Helvetica-Bold', 8]
-      ];
-      if (this.data.childrenLiturgyLeader) {
-        clLines.push([`Led by ${this.data.childrenLiturgyLeader}`, 'Helvetica', 7.5]);
-      }
-      if (this.data.childrenLiturgyMusic) {
-        clLines.push([`${this.data.childrenLiturgyMusic}${this.data.childrenLiturgyMusicComposer ? ', ' + this.data.childrenLiturgyMusicComposer : ''}`, 'Helvetica-Oblique', 7.5]);
-      }
-      if (this.data.childrenLiturgyNotes) {
-        clLines.push([String(this.data.childrenLiturgyNotes), 'Helvetica-Oblique', 7]);
-      }
-      // Size the box to its content (dry measure), clamped to the page
-      // bottom so the box never escapes the page.
-      let contentH = 0;
-      for (const [text, font, size] of clLines) {
-        this.doc.font(font).fontSize(this.s(size));
-        contentH += this.doc.heightOfString(text, { width: innerW });
-      }
-      const boxH = Math.min(contentH + this.s(8), Math.max(0, this._bottom() - this.y));
-      if (boxH > this.s(10)) {
-        this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, boxH)
-          .fillColor('#f5f0e6').fill().restore();
-        const boxBottom = this.y + boxH;
-        let cursorY = this.y + this.s(4);
-        for (const [text, font, size] of clLines) {
-          this.doc.font(font).fontSize(this.s(size)).fillColor(COLORS.text);
-          const remaining = boxBottom - cursorY;
-          if (remaining < this.doc.currentLineHeight(true)) { this._warnClipped(); break; }
-          this.doc.text(text, innerX, cursorY, { width: innerW, height: remaining, ellipsis: true });
-          cursorY = this.doc.y;
-        }
-        this.y = boxBottom + this.s(6);
-      } else {
-        this._warnClipped();
-        this.y = this._bottom();
-      }
-      this.doc.font('Helvetica');
-      this._trackY();
+      this.rubric(`† Children return from Children's Liturgy of the Word (${_clTimes.join(' & ')}).`);
     }
 
     this.rubric(RUBRICS.stand);
 
     this.subHeading('Invitation to Prayer');
-    this.bodyText(`Priest: ${INVITATION_TO_PRAYER.priest}`, { size: 8 });
-    this.bodyText(`All: ${INVITATION_TO_PRAYER.all}`, { bold: true, size: 8 });
+    this.bodyText(`Priest: ${INVITATION_TO_PRAYER.priest}`);
+    this.bodyText(`All: ${INVITATION_TO_PRAYER.all}`, { bold: true });
 
     // Sanctus language: per-aid override > parish default > English
-    // (mirrors the HTML renderer, including the Latin heading).
     const holyHolyLanguage = this.ss.holyHolyLanguage || this.parishSettings.defaultSanctusLanguage || 'english';
     this.subHeading(holyHolyLanguage === 'latin' ? 'Sanctus' : 'Holy, Holy, Holy');
-    this.bodyText(this.ss.holyHolySetting || 'Mass of St. Theresa', { italic: true, size: 8.5 });
-    this.bodyText(getHolyHolyHolyText(holyHolyLanguage), { size: 8 });
+    this.bodyText(this.ss.holyHolySetting || 'Mass of St. Theresa', { italic: true });
+    this.bodyText(getHolyHolyHolyText(holyHolyLanguage));
+    this.ordinaryMusicSpace('Holy, Holy, Holy — music notation');
 
     this.rubric(RUBRICS.kneel);
 
     this.subHeading('Mystery of Faith');
-    this.bodyText(this.ss.mysteryOfFaithSetting || 'Mass of St. Theresa', { italic: true, size: 8.5 });
+    this.bodyText(this.ss.mysteryOfFaithSetting || 'Mass of St. Theresa', { italic: true });
 
     this.subHeading('Great Amen');
 
@@ -787,20 +882,19 @@ class WorshipAidPdfGenerator {
 
     this.subHeading("The Lord's Prayer");
     this.rubric(RUBRICS.stand);
-    this.bodyText(LORDS_PRAYER, { size: 8.5 });
+    this.bodyText(LORDS_PRAYER);
 
     this.subHeading('Sign of Peace');
 
     this.subHeading('Lamb of God');
-    this.bodyText(this.ss.lambOfGodSetting || 'Mass of St. Theresa', { italic: true, size: 8.5 });
+    this.bodyText(this.ss.lambOfGodSetting || 'Mass of St. Theresa', { italic: true });
+    this.ordinaryMusicSpace('Lamb of God — music notation');
 
     this.rubric(RUBRICS.kneel);
 
     this.subHeading('Communion Hymn');
     this.musicLine('communionHymn', 'communionHymnComposer', 'Communion');
-    // Leave room below for the choral-anthem block (heading + up to three
-    // per-Mass lines).
-    this.hymnMusicSpace({ reserveBelow: 70 });
+    this.hymnMusicSpace({ reserveBelow: 50 });
 
     this.subHeading('Choral Anthem');
     this.musicLine('choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem');
@@ -854,7 +948,7 @@ class WorshipAidPdfGenerator {
     // Manually truncate with an ellipsis if it can't fit the content width.
     let copyrightShort = String(this.parishSettings.copyrightShort ||
       getDefaultCopyrightShort(this.parishSettings.onelicenseNumber)).replace(/\s+/g, ' ').trim();
-    this.doc.font('Helvetica').fontSize(this.s(7));
+    this.doc.font('Sans').fontSize(this.s(7));
     if (this.doc.widthOfString(copyrightShort) > this.CONTENT_WIDTH) {
       while (copyrightShort.length > 1 && this.doc.widthOfString(copyrightShort + '…') > this.CONTENT_WIDTH) {
         copyrightShort = copyrightShort.slice(0, -1);
@@ -884,10 +978,10 @@ class WorshipAidPdfGenerator {
     this.doc.restore();
 
     this.y = this.MARGIN_TOP + this.s(120);
-    this.doc.fontSize(this.s(13)).fillColor(COLORS.navy).font('Helvetica-Bold')
+    this.doc.fontSize(this.s(13)).fillColor(COLORS.navy).font('Sans-Bold')
       .text(this.data.feastName, this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center' });
     this.y = this.doc.y + this.s(3);
-    this.doc.fontSize(this.s(10)).fillColor(COLORS.muted).font('Helvetica')
+    this.doc.fontSize(this.s(10)).fillColor(COLORS.muted).font('Sans')
       .text(formatDate(this.data.liturgicalDate), this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center' });
 
     // Anchor copyright above the bottom margin so it never crosses it.
@@ -900,14 +994,14 @@ class WorshipAidPdfGenerator {
       // the back cover onto a ninth page.
       const notesRoom = copyrightY - this.s(6) - this.y;
       if (notesRoom > this.s(12)) {
-        this.doc.fontSize(this.s(9)).fillColor(COLORS.muted).font('Helvetica-Oblique')
+        this.doc.fontSize(this.s(9)).fillColor(COLORS.muted).font('Sans-Italic')
           .text(this.data.specialNotes, this.MARGIN_SIDE + this.s(20), this.y,
             { width: this.CONTENT_WIDTH - this.s(40), align: 'center', height: notesRoom, ellipsis: true });
         this.y = Math.min(this.doc.y, copyrightY - this.s(6)) + this.s(8);
       } else {
         this._warnClipped();
       }
-      this.doc.font('Helvetica');
+      this.doc.font('Sans');
     }
 
     // Standing closing message (like the HTML back cover), above the
@@ -915,7 +1009,7 @@ class WorshipAidPdfGenerator {
     if (this.parishSettings.closingMessage) {
       const closingRoom = copyrightY - this.s(6) - this.y;
       if (closingRoom > this.s(12)) {
-        this.doc.fontSize(this.s(8)).fillColor(COLORS.muted).font('Helvetica')
+        this.doc.fontSize(this.s(8)).fillColor(COLORS.muted).font('Sans')
           .text(this.parishSettings.closingMessage, this.MARGIN_SIDE + this.s(20), this.y,
             { width: this.CONTENT_WIDTH - this.s(40), align: 'center', height: closingRoom, ellipsis: true });
       } else {

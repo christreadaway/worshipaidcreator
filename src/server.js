@@ -1190,6 +1190,15 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
             <option value="alternate">Glory and praise to you, Lord Jesus Christ!</option>
           </select>
         </div>
+        <div class="fg">
+          <label>Please Sit / Stand / Kneel Rubric Alignment</label>
+          <select id="rubricAlignment">
+            <option value="left">Left</option>
+            <option value="center">Center</option>
+            <option value="right">Right</option>
+          </select>
+        </div>
+        <div class="fg-check"><input type="checkbox" id="twoColumnCreed"><label for="twoColumnCreed">Two-column Creed layout (Nicene/Apostles' — saves space on page 4)</label></div>
       </div>
     </div>
 
@@ -1911,7 +1920,9 @@ function buildData() {
       penitentialAct: v('penitentialAct'),
       includePostlude: ch('includePostlude'),
       adventWreath: ch('adventWreath'),
-      lentenAcclamation: v('lentenAcclamation')
+      lentenAcclamation: v('lentenAcclamation'),
+      rubricAlignment: v('rubricAlignment') || 'left',
+      twoColumnCreed: ch('twoColumnCreed')
     },
     readings: {
       firstReadingCitation: v('firstReadingCitation'),
@@ -1961,6 +1972,8 @@ function populateForm(data) {
   sc('includePostlude', ss.includePostlude !== false);
   sc('adventWreath', !!ss.adventWreath);
   sv('lentenAcclamation', ss.lentenAcclamation || 'standard');
+  sv('rubricAlignment', ss.rubricAlignment || 'left');
+  sc('twoColumnCreed', !!ss.twoColumnCreed);
   const r = data.readings || {};
   sv('firstReadingCitation', r.firstReadingCitation);
   sv('firstReadingText', r.firstReadingText);
