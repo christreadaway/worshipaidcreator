@@ -111,6 +111,13 @@ const inputSchema = {
     announcements: { type: 'string' },
     specialNotes: { type: 'string' },
 
+    // Reserve a blank paste area under each congregational hymn slot
+    // (processional, communion, thanksgiving). OneLicense has no public
+    // API, so instead of embedding hymn notation programmatically the
+    // booklet leaves space for the parish to paste licensed music in by
+    // hand after export. Defaults to true when absent.
+    reserveHymnSpace: { type: 'boolean' },
+
     // Images
     coverImagePath: { type: 'string' },
     notationImages: {

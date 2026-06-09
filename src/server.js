@@ -1189,6 +1189,11 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
       <div class="form-section-hdr" onclick="toggle(this)">Shared Music (same at every Mass) <span>&#9660;</span></div>
       <div class="form-section-body">
         <p class="section-lock">Organ prelude/postlude, Kyrie setting, processional hymn, communion hymn, and the hymn of thanksgiving are the same at every Mass — enter them once here.  The only items that legitimately differ per Mass are the Offertory Anthem and the Choral Anthem at Communion (different choirs / ensembles).</p>
+        <p class="section-lock">Hymn music is <strong>not</strong> embedded automatically (OneLicense has no public API). Instead, the booklet reserves a blank paste area under each hymn so you can drop the licensed notation in by hand after export.</p>
+        <div class="fg-check">
+          <input type="checkbox" id="reserveHymnSpace" checked>
+          <label for="reserveHymnSpace">Reserve paste areas for hymn music (processional, communion, thanksgiving)</label>
+        </div>
         ${sharedMusicFields()}
       </div>
     </div>
@@ -1885,6 +1890,7 @@ function buildData() {
     musicSat5pm: buildMusicBlock('sat5pm'),
     musicSun9am: buildMusicBlock('sun9am'),
     musicSun11am: buildMusicBlock('sun11am'),
+    reserveHymnSpace: ch('reserveHymnSpace'),
     childrenLiturgyEnabled: ch('childrenLiturgyEnabled'),
     childrenLiturgyMassTimes: collectChildrenLiturgyTimes(),
     childrenLiturgyMusic: v('childrenLiturgyMusic'),
@@ -1932,6 +1938,8 @@ function populateForm(data) {
   populateMusicBlock('sun9am', data.musicSun9am);
   populateMusicBlock('sun11am', data.musicSun11am);
   populateSharedMusic(data);
+  // Default ON for drafts saved before the field existed.
+  sc('reserveHymnSpace', data.reserveHymnSpace !== false);
   sc('childrenLiturgyEnabled', data.childrenLiturgyEnabled);
   // If the saved doc carries an explicit value, respect it; otherwise the
   // load is a no-op and auto-defaults will run on date/season change.

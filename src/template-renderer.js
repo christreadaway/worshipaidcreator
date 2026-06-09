@@ -6,7 +6,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { APOSTLES_CREED, NICENE_CREED } = require('./assets/text/creeds');
+const { APOSTLES_CREED, NICENE_CREED, RENEWAL_OF_BAPTISMAL_VOWS } = require('./assets/text/creeds');
 const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER, getHolyHolyHolyText } = require('./assets/text/mass-texts');
 const { formatMusicSlot, renderMusicLineHtml } = require('./music-formatter');
 const { applySeasonDefaults } = require('./config/seasons');
@@ -47,8 +47,8 @@ function renderMusicSection(data, titleField, composerField, label) {
 // half-letter: 5.5"x8.5" (booklet folded from 8.5x11 sheets)
 // tabloid:     8.5"x11"  (booklet folded from 11x17 sheets)
 const PAGE_GEOMETRY = {
-  'half-letter': { width: '5.5in', height: '8.5in', padding: '0.4in 0.4in', fontSize: '9.5pt', headerSize: '12pt' },
-  tabloid:       { width: '8.5in', height: '11in',  padding: '0.6in 0.6in', fontSize: '12pt', headerSize: '14pt' }
+  'half-letter': { width: '5.5in', height: '8.5in', padding: '0.4in 0.4in', fontSize: '9.5pt', headerSize: '12pt', hymnSpace: '2.2in' },
+  tabloid:       { width: '8.5in', height: '11in',  padding: '0.6in 0.6in', fontSize: '12pt', headerSize: '14pt', hymnSpace: '2.9in' }
 };
 
 function resolvePageGeometry(bookletSize) {
@@ -72,8 +72,16 @@ function renderBookletHtml(data, options = {}) {
   const isAdvent = d.liturgicalSeason === 'advent';
   const showGloria = ss.gloria !== undefined ? ss.gloria : (d.liturgicalSeason !== 'lent' && d.liturgicalSeason !== 'advent');
   const creedType = ss.creedType || 'nicene';
-  const creedText = creedType === 'apostles' ? APOSTLES_CREED : NICENE_CREED;
-  const creedTitle = creedType === 'apostles' ? "The Apostles' Creed" : 'The Nicene Creed';
+  const creedText = {
+    apostles:       APOSTLES_CREED,
+    baptismal_vows: RENEWAL_OF_BAPTISMAL_VOWS,
+    nicene:         NICENE_CREED
+  }[creedType] || NICENE_CREED;
+  const creedTitle = {
+    apostles:       "The Apostles' Creed",
+    baptismal_vows: 'Renewal of Baptismal Vows',
+    nicene:         'The Nicene Creed'
+  }[creedType] || 'The Nicene Creed';
   const entranceType = ss.entranceType || 'processional';
   const penitentialAct = ss.penitentialAct || 'confiteor';
 
@@ -90,6 +98,11 @@ function renderBookletHtml(data, options = {}) {
 
   // Advent Wreath: shown during Advent per worksheet
   const showAdventWreath = ss.adventWreath !== undefined ? ss.adventWreath : isAdvent;
+
+  // Reserved paste areas under the congregational hymn slots (default on).
+  const hymnSpaceHtml = d.reserveHymnSpace !== false
+    ? '<div class="hymn-music-space">Reserved for hymn music &mdash; paste licensed notation here</div>'
+    : '';
 
   // Overflow detection
   const overflows = detectOverflows(d);
@@ -234,6 +247,22 @@ function renderBookletHtml(data, options = {}) {
   .music-entry em { font-style: italic; }
   .mass-time-label { font-size: 8pt; color: #666; }
   .music-divider { color: #999; margin: 0 2pt; }
+
+  /* Reserved paste area for licensed hymn notation. OneLicense has no
+     public API, so the booklet leaves blank space instead of embedding
+     hymn music — the parish pastes the notation in by hand after export. */
+  .hymn-music-space {
+    height: ${geom.hymnSpace};
+    border: 0.75pt dashed #c9c9c9;
+    border-radius: 2pt;
+    margin: 4pt 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #b5b5b5;
+    font-size: 7pt;
+    font-style: italic;
+  }
 
   /* --- Cover (Page 1) --- */
   .cover-page {
@@ -422,6 +451,7 @@ function renderBookletHtml(data, options = {}) {
 
   <div class="sub-heading">${entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon'}</div>
   ${renderMusicSection(d, 'processionalOrEntrance', 'processionalOrEntranceComposer', entranceType === 'processional' ? 'Processional' : 'Antiphon')}
+  ${hymnSpaceHtml}
 
   ${showAdventWreath ? `
   <div class="advent-wreath">
@@ -559,6 +589,7 @@ function renderBookletHtml(data, options = {}) {
 
   <div class="sub-heading">Communion Hymn</div>
   ${renderMusicSection(d, 'communionHymn', 'communionHymnComposer', 'Communion')}
+  ${hymnSpaceHtml}
 
   <div class="sub-heading">Choral Anthem</div>
   ${renderMusicSection(d, 'choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem')}
@@ -572,6 +603,7 @@ function renderBookletHtml(data, options = {}) {
 
   <div class="sub-heading">Hymn of Thanksgiving</div>
   ${renderMusicSection(d, 'hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving')}
+  ${hymnSpaceHtml}
 
   <p class="rubric">${RUBRICS.stand}</p>
 

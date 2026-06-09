@@ -161,9 +161,21 @@ class WorshipAidPdfGenerator {
     this.y = this.MARGIN_TOP;
   }
 
+  // Write text inside the bottom margin band (folios, copyright lines)
+  // without letting PDFKit auto-add a page — it page-breaks any text whose
+  // baseline crosses the bottom margin, which used to inject a near-blank
+  // page after every section.
+  _footerText(str, y, opts = {}) {
+    const prevBottom = this.doc.page.margins.bottom;
+    this.doc.page.margins.bottom = 0;
+    this.doc.fontSize(opts.size || this.s(7)).fillColor(opts.color || COLORS.light)
+      .text(str, opts.x !== undefined ? opts.x : this.MARGIN_SIDE, y,
+        { width: opts.width !== undefined ? opts.width : this.CONTENT_WIDTH, align: 'center' });
+    this.doc.page.margins.bottom = prevBottom;
+  }
+
   pageNumber(num) {
-    this.doc.fontSize(this.s(7)).fillColor(COLORS.light)
-      .text(String(num), 0, this.PAGE_HEIGHT - this.MARGIN * 0.6, { width: this.PAGE_WIDTH, align: 'center' });
+    this._footerText(String(num), this.PAGE_HEIGHT - this.MARGIN * 0.6, { x: 0, width: this.PAGE_WIDTH });
   }
 
   sectionHeader(text) {
@@ -228,6 +240,35 @@ class WorshipAidPdfGenerator {
       this._trackY();
     }
     this.doc.font('Helvetica');
+  }
+
+  // Reserved blank area under a congregational hymn slot. OneLicense has no
+  // public API, so the booklet deliberately leaves room for the parish to
+  // paste licensed notation in by hand after export (Acrobat, print + paste,
+  // etc.). The dashed guide and label disappear once an image is pasted over
+  // them. Height is clamped to the space left on the page so the box never
+  // crosses the bottom margin; below a usable minimum it is skipped entirely.
+  hymnMusicSpace(opts = {}) {
+    if (this.data.reserveHymnSpace === false) return;
+    const desired = this.s(opts.height !== undefined ? opts.height : 160);
+    const reserveBelow = this.s(opts.reserveBelow || 0);
+    const available = this.PAGE_HEIGHT - this.MARGIN - reserveBelow - this.y;
+    const h = Math.min(desired, available);
+    if (h < this.s(50)) {
+      this.warnings.push('Page is too full to reserve space for pasted hymn music.');
+      return;
+    }
+    this.doc.save()
+      .rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, h)
+      .dash(3, { space: 3 }).lineWidth(0.5).strokeColor('#C9C9C9').stroke()
+      .undash().restore();
+    this.doc.fontSize(this.s(6.5)).fillColor('#B5B5B5').font('Helvetica-Oblique')
+      .text('Reserved for hymn music — paste licensed notation here',
+        this.MARGIN_SIDE, this.y + h / 2 - this.s(4),
+        { width: this.CONTENT_WIDTH, align: 'center' });
+    this.doc.font('Helvetica');
+    this.y += h + this.s(6);
+    this._trackY();
   }
 
   // Resolve a parish-supplied logo path to a filesystem path PDFKit can read.
@@ -366,6 +407,9 @@ class WorshipAidPdfGenerator {
     this.subHeading(entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon');
     this.musicLine('processionalOrEntrance', 'processionalOrEntranceComposer',
       entranceType === 'processional' ? 'Processional' : 'Antiphon');
+    // Leave room below for the penitential act, Kyrie, Gloria, and (in
+    // Advent) the wreath box that still have to fit on this page.
+    this.hymnMusicSpace({ reserveBelow: 165 });
 
     if (this.showAdventWreath) {
       this.y += this.s(3);
@@ -532,6 +576,9 @@ class WorshipAidPdfGenerator {
 
     this.subHeading('Communion Hymn');
     this.musicLine('communionHymn', 'communionHymnComposer', 'Communion');
+    // Leave room below for the choral-anthem block (heading + up to three
+    // per-Mass lines).
+    this.hymnMusicSpace({ reserveBelow: 70 });
 
     this.subHeading('Choral Anthem');
     this.musicLine('choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem');
@@ -545,6 +592,12 @@ class WorshipAidPdfGenerator {
 
     this.subHeading('Hymn of Thanksgiving');
     this.musicLine('hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving');
+    // Leave room below for the blessing & dismissal, postlude, announcements
+    // (estimated from text length), and the copyright line.
+    const announcementReserve = this.data.announcements
+      ? Math.min(120, Math.ceil(String(this.data.announcements).length / 80) * 10 + 25)
+      : 0;
+    this.hymnMusicSpace({ reserveBelow: 130 + announcementReserve });
 
     this.rubric(RUBRICS.stand);
 
@@ -570,8 +623,7 @@ class WorshipAidPdfGenerator {
     }
 
     const copyrightShort = this.parishSettings.copyrightShort || 'Music reprinted under OneLicense #A-702171. All rights reserved.';
-    this.doc.fontSize(this.s(7)).fillColor(COLORS.light)
-      .text(copyrightShort, this.MARGIN_SIDE, this.PAGE_HEIGHT - this.MARGIN * 0.85, { width: this.CONTENT_WIDTH, align: 'center' });
+    this._footerText(copyrightShort, this.PAGE_HEIGHT - this.MARGIN * 0.85);
 
     this.pageNumber(7);
   }
