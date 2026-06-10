@@ -46,6 +46,9 @@ const inputSchema = {
     liturgicalDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
     liturgicalSeason: { type: 'string', enum: ['ordinary', 'advent', 'christmas', 'lent', 'easter'] },
 
+    // Finished booklet size for preview/export (defaults to tabloid).
+    bookletSize: { type: 'string', enum: ['half-letter', 'tabloid'] },
+
     // Workflow: who last edited, assigned to
     lastEditedBy: { type: 'string' },
     assignedTo: { type: 'string' },
@@ -84,7 +87,9 @@ const inputSchema = {
         penitentialAct: { type: 'string', enum: ['confiteor', 'kyrie_only'] },
         includePostlude: { type: 'boolean' },
         adventWreath: { type: 'boolean' },
-        lentenAcclamation: { type: 'string', enum: ['standard', 'alternate'] }
+        lentenAcclamation: { type: 'string', enum: ['standard', 'alternate'] },
+        rubricAlignment: { type: 'string', enum: ['left', 'center', 'right'] },
+        twoColumnCreed: { type: 'boolean' }
       }
     },
 
@@ -110,6 +115,13 @@ const inputSchema = {
     // Optional content
     announcements: { type: 'string' },
     specialNotes: { type: 'string' },
+
+    // Reserve a blank paste area under each congregational hymn slot
+    // (processional, communion, thanksgiving). OneLicense has no public
+    // API, so instead of embedding hymn notation programmatically the
+    // booklet leaves space for the parish to paste licensed music in by
+    // hand after export. Defaults to true when absent.
+    reserveHymnSpace: { type: 'boolean' },
 
     // Images
     coverImagePath: { type: 'string' },

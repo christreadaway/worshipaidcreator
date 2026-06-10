@@ -71,22 +71,60 @@ function ensureDir(namespace) {
   return dir;
 }
 
+// Keys and namespaces become filesystem paths locally and blob keys on
+// Netlify. Reject anything that could escape the namespace directory —
+// path separators, '..' segments, leading dots. Keys come from user input
+// in places (draft ids in request bodies, :filename URL params), so this
+// is a security boundary, not just hygiene.
+const SAFE_KEY_RE = /^[A-Za-z0-9_][A-Za-z0-9 ._@()-]*$/;
+function assertSafeKey(s, what) {
+  const str = String(s);
+  if (!SAFE_KEY_RE.test(str) || str.includes('..')) {
+    throw new Error(`Invalid ${what}: ${JSON.stringify(str).slice(0, 60)}`);
+  }
+  return str;
+}
+function isSafeKey(s) {
+  const str = String(s);
+  return SAFE_KEY_RE.test(str) && !str.includes('..');
+}
+
+function readJsonFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (e) {
+    // A single corrupt record must not take down every caller of list()
+    // (e.g. one bad user file breaking all logins).
+    console.warn('[KV] Skipping corrupt record:', filePath, e.message);
+    return null;
+  }
+}
+
 async function get(namespace, key) {
+  assertSafeKey(namespace, 'namespace');
+  assertSafeKey(key, 'key');
   if (IS_NETLIFY) {
     if (await checkBlobsAvailable()) {
       const store = getBlobStore(namespace);
-      const data = await store.get(key, { type: 'json' });
-      return data || null;
+      try {
+        const data = await store.get(key, { type: 'json' });
+        return data || null;
+      } catch (e) {
+        console.warn('[KV] Skipping corrupt blob:', namespace, key, e.message);
+        return null;
+      }
     }
     return memGet(namespace, key);
   }
   const dir = ensureDir(namespace);
   const filePath = path.join(dir, `${key}.json`);
   if (!fs.existsSync(filePath)) return null;
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  return readJsonFile(filePath);
 }
 
 async function set(namespace, key, value) {
+  assertSafeKey(namespace, 'namespace');
+  assertSafeKey(key, 'key');
   if (IS_NETLIFY) {
     if (await checkBlobsAvailable()) {
       const store = getBlobStore(namespace);
@@ -102,6 +140,8 @@ async function set(namespace, key, value) {
 }
 
 async function del(namespace, key) {
+  assertSafeKey(namespace, 'namespace');
+  assertSafeKey(key, 'key');
   if (IS_NETLIFY) {
     if (await checkBlobsAvailable()) {
       const store = getBlobStore(namespace);
@@ -117,14 +157,19 @@ async function del(namespace, key) {
 }
 
 async function list(namespace) {
+  assertSafeKey(namespace, 'namespace');
   if (IS_NETLIFY) {
     if (await checkBlobsAvailable()) {
       const store = getBlobStore(namespace);
       const { blobs } = await store.list();
       const results = [];
       for (const blob of blobs) {
-        const data = await store.get(blob.key, { type: 'json' });
-        if (data) results.push(data);
+        try {
+          const data = await store.get(blob.key, { type: 'json' });
+          if (data) results.push(data);
+        } catch (e) {
+          console.warn('[KV] Skipping corrupt blob:', namespace, blob.key, e.message);
+        }
       }
       return results;
     }
@@ -132,7 +177,23 @@ async function list(namespace) {
   }
   const dir = ensureDir(namespace);
   const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
-  return files.map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+  return files.map(f => readJsonFile(path.join(dir, f))).filter(Boolean);
 }
 
-module.exports = { get, set, del, list, IS_NETLIFY, DATA_DIR };
+// Key names only — used by listing endpoints that need filenames (list()
+// returns values, which lose the blob key on Netlify).
+async function listKeys(namespace) {
+  assertSafeKey(namespace, 'namespace');
+  if (IS_NETLIFY) {
+    if (await checkBlobsAvailable()) {
+      const store = getBlobStore(namespace);
+      const { blobs } = await store.list();
+      return blobs.map(b => b.key);
+    }
+    return Object.keys(_memStore[namespace] || {});
+  }
+  const dir = ensureDir(namespace);
+  return fs.readdirSync(dir).filter(f => f.endsWith('.json')).map(f => f.slice(0, -5));
+}
+
+module.exports = { get, set, del, list, listKeys, isSafeKey, IS_NETLIFY, DATA_DIR };

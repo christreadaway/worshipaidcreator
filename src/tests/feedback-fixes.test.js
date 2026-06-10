@@ -47,7 +47,10 @@ function fetch(urlPath, options = {}) {
   });
 }
 
+let releaseLock;
 before(async () => {
+  // Serialize against the other suites that share the on-disk data/ dir.
+  releaseLock = await require('./_shared-state-lock').acquireSharedStateLock();
   await app.seedReady;
   await new Promise(resolve => {
     server = app.listen(0, '127.0.0.1', () => {
@@ -64,6 +67,7 @@ before(async () => {
 
 after(async () => {
   await new Promise(resolve => server.close(resolve));
+  if (releaseLock) releaseLock();
 });
 
 describe('Hymn library: hymnal + number fields', () => {
@@ -326,6 +330,12 @@ describe('Preview matches selected booklet size', () => {
 
 describe('Settings persist across saves (round-trip)', () => {
   it('PUT then GET returns the same values', async () => {
+    // Settings writes require an authenticated manage_settings user.
+    const login = await fetch('/api/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'jd' })
+    });
+    const token = login.json().token;
     const settings = {
       parishName: 'St. Test',
       pastor: 'Fr. Round Trip',
@@ -335,7 +345,7 @@ describe('Settings persist across saves (round-trip)', () => {
     };
     let res = await fetch('/api/settings', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': token },
       body: JSON.stringify(settings)
     });
     assert.equal(res.status, 200);
@@ -347,5 +357,12 @@ describe('Settings persist across saves (round-trip)', () => {
     assert.equal(back.onelicenseNumber, 'A-123456');
     assert.equal(back.requirePastorApproval, true);
     assert.equal(back.welcomeMessage, 'Welcome.');
+
+    // Reset the approval gate so later suites can export unsaved drafts.
+    await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': token },
+      body: JSON.stringify({ requirePastorApproval: false })
+    });
   });
 });

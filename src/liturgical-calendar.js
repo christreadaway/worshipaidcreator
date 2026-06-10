@@ -53,18 +53,6 @@ function firstSundayOfAdvent(year) {
   return addDays(sundayBeforeChristmas, -21);
 }
 
-// Baptism of the Lord: Sunday after Jan 6 (or Jan 9 if Epiphany falls on Sun).
-function baptismOfTheLord(year) {
-  const jan6 = dateOnly(year, 0, 6);
-  // If Jan 6 itself is Sunday, Baptism is Monday Jan 7 in some calendars; the
-  // US calendar moves Epiphany to the Sun between Jan 2-8 and Baptism to the
-  // following Sunday (or Mon Jan 9 if Epiphany is Jan 7-8).  Simplify by
-  // returning the next Sunday strictly after Jan 6.
-  let d = addDays(jan6, 1);
-  while (d.getUTCDay() !== 0) d = addDays(d, 1);
-  return d;
-}
-
 // Sunday of Epiphany — the Sunday between Jan 2 and Jan 8 (US calendar).
 function epiphany(year) {
   const jan2 = dateOnly(year, 0, 2);
@@ -73,41 +61,86 @@ function epiphany(year) {
   return d;
 }
 
+// Baptism of the Lord (US calendar): normally the Sunday after Epiphany, but
+// when Epiphany falls on Jan 7 or Jan 8 the Baptism of the Lord is celebrated
+// the following MONDAY (so Ordinary Time still begins that week).
+function baptismOfTheLord(year) {
+  const epi = epiphany(year);
+  const epiDay = epi.getUTCDate();
+  if (epiDay === 7 || epiDay === 8) return addDays(epi, 1); // following Monday
+  return addDays(epi, 7); // following Sunday
+}
+
 function ordinal(n) {
   const s = ['th', 'st', 'nd', 'rd'];
   const v = n % 100;
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
+// Fixed solemnities/feasts that the parish prints. NOTE: Jan 6 deliberately
+// has no Epiphany entry — the US calendar transfers Epiphany to the Sunday
+// between Jan 2 and Jan 8 (see epiphany() above).
+const FIXED_FEAST_MAP = {
+   101: 'Solemnity of Mary, Mother of God',
+   202: 'The Presentation of the Lord',
+   222: 'The Chair of St. Peter',
+   319: 'St. Joseph, Husband of the Blessed Virgin Mary',
+   325: 'The Annunciation of the Lord',
+   624: 'The Nativity of St. John the Baptist',
+   629: 'Sts. Peter and Paul, Apostles',
+   806: 'The Transfiguration of the Lord',
+   815: 'The Assumption of the Blessed Virgin Mary',
+   914: 'The Exaltation of the Holy Cross',
+  1101: 'All Saints',
+  1102: 'The Commemoration of All the Faithful Departed',
+  1212: 'Our Lady of Guadalupe',
+  1224: 'Christmas Eve',
+  1225: 'The Nativity of the Lord (Christmas)',
+  1226: 'St. Stephen, the First Martyr',
+  1228: 'The Holy Innocents',
+  1231: 'The Seventh Day of the Octave of Christmas'
+};
+
+// Fixed entries that genuinely displace a Sunday (solemnities that outrank a
+// Sunday in Ordinary Time, plus feasts of the Lord which displace OT Sundays
+// per the Table of Liturgical Days). Everything else yields to the
+// Sunday-cycle name (Advent/Christmas/Lent/Easter Sundays, Holy Family, the
+// movable solemnities) when the date falls on a Sunday.
+const SUNDAY_DISPLACING_FIXED = new Set([
+   101, // Mary, Mother of God
+   202, // Presentation of the Lord (feast of the Lord — displaces OT Sunday)
+   624, // Nativity of St. John the Baptist
+   629, // Sts. Peter and Paul
+   806, // Transfiguration (feast of the Lord)
+   815, // Assumption
+   914, // Exaltation of the Holy Cross (feast of the Lord)
+  1101, // All Saints
+  1102, // All Souls (celebrated on Sunday per US practice)
+  1225  // Christmas
+]);
+
+function fixedFeastKey(date) {
+  return (date.getUTCMonth() + 1) * 100 + date.getUTCDate();
+}
+
 // Fixed solemnities that displace Sunday or that the parish prints.
 function fixedFeast(date) {
-  const m = date.getUTCMonth() + 1;
-  const d = date.getUTCDate();
-  const key = m * 100 + d;
-  const map = {
-     101: 'Solemnity of Mary, Mother of God',
-     106: 'The Epiphany of the Lord',
-     202: 'The Presentation of the Lord',
-     225: 'The Chair of St. Peter',
-     319: 'St. Joseph, Husband of the Blessed Virgin Mary',
-     325: 'The Annunciation of the Lord',
-     624: 'The Nativity of St. John the Baptist',
-     629: 'Sts. Peter and Paul, Apostles',
-     806: 'The Transfiguration of the Lord',
-     815: 'The Assumption of the Blessed Virgin Mary',
-     914: 'The Exaltation of the Holy Cross',
-    1101: 'All Saints',
-    1102: 'The Commemoration of All the Faithful Departed',
-    1209: 'The Immaculate Conception of the Blessed Virgin Mary',
-    1208: 'The Immaculate Conception of the Blessed Virgin Mary',
-    1212: 'Our Lady of Guadalupe',
-    1224: 'Christmas Eve',
-    1225: 'The Nativity of the Lord (Christmas)',
-    1226: 'St. Stephen, the First Martyr',
-    1228: 'The Holy Innocents',
-    1231: 'The Seventh Day of the Octave of Christmas'
-  };
-  return map[key] || null;
+  const key = fixedFeastKey(date);
+  // Immaculate Conception (Dec 8) — but when Dec 8 falls on a Sunday (a
+  // Sunday of Advent always outranks it), the solemnity transfers to
+  // Monday, Dec 9.
+  if (key === 1208) {
+    return date.getUTCDay() !== 0
+      ? 'The Immaculate Conception of the Blessed Virgin Mary'
+      : null;
+  }
+  if (key === 1209) {
+    // Dec 9 is a Monday exactly when Dec 8 was a Sunday → transferred feast.
+    return date.getUTCDay() === 1
+      ? 'The Immaculate Conception of the Blessed Virgin Mary'
+      : null;
+  }
+  return FIXED_FEAST_MAP[key] || null;
 }
 
 // Sundays of Advent / Lent / Easter — by week index from a reference Sunday.
@@ -164,14 +197,26 @@ function detectSeason(date) {
 }
 
 // Feast/Sunday name. Strategy:
-//   1. If the date is a known fixed solemnity, return that name.
+//   1. On weekdays, a known fixed feast wins. On SUNDAYS the Sunday-cycle
+//      name (Advent/Christmas/Lent/Easter Sundays, Holy Family, the movable
+//      solemnities) wins over fixed-date entries UNLESS the fixed feast is a
+//      solemnity/feast of the Lord that genuinely displaces that Sunday
+//      (see SUNDAY_DISPLACING_FIXED).
 //   2. If the date is in a movable cycle (Ash Wed, Palm Sun, Triduum, etc.),
 //      return that title.
 //   3. Otherwise label by season (Advent/Lent/Easter Sundays) or by Ordinary
-//      Time week number.
-function detectFeastName(date) {
+//      Time week number, falling back to the fixed feast (if any) and then
+//      a plain weekday label.
+//
+// opts.ascensionOnThursday: provinces that keep Ascension on Thursday
+// (Easter + 39) can pass true; the DEFAULT follows most US provinces, which
+// transfer Ascension to the Seventh Sunday of Easter (Easter + 42).
+function detectFeastName(date, opts = {}) {
+  const isSunday = date.getUTCDay() === 0;
   const fixed = fixedFeast(date);
-  if (fixed) return fixed;
+  if (fixed && (!isSunday || SUNDAY_DISPLACING_FIXED.has(fixedFeastKey(date)))) {
+    return fixed;
+  }
 
   const year = date.getUTCFullYear();
   const easter = computeEaster(year);
@@ -184,6 +229,8 @@ function detectFeastName(date) {
   const holySaturday = addDays(easter, -1);
   const divineMercy  = addDays(easter,  7);
   const ascensionThu = addDays(easter, 39);   // Thursday of 6th week of Easter
+  const ascensionSun = addDays(easter, 42);   // US default: transferred Sunday
+  const ascension    = opts.ascensionOnThursday ? ascensionThu : ascensionSun;
   const pentecost    = addDays(easter, 49);
   const trinity      = addDays(easter, 56);
   const corpusChristi = addDays(easter, 63);  // US: Sun after Trinity
@@ -196,15 +243,15 @@ function detectFeastName(date) {
   if (sameDay(date, holySaturday))   return 'Holy Saturday — Easter Vigil';
   if (sameDay(date, easter))         return 'Easter Sunday of the Resurrection of the Lord';
   if (sameDay(date, divineMercy))    return 'Second Sunday of Easter (Sunday of Divine Mercy)';
-  if (sameDay(date, ascensionThu))   return 'The Ascension of the Lord';
+  if (sameDay(date, ascension))      return 'The Ascension of the Lord';
   if (sameDay(date, pentecost))      return 'Pentecost Sunday';
   if (sameDay(date, trinity))        return 'The Most Holy Trinity';
   if (sameDay(date, corpusChristi))  return 'The Most Holy Body and Blood of Christ (Corpus Christi)';
   if (sameDay(date, sacredHeart))    return 'The Most Sacred Heart of Jesus';
   if (sameDay(date, christTheKing(year))) return 'Our Lord Jesus Christ, King of the Universe';
   if (sameDay(date, holyFamily(year)))    return 'The Holy Family of Jesus, Mary and Joseph';
-  if (sameDay(date, baptismOfTheLord(year))) return 'The Baptism of the Lord';
   if (sameDay(date, epiphany(year))) return 'The Epiphany of the Lord';
+  if (sameDay(date, baptismOfTheLord(year))) return 'The Baptism of the Lord';
 
   // Sundays of Advent
   const advent1 = firstSundayOfAdvent(year);
@@ -262,6 +309,10 @@ function detectFeastName(date) {
     }
   }
 
+  // A fixed feast that was suppressed on a Sunday but where no Sunday-cycle
+  // name matched — fall back to the fixed name rather than the bare weekday.
+  if (fixed) return fixed;
+
   // Generic fallback: return weekday name + season
   const weekday = date.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
   const monthDay = date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
@@ -269,13 +320,14 @@ function detectFeastName(date) {
 }
 
 // Convenience: return both the season + the feast name for a given date.
-function getLiturgicalInfo(yyyyMmDd) {
+// opts is passed through to detectFeastName (e.g. { ascensionOnThursday: true }).
+function getLiturgicalInfo(yyyyMmDd, opts = {}) {
   const date = parseDate(yyyyMmDd);
   if (!date) return null;
   return {
     date: yyyyMmDd,
     liturgicalSeason: detectSeason(date),
-    feastName: detectFeastName(date)
+    feastName: detectFeastName(date, opts)
   };
 }
 

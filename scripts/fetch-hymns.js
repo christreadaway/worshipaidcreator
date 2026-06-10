@@ -24,12 +24,19 @@ const RATE_MS   = 1100; // a touch over 1 req/sec to be polite
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-function fetchJson(url, timeoutMs = 8000) {
+const MAX_REDIRECTS = 5;
+
+function fetchJson(url, timeoutMs = 8000, redirectsLeft = MAX_REDIRECTS) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers: { 'Accept': 'application/json', 'User-Agent': 'WorshipAidGenerator/1.0 (+https://github.com/christreadaway/worshipaidcreator)' } }, res => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        // Follow one redirect
-        return fetchJson(res.headers.location).then(resolve, reject);
+        res.resume();
+        if (redirectsLeft <= 0) {
+          return reject(new Error('Too many redirects for ' + url));
+        }
+        // Resolve relative Location headers against the request URL.
+        const next = new URL(res.headers.location, url).toString();
+        return fetchJson(next, timeoutMs, redirectsLeft - 1).then(resolve, reject);
       }
       if (res.statusCode !== 200) {
         res.resume();
@@ -53,7 +60,10 @@ async function lookupHymnary(entry) {
   const queries = [];
   if (entry.tune)  queries.push('tu:' + entry.tune);
   if (entry.title) queries.push('in:' + entry.title);
-  for (const qu of queries) {
+  for (let qi = 0; qi < queries.length; qi++) {
+    const qu = queries[qi];
+    // Rate-limit between the tune and title queries too, not just per entry.
+    if (qi > 0) await sleep(RATE_MS);
     const url = 'https://hymnary.org/search?qu=' + encodeURIComponent(qu) + '&format=json';
     try {
       const data = await fetchJson(url);

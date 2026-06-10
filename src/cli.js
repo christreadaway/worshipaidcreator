@@ -30,13 +30,34 @@ Examples:
 `);
 }
 
+// Options that consume the following argument as their value.
+const OPTIONS_WITH_VALUE = new Set(['--output', '-o']);
+
+// Locate the positional input file, skipping option flags AND their values
+// (e.g. `worship-aid -o ./build input.json` must not treat "./build" as the
+// input file).
+function findInputFile(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (OPTIONS_WITH_VALUE.has(a)) { i++; continue; } // skip option + its value
+    if (a.startsWith('-')) continue;
+    return a;
+  }
+  return null;
+}
+
 async function main() {
-  if (args.includes('--help') || args.includes('-h') || args.length === 0) {
+  if (args.includes('--help') || args.includes('-h')) {
     usage();
     process.exit(0);
   }
+  if (args.length === 0) {
+    console.error('Error: No input file specified.');
+    usage();
+    process.exit(1);
+  }
 
-  const inputFile = args.find(a => !a.startsWith('-'));
+  const inputFile = findInputFile(args);
   if (!inputFile) {
     console.error('Error: No input file specified.');
     usage();

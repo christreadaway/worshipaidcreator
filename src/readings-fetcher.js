@@ -23,7 +23,9 @@ function getTranslation(id) {
   return TRANSLATIONS.find(t => t.id === (id || 'NABRE').toUpperCase()) || TRANSLATIONS[0];
 }
 
-function httpsGet(url) {
+const MAX_REDIRECTS = 5;
+
+function httpsGet(url, redirectsLeft = MAX_REDIRECTS) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, {
       headers: {
@@ -33,7 +35,10 @@ function httpsGet(url) {
     }, res => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
-        return resolve(httpsGet(new URL(res.headers.location, url).toString()));
+        if (redirectsLeft <= 0) {
+          return reject(new Error(`Too many redirects for ${url}`));
+        }
+        return resolve(httpsGet(new URL(res.headers.location, url).toString(), redirectsLeft - 1));
       }
       if (res.statusCode !== 200) {
         res.resume();
@@ -55,13 +60,14 @@ function toUsccbDate(yyyyMmDd) {
 }
 
 function decodeEntities(s) {
+  // Note: &amp; is decoded LAST so that double-encoded sequences such as
+  // "&amp;lt;" don't get decoded twice (first pass would otherwise turn it
+  // into "&lt;" and a later rule into "<").
   return s
     .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
     .replace(/&rsquo;/g, '’')
     .replace(/&lsquo;/g, '‘')
     .replace(/&ldquo;/g, '“')
@@ -69,7 +75,9 @@ function decodeEntities(s) {
     .replace(/&mdash;/g, '—')
     .replace(/&ndash;/g, '–')
     .replace(/&hellip;/g, '…')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)));
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
+    .replace(/&amp;/g, '&');
 }
 
 function htmlToLines(html) {
@@ -111,6 +119,16 @@ function parseUsccbHtml(html) {
     const citation = decodeEntities(m[2].replace(/<[^>]+>/g, '')).trim();
     const body = htmlToLines(m[3]);
     sections[name.toLowerCase()] = { name, citation, body };
+  }
+  // If neither a Gospel nor a Reading-1 section was found, USCCB's markup has
+  // almost certainly changed — fail loudly instead of returning an all-empty
+  // result that silently blanks every field. (The /api/readings route catches
+  // thrown errors and reports them to the client.)
+  const keys = Object.keys(sections);
+  const hasGospel = keys.some(k => k === 'gospel' || (k.startsWith('gospel') && !k.startsWith('gospel acclamation')));
+  const hasReading1 = keys.some(k => k.startsWith('reading 1') || k.startsWith('reading i') || k.startsWith('first reading'));
+  if (!hasGospel && !hasReading1) {
+    throw new Error('Could not find any readings in the USCCB page — the page layout may have changed');
   }
   return sections;
 }
@@ -193,24 +211,43 @@ async function fetchUsccbReadings(yyyyMmDd) {
   };
 }
 
+// USCCB Lectionary citations carry decorations bible-api.com can't parse:
+// "Cf." prefixes, verse-letter suffixes ("50:4-7a"), parentheticals and
+// typographic en/em dashes. Normalize before requesting.
+function normalizeCitationForBibleApi(citation) {
+  return String(citation || '')
+    .replace(/[–—]/g, '-')          // en/em dash → hyphen
+    .replace(/\bcf\.?\s*/gi, '')              // "Cf." prefixes
+    .replace(/\([^)]*\)/g, ' ')               // parentheticals
+    .replace(/(\d)[a-z]+\b/g, '$1')           // verse letters: "7a" → "7"
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// NOTE: returns the passage with bible-api.com's original line structure
+// intact. Reflowing into paragraphs is the CALLER's decision — psalm verses
+// must keep their stanza lines (see applyTranslation).
 async function fetchPassageFromBibleApi(citation, code) {
   if (!citation) return '';
-  const url = `https://bible-api.com/${encodeURIComponent(citation)}?translation=${encodeURIComponent(code)}`;
+  const normalized = normalizeCitationForBibleApi(citation);
+  if (!normalized) return '';
+  const url = `https://bible-api.com/${encodeURIComponent(normalized)}?translation=${encodeURIComponent(code)}`;
   const body = await httpsGet(url);
   let json;
   try { json = JSON.parse(body); } catch { return ''; }
   if (!json || !json.text) return '';
-  const cleaned = String(json.text).replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-  return reflowAsParagraphs(cleaned);
+  return String(json.text).replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // Replace USCCB Lectionary text with a different translation, keeping the
 // citations and Lectionary-only items (psalm refrain, acclamation verse) as-is.
-async function applyTranslation(readings, translationId) {
+// `fetchPassage` is injectable for tests.
+async function applyTranslation(readings, translationId, fetchPassage = fetchPassageFromBibleApi) {
   const t = getTranslation(translationId);
   if (t.source === 'usccb') return readings;
 
-  const out = { ...readings, translation: t.id };
+  const out = { ...readings };
+  let anySucceeded = false;
   const tasks = [
     ['firstReadingText',  readings.firstReadingCitation],
     ['secondReadingText', readings.secondReadingCitation],
@@ -220,18 +257,21 @@ async function applyTranslation(readings, translationId) {
   await Promise.all(tasks.map(async ([field, citation]) => {
     if (!citation) return;
     try {
-      const text = await fetchPassageFromBibleApi(citation, t.code);
+      const text = await fetchPassage(citation, t.code);
       if (text) {
         // psalmVerses keeps its original stanza line structure; everything
-        // else is reflowed to flowing paragraphs (already done in
-        // fetchPassageFromBibleApi for the others, but also here for safety).
+        // else is reflowed to flowing paragraphs.
         out[field] = field === 'psalmVerses' ? text : reflowAsParagraphs(text);
+        anySucceeded = true;
       }
     } catch (e) {
       // Leave the USCCB text in place if the alternate translation fails.
       console.warn(`[readings] ${t.id} fetch failed for ${citation}: ${e.message}`);
     }
   }));
+  // Only claim the alternate translation when at least one passage actually
+  // came back — otherwise the NABRE text is still what's in the fields.
+  if (anySucceeded) out.translation = t.id;
   return out;
 }
 
@@ -249,5 +289,8 @@ module.exports = {
   applyTranslation,
   reflowAsParagraphs,
   // exported for testing
-  _internal: { parseUsccbHtml, splitPsalm, splitGospelAcclamation, toUsccbDate, reflowAsParagraphs }
+  _internal: {
+    parseUsccbHtml, splitPsalm, splitGospelAcclamation, toUsccbDate,
+    reflowAsParagraphs, decodeEntities, normalizeCitationForBibleApi
+  }
 };

@@ -24,8 +24,9 @@ async function autoCropBuffer(buf, opts = {}) {
     // Sharp's .trim() removes pixels matching the top-left corner color.
     // For scanned music that's typically off-white, so we use a generous
     // threshold and force the comparison color to near-white.
-    const threshold = opts.threshold || 18; // 0..255 sensitivity
+    const threshold = opts.threshold ?? 18; // 0..255 sensitivity (0 is valid)
     const out = await sharp(buf)
+      .rotate() // apply EXIF orientation before trimming
       .trim({ background: '#ffffff', threshold })
       .toBuffer();
     return out;

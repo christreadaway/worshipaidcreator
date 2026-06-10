@@ -371,7 +371,7 @@ app.get('/api/liturgical-info', (req, res) => {
 // --- ATTACHMENTS LIBRARY ---
 // Generic media library — preludes, postludes, anthems, mass settings,
 // recordings the parish wants on hand.  Authenticated users with the
-// `manage_settings` permission can upload/delete; everyone can list.
+// `manage_attachments` permission can upload/delete; everyone can list.
 app.get('/api/attachments', async (req, res) => {
   try {
     const filter = {};
@@ -444,18 +444,41 @@ app.delete('/api/attachments/:id', requireAuth, requirePermission('manage_attach
   res.json({ success: true });
 });
 
+// Express decodes %2f in path params, so :filename can contain slashes /
+// '..' segments — reject anything that isn't a plain filename before it
+// touches the filesystem or KV layer.
+function safeFilenameParam(req, res) {
+  const raw = String(req.params.filename || '');
+  if (raw !== path.basename(raw) || !kv.isSafeKey(raw)) {
+    res.status(400).json({ error: 'Invalid filename' });
+    return null;
+  }
+  return raw;
+}
+
+// Browsers execute script inside SVGs opened as documents. Uploads are
+// parish-managed, but serve them with a sandbox CSP anyway so a malicious
+// SVG can't run in the app's origin.
+function setUploadHeaders(res, mime) {
+  res.setHeader('Content-Type', mime);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (/svg/i.test(mime)) res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+}
+
 app.get('/api/uploads/attachments/:filename', async (req, res) => {
+  const filename = safeFilenameParam(req, res);
+  if (!filename) return;
   if (kv.IS_NETLIFY) {
-    const item = await kv.get(attachmentsStore.BLOB_NS, req.params.filename);
+    const item = await kv.get(attachmentsStore.BLOB_NS, filename);
     if (!item) return res.status(404).json({ error: 'Not found' });
     const buf = Buffer.from(item.data, 'base64');
-    res.setHeader('Content-Type', item.mime || guessMime(req.params.filename));
+    setUploadHeaders(res, item.mime || guessMime(filename));
     return res.send(buf);
   }
   // Locally we serve via express.static('/uploads'); provide a fallback.
-  const filePath = path.join(ATTACHMENTS_DIR, req.params.filename);
+  const filePath = path.join(ATTACHMENTS_DIR, filename);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Not found' });
-  res.setHeader('Content-Type', guessMime(req.params.filename));
+  setUploadHeaders(res, guessMime(filename));
   fs.createReadStream(filePath).pipe(res);
 });
 
@@ -578,15 +601,20 @@ app.post('/api/preview', async (req, res) => {
 });
 
 // Generate PDF
-app.post('/api/generate-pdf', async (req, res) => {
+app.post('/api/generate-pdf', requireAuth, requirePermission('export_pdf'), async (req, res) => {
   try {
     const settings = await store.loadSettings();
 
-    // Enforce pastor approval if enabled in settings
-    if (settings.requirePastorApproval && req.body.id) {
+    // Enforce pastor approval if enabled in settings. Unsaved content (no
+    // id) can't have been approved, so it can't be exported either —
+    // otherwise the gate could be bypassed by simply not saving.
+    if (settings.requirePastorApproval) {
+      if (!req.body.id) {
+        return res.status(403).json({ error: 'Pastor approval required before export. Save the draft and submit it for approval first.' });
+      }
       const draft = await store.loadDraft(req.body.id);
-      if (draft && draft.status !== 'approved') {
-        return res.status(403).json({ error: 'Pastor approval required before export. Current status: ' + (draft.status || 'draft') });
+      if (!draft || draft.status !== 'approved') {
+        return res.status(403).json({ error: 'Pastor approval required before export. Current status: ' + ((draft && draft.status) || 'draft') });
       }
     }
 
@@ -690,8 +718,10 @@ app.post('/api/upload/cover', requireAuth, requirePermission('edit_cover'), cove
 
 app.get('/api/uploads/notation', async (req, res) => {
   if (kv.IS_NETLIFY) {
-    const items = await kv.list('uploads-notation');
-    return res.json(items.map(i => ({ filename: i.key || 'unknown', url: `/api/uploads/notation/${i.key || 'unknown'}` })));
+    // kv.list returns values (which lose the blob key) — use listKeys so
+    // the response carries real filenames instead of 'unknown'.
+    const keys = await kv.listKeys('uploads-notation');
+    return res.json(keys.map(k => ({ filename: k, url: `/api/uploads/notation/${k}` })));
   }
   const files = fs.readdirSync(NOTATION_DIR).filter(f => !f.startsWith('.')).map(f => ({
     filename: f,
@@ -702,17 +732,19 @@ app.get('/api/uploads/notation', async (req, res) => {
 
 // Serve uploaded images from Blobs on Netlify
 app.get('/api/uploads/notation/:filename', async (req, res) => {
-  const item = await kv.get('uploads-notation', req.params.filename);
+  const filename = safeFilenameParam(req, res);
+  if (!filename) return;
+  const item = await kv.get('uploads-notation', filename);
   if (!item) return res.status(404).json({ error: 'Not found' });
   const buf = Buffer.from(item.data, 'base64');
-  res.setHeader('Content-Type', item.mime);
+  setUploadHeaders(res, item.mime || guessMime(filename));
   res.send(buf);
 });
 
 app.get('/api/uploads/covers', async (req, res) => {
   if (kv.IS_NETLIFY) {
-    const items = await kv.list('uploads-covers');
-    return res.json(items.map(i => ({ filename: i.key || 'unknown', url: `/api/uploads/covers/${i.key || 'unknown'}` })));
+    const keys = await kv.listKeys('uploads-covers');
+    return res.json(keys.map(k => ({ filename: k, url: `/api/uploads/covers/${k}` })));
   }
   const files = fs.readdirSync(COVERS_DIR).filter(f => !f.startsWith('.')).map(f => ({
     filename: f,
@@ -722,35 +754,43 @@ app.get('/api/uploads/covers', async (req, res) => {
 });
 
 app.get('/api/uploads/covers/:filename', async (req, res) => {
-  const item = await kv.get('uploads-covers', req.params.filename);
+  const filename = safeFilenameParam(req, res);
+  if (!filename) return;
+  const item = await kv.get('uploads-covers', filename);
   if (!item) return res.status(404).json({ error: 'Not found' });
   const buf = Buffer.from(item.data, 'base64');
-  res.setHeader('Content-Type', item.mime);
+  setUploadHeaders(res, item.mime || guessMime(filename));
   res.send(buf);
 });
 
 // --- DRAFTS ---
-app.post('/api/drafts', async (req, res) => {
-  const draft = await store.saveDraft(req.body);
-  res.json(draft);
+// All draft routes require a signed-in user: drafts are parish content and
+// the delete route is destructive.
+app.post('/api/drafts', requireAuth, async (req, res) => {
+  try {
+    const draft = await store.saveDraft(req.body);
+    res.json(draft);
+  } catch (e) {
+    res.status(e.statusCode || 500).json({ error: e.message });
+  }
 });
 
-app.get('/api/drafts', async (req, res) => {
+app.get('/api/drafts', requireAuth, async (req, res) => {
   res.json(await store.listDrafts());
 });
 
-app.get('/api/drafts/:id', async (req, res) => {
+app.get('/api/drafts/:id', requireAuth, async (req, res) => {
   const draft = await store.loadDraft(req.params.id);
   if (!draft) return res.status(404).json({ error: 'Draft not found' });
   res.json(draft);
 });
 
-app.delete('/api/drafts/:id', async (req, res) => {
+app.delete('/api/drafts/:id', requireAuth, async (req, res) => {
   await store.deleteDraft(req.params.id);
   res.json({ success: true });
 });
 
-app.post('/api/drafts/:id/duplicate', async (req, res) => {
+app.post('/api/drafts/:id/duplicate', requireAuth, async (req, res) => {
   const copy = await store.duplicateDraft(req.params.id);
   if (!copy) return res.status(404).json({ error: 'Draft not found' });
   res.json(copy);
@@ -838,7 +878,7 @@ app.get('/api/settings', async (req, res) => {
   res.json(await store.loadSettings());
 });
 
-app.put('/api/settings', async (req, res) => {
+app.put('/api/settings', requireAuth, requirePermission('manage_settings'), async (req, res) => {
   const settings = await store.saveSettings(req.body);
   res.json(settings);
 });
@@ -1150,6 +1190,15 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
             <option value="alternate">Glory and praise to you, Lord Jesus Christ!</option>
           </select>
         </div>
+        <div class="fg">
+          <label>Please Sit / Stand / Kneel Rubric Alignment</label>
+          <select id="rubricAlignment">
+            <option value="left">Left</option>
+            <option value="center">Center</option>
+            <option value="right">Right</option>
+          </select>
+        </div>
+        <div class="fg-check"><input type="checkbox" id="twoColumnCreed"><label for="twoColumnCreed">Two-column Creed layout (Nicene/Apostles' — saves space on page 4)</label></div>
       </div>
     </div>
 
@@ -1189,6 +1238,11 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
       <div class="form-section-hdr" onclick="toggle(this)">Shared Music (same at every Mass) <span>&#9660;</span></div>
       <div class="form-section-body">
         <p class="section-lock">Organ prelude/postlude, Kyrie setting, processional hymn, communion hymn, and the hymn of thanksgiving are the same at every Mass — enter them once here.  The only items that legitimately differ per Mass are the Offertory Anthem and the Choral Anthem at Communion (different choirs / ensembles).</p>
+        <p class="section-lock">Hymn music is <strong>not</strong> embedded automatically (OneLicense has no public API). Instead, the booklet reserves a blank paste area under each hymn so you can drop the licensed notation in by hand after export.</p>
+        <div class="fg-check">
+          <input type="checkbox" id="reserveHymnSpace" checked>
+          <label for="reserveHymnSpace">Reserve paste areas for hymn music (processional, communion, thanksgiving)</label>
+        </div>
         ${sharedMusicFields()}
       </div>
     </div>
@@ -1866,7 +1920,9 @@ function buildData() {
       penitentialAct: v('penitentialAct'),
       includePostlude: ch('includePostlude'),
       adventWreath: ch('adventWreath'),
-      lentenAcclamation: v('lentenAcclamation')
+      lentenAcclamation: v('lentenAcclamation'),
+      rubricAlignment: v('rubricAlignment') || 'left',
+      twoColumnCreed: ch('twoColumnCreed')
     },
     readings: {
       firstReadingCitation: v('firstReadingCitation'),
@@ -1885,6 +1941,7 @@ function buildData() {
     musicSat5pm: buildMusicBlock('sat5pm'),
     musicSun9am: buildMusicBlock('sun9am'),
     musicSun11am: buildMusicBlock('sun11am'),
+    reserveHymnSpace: ch('reserveHymnSpace'),
     childrenLiturgyEnabled: ch('childrenLiturgyEnabled'),
     childrenLiturgyMassTimes: collectChildrenLiturgyTimes(),
     childrenLiturgyMusic: v('childrenLiturgyMusic'),
@@ -1915,6 +1972,8 @@ function populateForm(data) {
   sc('includePostlude', ss.includePostlude !== false);
   sc('adventWreath', !!ss.adventWreath);
   sv('lentenAcclamation', ss.lentenAcclamation || 'standard');
+  sv('rubricAlignment', ss.rubricAlignment || 'left');
+  sc('twoColumnCreed', !!ss.twoColumnCreed);
   const r = data.readings || {};
   sv('firstReadingCitation', r.firstReadingCitation);
   sv('firstReadingText', r.firstReadingText);
@@ -1932,6 +1991,8 @@ function populateForm(data) {
   populateMusicBlock('sun9am', data.musicSun9am);
   populateMusicBlock('sun11am', data.musicSun11am);
   populateSharedMusic(data);
+  // Default ON for drafts saved before the field existed.
+  sc('reserveHymnSpace', data.reserveHymnSpace !== false);
   sc('childrenLiturgyEnabled', data.childrenLiturgyEnabled);
   // If the saved doc carries an explicit value, respect it; otherwise the
   // load is a no-op and auto-defaults will run on date/season change.
@@ -2264,6 +2325,14 @@ function autoFetchReadingsIfEmpty() {
   fetchReadingsFromUsccb({ silent: true });
 }
 
+function copyPromptFromButton(btn) {
+  const text = btn.getAttribute('data-prompt') || '';
+  navigator.clipboard.writeText(text).then(
+    () => toast('Prompt copied', 'success'),
+    () => toast('Could not copy prompt', 'error')
+  );
+}
+
 async function suggestCoverImages() {
   const target = document.getElementById('coverSuggestions');
   if (!target) return;
@@ -2283,7 +2352,10 @@ async function suggestCoverImages() {
       '<div style="border:1px solid var(--border);border-radius:3px;padding:6px 8px;margin-bottom:6px;">' +
         '<div style="font-weight:600;font-size:12px;">' + esc(c.title) + '</div>' +
         '<div style="font-size:11px;color:var(--gray);margin-top:2px;">' + esc(c.prompt) + '</div>' +
-        '<button type="button" style="margin-top:4px;font-size:10px;" onclick="navigator.clipboard.writeText(' + JSON.stringify(c.prompt) + ');toast(\\'Prompt copied\\',\\'success\\');">Copy prompt</button>' +
+        // The prompt travels in a data attribute (HTML-escaped via esc) —
+        // inlining JSON.stringify into onclick breaks the attribute on the
+        // first double quote.
+        '<button type="button" style="margin-top:4px;font-size:10px;" data-prompt="' + esc(c.prompt) + '" onclick="copyPromptFromButton(this)">Copy prompt</button>' +
       '</div>'
     )).join('');
     const linkHtml = data.searchLinks.map(s => (
@@ -2638,7 +2710,7 @@ async function saveDraft() {
   const data = buildData();
   data.status = data.status || 'draft';
   try {
-    const res = await fetch('/api/drafts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    const res = await fetch('/api/drafts', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken }, body: JSON.stringify(data) });
     const result = await res.json();
     window._currentDraftId = result.id;
     toast('Draft saved', 'success');
@@ -2715,7 +2787,7 @@ async function generatePdfExport() {
 // --- History ---
 async function loadHistory() {
   try {
-    const res = await fetch('/api/drafts');
+    const res = await fetch('/api/drafts', { headers: { 'x-session-token': _sessionToken } });
     const drafts = await res.json();
     // Load settings to check approval requirement
     let parishSettings = window._parishSettings;
@@ -2804,7 +2876,7 @@ async function loadStats() {
 }
 
 async function openDraft(id) {
-  const res = await fetch('/api/drafts/' + id);
+  const res = await fetch('/api/drafts/' + id, { headers: { 'x-session-token': _sessionToken } });
   const data = await res.json();
   populateForm(data);
   showPage('editor');
@@ -2814,14 +2886,14 @@ async function openDraft(id) {
 }
 
 async function dupDraft(id) {
-  await fetch('/api/drafts/' + id + '/duplicate', { method: 'POST' });
+  await fetch('/api/drafts/' + id + '/duplicate', { method: 'POST', headers: { 'x-session-token': _sessionToken } });
   loadHistory();
   toast('Draft duplicated', 'success');
 }
 
 async function delDraft(id) {
   if (!confirm('Delete this draft?')) return;
-  await fetch('/api/drafts/' + id, { method: 'DELETE' });
+  await fetch('/api/drafts/' + id, { method: 'DELETE', headers: { 'x-session-token': _sessionToken } });
   loadHistory();
 }
 
@@ -2906,7 +2978,7 @@ async function saveAdminSettings() {
   const s = {};
   settingsFields.forEach(f => s[f] = v('s_' + f));
   settingsCheckboxes.forEach(f => s[f] = ch('s_' + f));
-  await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(s) });
+  await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken }, body: JSON.stringify(s) });
   window._parishSettings = s;
   toast('Settings saved', 'success');
 }

@@ -47,8 +47,10 @@ function formatMusicSlot(data, titleField, composerField, opts = {}) {
 
   const groupList = Array.from(groups.values());
 
-  // If only one group (all same), no time qualifier
-  if (groupList.length === 1) {
+  // If only one group AND every Mass has the slot filled, omit the time
+  // qualifier. A hymn entered for only a subset of Masses must keep its
+  // time label — printing it bare would imply it is sung at all Masses.
+  if (groupList.length === 1 && entries.length === MASS_TIME_KEYS.length) {
     const g = groupList[0];
     return [{ title: g.title, composer: g.composer, hymnal: g.hymnal, hymnNumber: g.hymnNumber, timeLabel: '' }];
   }

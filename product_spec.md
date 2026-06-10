@@ -1,10 +1,12 @@
 # Worship Aid Generator — Product Specification
 
-**Version:** 1.3.0
-**Last Updated:** April 30, 2026
+**Version:** 1.5.0
+**Last Updated:** June 9, 2026
 **Status:** Active development — replacing Microsoft Publisher in fall 2026
 
-> **Pick-up note for next session:** see `session_notes.md` § "Session 6 (April 30, 2026)" for the colleague-feedback fixes shipped in v1.3 — readings paragraph reflow, hymnal+number lookup, Responsorial Psalm setting slot, OneLicense search helper, stateless HMAC sessions (fixes "Not authenticated" upload bug), preview matches selected booklet size, per-user prefs. Branch `claude/reformat-readings-layout-vPijN`. 240/240 tests passing.
+> **Pick-up note for next session:** see `session_notes.md` § "Session 8 (June 9, 2026)" for v1.5 — Unicode PDF fonts (Liberation Sans, fixing encoding bugs), single 9 pt body text, conditional hymn paste area (antiphon suppresses page 2 box), Children's Liturgy placement fix (dismissal on page 2 after Opening Prayer, return note on page 5 at Offertory), rubric alignment setting, two-column Creed layout, Kyrie/Sanctus/Agnus ordinary-music paste areas. Branch `claude/youthful-mayer-sxg6du`. 298/298 tests passing.
+
+> **Decision (June 2026): no programmatic hymn-music integration.** OneLicense has no public API, and automating it is not worth the effort. Instead the booklet **reserves a blank paste area** under each congregational hymn slot (processional, communion, thanksgiving) — a dashed guide box sized for hymn notation — and the user pastes the licensed music in by hand after export (Acrobat, or print + paste). The OneLicense *search* buttons remain as a convenience for finding the music to paste. Controlled per-aid by `reserveHymnSpace` (default on; checkbox in the Shared Music section).
 
 ---
 
@@ -143,13 +145,41 @@ Line estimation: character count / 65 chars per line. Overflow warnings identify
 | Page | Role | Key Content |
 |---|---|---|
 | 1 | Cover | Jerusalem cross, feast name, date, Mass times, 2x2 parish info grid |
-| 2 | Introductory Rites | Organ Prelude, Processional/Antiphon, Confiteor (conditional), Kyrie, Gloria (conditional) |
+| 2 | Introductory Rites | Organ Prelude, Processional/Antiphon **+ hymn paste area**, Confiteor (conditional), Kyrie, Gloria (conditional) |
 | 3 | Liturgy of the Word | First Reading, Psalm, Second Reading, Gospel Acclamation |
-| 4 | Gospel + Creed | Gospel text, Homily cue, Creed (Nicene or Apostles'), Prayer of the Faithful |
-| 5 | Liturgy of the Eucharist | Offertory, Children's Liturgy (conditional), Invitation to Prayer, Holy Holy, Mystery of Faith, Great Amen |
-| 6 | Communion Rite | Lord's Prayer, Sign of Peace, Lamb of God, Communion Hymn, **Choral Anthem (per-Mass)** |
-| 7 | Concluding Rites | Thanksgiving, Blessing & Dismissal, Postlude, Announcements (conditional), short copyright |
-| 8 | Back Cover | Cross, feast name, date, special notes (optional), full copyright block |
+| 4 | Gospel + Creed | Gospel text, Homily cue, Creed (Nicene / Apostles' / Baptismal Vows), Prayer of the Faithful |
+| 5 | Liturgy of the Eucharist | Offertory, Children's Liturgy (conditional), Invitation to Prayer, Holy Holy (English/Latin), Mystery of Faith, Great Amen |
+| 6 | Communion Rite | Lord's Prayer, Sign of Peace, Lamb of God, Communion Hymn **+ hymn paste area**, **Choral Anthem (per-Mass)** |
+| 7 | Concluding Rites | Thanksgiving **+ hymn paste area**, Blessing & Dismissal, Postlude, Announcements (conditional), short copyright |
+| 8 | Back Cover | Cross, feast name, date, special notes (optional), closing message, full copyright block |
+
+#### Hymn-Music Paste Areas (v1.4)
+
+Under each congregational hymn slot (Processional/Entrance, Communion Hymn,
+Hymn of Thanksgiving) the booklet reserves a dashed blank box — ~2.2" tall on
+half-letter, ~2.9" on tabloid — where the parish pastes the licensed notation
+by hand after export. The guide box and its faint label disappear once an
+image is pasted over them. Both the HTML preview and the PDF render the
+areas. Per-aid toggle: `reserveHymnSpace` (boolean, default `true`; checkbox
+in the editor's Shared Music section). In the PDF the box height clamps to
+the space remaining on the page; if a page is too full for a usable area, the
+box is skipped with a warning.
+
+#### Hard 8-Page Guarantee (v1.4)
+
+The PDF is **always exactly 8 pages**. When a page's content won't fit, the
+generator applies, in order:
+1. relax side + bottom margins to 0.5" (no-op on half-letter, which already
+   uses 0.5"; tabloid gains a 7.5"×10" content area),
+2. relax the top margin to 0.5" (top last, so the page keeps its visual anchor),
+3. shrink body text — never below **75% of normal**, so type stays legible,
+4. truncate with an ellipsis and emit a per-page warning
+   (`Page N: content was truncated…`) surfaced in the editor and export
+   response.
+
+Page folios and copyright lines are written with margin suppression so they
+can never trigger PDFKit's auto-page-add (the historical cause of 16-page
+exports with blank folio pages).
 
 ### 7. PDF Export
 
@@ -234,6 +264,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 - Query precedence: `hymnal #number` > `hymnal` alone > `#number` alone > `title + composer`.
 - Responsorial Psalm has its own button that searches by refrain text.
 - No automated OneLicense scraping (the site is Cloudflare-protected and returns 403 to non-browser requests). Helpers keep humans in the loop.
+- **v1.4 role:** these buttons now serve the manual paste workflow — find the music on OneLicense, download/copy the notation, and paste it into the reserved hymn-space area in the exported booklet. Programmatic embedding was dropped by decision (see header note).
 
 ### 15. Notation Auto-Crop
 
@@ -412,7 +443,10 @@ If persistence reports `in-memory` on Netlify, sessions/settings/uploads will no
 
 ## Test Coverage
 
-**240 tests across 11 test files. All passing.**
+**290 tests across 12 test files. All passing.** Test files run serialized
+(`--test-concurrency=1`) and the suites that share the on-disk `data/` store
+take a cross-process lock (`src/tests/_shared-state-lock.js`), so runs are
+deterministic.
 
 | Suite | What It Covers |
 |---|---|
@@ -427,6 +461,8 @@ If persistence reports `in-memory` on Netlify, sessions/settings/uploads will no
 | Attachments + Calendar + Sanctus | `/api/liturgical-info` endpoint, attachments CRUD (with disk-cleanup regression test), Sanctus toggle precedence chain (per-aid > parish > English), parish-cover rendering, login regression, editor-HTML smoke |
 | **Readings Fetcher** | Paragraph reflow correctness (collapse single line breaks, preserve paragraph breaks), HTML parsing, splitPsalm refrain extraction, splitGospelAcclamation R-line stripping, USCCB date format |
 | **Feedback Fixes** | Hymnal+number on hymn entries, OneLicense URL helper, music-formatter hymnal rendering, Responsorial Psalm slot, OneLicense buttons, stateless HMAC tokens (survive store wipe + tampering), per-user prefs API merge semantics, health endpoint, preview matches selected booklet size, settings round-trip |
+| **Hymn Space (v1.4)** | Paste areas render on pages 2/6/7 in both renderers, geometry per trim size, `reserveHymnSpace:false` opt-out, page-bounds safety, long-announcements interaction |
+| **Security regressions (v1.4)** | 401/403 on unauthenticated or under-permissioned draft/settings/export routes, path-traversal draft ids and filenames rejected, approval-gate unsaved-export block, settings merge-on-save |
 | Utilities | escapeHtml, nl2br, formatDate (folded into renderer suite) |
 
 ---
@@ -525,17 +561,17 @@ Captured during the Publisher-replacement pass; not yet implemented.
 2. **Stock the attachments library** with the parish's existing prelude / postlude / mass-setting files so the per-music-slot dropdowns are useful out of the box.
 
 ### Music & Licensing
-- **OneLicense automation** — OneLicense.net publishes no public API and the site is Cloudflare-protected (returns 403 to any non-browser request). Recommended path:
-  1. Build a **Hymnary.org client** (free public API at `hymnary.org/data_api`, no auth, JSON; returns title, tune, meter, composer, scripture refs, hymnal instances). Cache aggressively; respect attribution.
-  2. Extend the local hymn library to a parish-managed `arrangements` table (per-tune × hymnal × key × accompaniment file) so the user can pick a specific arrangement.
-  3. Generate a **OneLicense reporting CSV exporter** that lists every hymn used in a published booklet, ready for upload into OneLicense's reporting tool.
-- **Version picker** — when OneLicense or Hymnary returns multiple versions of the same song (different keys, arrangements, accompaniments), surface them in a comparison panel showing key, hymnal, page number, and any notes so the user can choose the one to use.
-- **Longer hymns overflow handling** — when a hymn's notation is too long to fit a single page, automatically split across pages or auto-scale.
-- **Per-arrangement key display** — already shown in v1 hymn library; needs to integrate with OneLicense/Hymnary lookup once those land.
+> **Dropped (June 2026):** the previously planned OneLicense automation track
+> (Hymnary.org client, arrangements table, version picker, reporting CSV) is
+> abandoned by decision. The app builds everything *except* the hymn music
+> itself; the booklet reserves a paste area per hymn slot and the parish
+> drops the licensed notation in by hand. The OneLicense search buttons
+> remain as manual-workflow helpers.
+- **OneLicense reporting CSV exporter** (small, still worthwhile) — list every hymn used in published booklets, ready for upload into OneLicense's reporting tool.
 
 ### PDF Output
+- ~~Auto-fit / page-count handling~~ — **shipped in v1.4** as a hard 8-page guarantee: side + bottom margins relax to 0.5" first, then the top margin, then body text scales down (floor 75%); anything still too long is truncated with a per-page warning. The PDF can never exceed 8 pages.
 - **True booklet imposition** built into the app (4-up sheets in saddle-stitch order) so the file is print-ready without a printer-driver "fold booklet" step. Currently delegated to print dialog.
-- **Auto-fit** — when content overflows the standard 8 pages, automatically push to 12 or 16 pages (multiples of 4 for saddle stitch) rather than letting PDFKit add unnumbered pages.
 - **Side-by-side Publisher comparison** to verify pixel parity for parishes migrating from Publisher.
 
 ### Wedding / Funeral / Memorial Variants
