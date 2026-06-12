@@ -1,10 +1,10 @@
 # Worship Aid Generator — Product Specification
 
-**Version:** 1.6.0
+**Version:** 1.7.0
 **Last Updated:** June 12, 2026
 **Status:** Active development — replacing Microsoft Publisher in fall 2026
 
-> **Pick-up note for next session:** see `session_notes.md` § "Session 9 (June 12, 2026)" for v1.6 — the June 12 UAT fix pass: Netlify Blobs connection (root cause of session-expiry loops, vanishing uploads, and settings resets), vendored PDF fonts (fixes the `Helvetica.afm` export crash), TIFF upload support with PNG conversion, per-slot notation-image embedding (digital "paste"), new reserved music areas (Gloria / psalm refrain / Gospel Acclamation / Mystery of Faith), Gloria setting line, single Anthems section with per-Mass checkboxes + "Add anthem", service-music carryover from the previous week, storage-health warning banner, descriptive upload errors. 318/318 tests passing.
+> **Pick-up note for next session:** see `session_notes.md` § "Session 10 (June 12, 2026)" for v1.6.2–v1.7. **Pushed** on `claude/jolly-newton-tzp0aj`: v1.6.2 (preview falls back to the paste box when a notation file is missing; warnings render as banners), v1.6.3 (notation images at full proportional width; height-capped images centered; ordinary caps raised), v1.6.4 (automatic title-header removal on notation uploads). **Uncommitted at handoff — the v1.7 batch:** feast name tracks the date, Notation Images list overhaul (hover-zoom, per-row delete, sticky "Print in", "last printed in" history), content-hash upload de-dupe, full notation-map carryover, editor session snapshot/restore, export-log-backed hymn stats, and — in progress — PDF spread bridging for music images. First job next session: finish the bridging implementation + tests, run `npm test` (~340+ expected), commit, merge.
 
 > **Decision (June 2026): no programmatic hymn-music *licensing* integration.** OneLicense has no public API. Instead each congregational hymn slot (processional, communion, thanksgiving) and each sung Mass part reserves a music area. **As of v1.6 the user can fill that area digitally**: upload the licensed notation image (TIFF straight from OneLicense works — it's converted to PNG and auto-cropped) and it prints inside the area in both the preview and the exported PDF. With no image attached, the dashed paste-guide box renders instead for hand paste-up. The OneLicense *search* buttons remain as a convenience. Controlled per-aid by `reserveHymnSpace` (default on).
 
@@ -29,7 +29,7 @@ A Node.js web application that automates weekly creation of Catholic Mass worshi
 | Testing | Node.js built-in test runner | `node --test`, assert/strict |
 | CLI | `src/cli.js` | Headless generation from JSON input |
 
-**Deployment:** Local Node.js server or Netlify Functions (serverless). KV storage abstraction (`kv.js`) auto-selects filesystem (local) or Netlify Blobs (production).
+**Deployment:** Local Node.js server or Netlify Functions (serverless). KV storage abstraction (`kv.js`) auto-selects filesystem (local) or Netlify Blobs (production). KV namespaces are created on first write — v1.7 adds `notation-hash-index` and `export-log` with no provisioning required.
 
 ---
 
@@ -208,6 +208,13 @@ exports with blank folio pages).
 - Auto-save every 30 seconds while form is active
 - Duplicate action appends "(copy)" to feast name
 - List sorted by updatedAt descending
+- **Editor session snapshot & restore (v1.7):** every edit (debounced
+  1.5 s) and `beforeunload` write `buildData()` to
+  `localStorage('wa_editor_snapshot')`. On login, a snapshot under 24 h
+  old restores automatically (with a toast); one 24 h–7 d old surfaces
+  a "⟲ Restore last session" nav button (`id=btn-restore`); older
+  snapshots are ignored. Restoring suppresses the new-draft carryover
+  defaults so the restored work isn't overwritten.
 
 ### 10. Parish Settings
 
@@ -271,16 +278,38 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 - Accepted: PNG, JPG, **TIFF** (what OneLicense supplies), BMP, GIF, WebP, SVG.
 - Every upload is normalized at the door (`normalizeNotationImage`): EXIF rotation, white-margin trim, and conversion of non-embeddable formats to PNG — so every stored notation file displays in the browser and embeds in the PDF.
 - Rejected types and oversized files return descriptive errors (the hosted site's ~4.5 MB serverless payload cap is stated in the message; the SPA also pre-checks size client-side).
+- **Automatic title-header removal (v1.6.4).** Licensed notation usually arrives with a large title block (title / composer / tune) above the first staff; the booklet already prints the title line, so the header only wastes music space. `src/image-utils.js` (`detectTitleCropY` + `stripTitleHeader` + the `TITLE_CROP` constants) builds a row-darkness profile at a 360 px analysis width, treats a row with ≥35% ink as a staff line, finds the first staff system, walks up past anything hugging the staff (tempo/composer lines), and crops at the first white gap of ≥12 analysis rows — ONLY when real header content exists above the gap and the crop removes ≤50% of the image. 10 analysis rows of breathing room are kept above the music. Idempotent; lyrics between staves and the bottom copyright line always survive. Editor checkbox `stripTitleHeaders` (default ON) sends `stripTitle=0/1`; `/api/upload/notation` passes `{stripTitle}` through; the response carries `titleCropped` and the upload toast announces "title header removed".
+- **Content-hash de-dupe (v1.7).** The sha256 of the processed buffer is indexed in the `notation-hash-index` KV namespace; re-uploading identical content reuses the already-stored file (response `deduped: true`, toast "Already uploaded — reusing the existing image") instead of stacking copies in the list.
 
 #### Per-Slot Notation Images (v1.6)
 
 `data.notationImages` maps a slot name to an uploaded image URL. Slots: `processional`, `communion`, `thanksgiving` (hymn areas), `kyrie`, `gloria`, `sanctus`, `mysteryOfFaith`, `lambOfGod` (ordinary parts), `psalmRefrain`, `gospelAcclamation` (sung responses). Precedence everywhere: **uploaded image > reserved paste box > plain text**. Three ways to fill a slot (v1.6.1): the per-slot *Attach notation* control; the **Notation Images list**, where every uploaded image carries a "Print in:" dropdown (upload everything, then assign — matches the music department's batch workflow); or the per-slot picker's **Library** group (image attachments, kind-matched first). The PDF route pre-resolves the URLs — notation uploads *or* library attachments — to buffers (`src/notation-resolver.js`) and embeds them scaled to the content width.
+
+**Missing-file fallback (v1.6.2):** `/api/preview` checks every `notationImages` reference against storage (`findMissingNotationSlots`, `src/notation-resolver.js`) and strips references whose file no longer exists, so the preview falls back to the dashed paste box exactly like the PDF — with a named warning (`The notation image attached to "<slot>" no longer exists on the server — showing the blank paste area instead. Re-upload and re-attach it.`). The editor renders preview `warnings` as visible banners above the preview, not just a status-bar count. Root cause of the original "the processional hymn has no placeholder" report: a dead `<img>` inside the sandboxed preview iframe renders as an invisible blank, so the slot looked empty while the PDF (which pre-resolves buffers) correctly showed the paste box.
+
+**Image sizing (v1.6.3):** notation images scale to the full proportional content width; an image that hits its height cap is **centered** (`object-position: center top` in HTML; centered `drawX` in the PDF's `_notationImage`) rather than left-pinned. Ordinary-part image caps raised from 1.4 in / 100 pt to 2.4 in (half-letter) / 3 in (tabloid) — `PAGE_GEOMETRY.ordinaryImageMax` — and 170 base units in the PDF. Verified against the PDF content-stream image transforms.
+
+#### Notation Images List (v1.6.1, overhauled v1.7)
+
+The upload-everything-then-assign list is the music department's primary workflow surface:
+
+- **Hover-zoom** floating preview (`#notation-zoom`) on list thumbnails *and* per-slot thumbs; click opens the full-size image. Thumbnails enlarged to 72 px (list) / 40 px (per-slot).
+- Rows are **de-duped by URL** defensively.
+- **Per-row Delete** — new `DELETE /api/uploads/notation/:filename` (auth + `upload_images`). Drafts that still reference a deleted file keep the reference; preview and PDF fall back to the paste box per v1.6.2.
+- The **"Print in" select is sticky**: it shows the image's current spot. Picking a different spot MOVES the single assignment; picking the blank entry removes it; an image printed in multiple spots keeps its pills instead. Assigned rows get a gold border.
+- **"Last printed in" history (v1.7):** `GET /api/notation-usage` (auth) walks drafts newest-first into `{byUrl: {url: {slot, liturgicalDate, feastName}}}`; rows show "last printed in \<spot\> (\<date\>)" with a one-click **Use again** button when the image isn't currently assigned there.
+
+#### PDF Spread Bridging for Music Images (v1.7 — in progress)
+
+A music image that doesn't fit the space left on its page may **continue onto the facing page** — only when flowing even→odd (2→3, 6→7), i.e. across one open spread, so the assembly never turns a page mid-piece. Implemented as a lossless clipped two-part drawing in `pdf-generator.js`: `_notationImage` takes a `bridge` option and records `_carryNotation`; `_drawCarriedNotation` draws the remainder at the top of pages 3/7; `_fitPageText` respects the carried-content start Y. Images on odd pages (no facing page next) shrink losslessly instead. Hard rule: **music must never be cut off or partially lost.** A preview-side overflow detector warns when the PDF will flow/shrink. *Status: implementation in flight at the v1.7 handoff — see session notes.*
 
 > **Serverless binary responses (v1.6.1):** `serverless-http` must be configured with an explicit `binary` content-type list (`netlify/functions/api.js`). Its default list is empty, which UTF-8-mangled every PDF and image response on Netlify — exported booklets opened as blank pages even though the PDF content was correct. Any new binary content type served by the API must be added to that list.
 
 #### Service Music Carryover (v1.6)
 
 A new draft defaults to **carrying the service music over from the most recent draft** — settings names (Kyrie, Gloria, Holy Holy Holy, Mystery of Faith, Lamb of God), Sanctus language, penitential act, and the ordinary-part notation images. A checked "Same service music as last week" box collapses the individual fields; unchecking opens them for per-part editing. Stored per-draft as `serviceMusicCarryover`.
+
+**v1.7:** carryover now copies the **entire `notationImages` map** from the latest draft (not just the ordinary parts) — every image defaults to the spot it printed in last week, and swapping one is a single "Print in" dropdown pick. Restoring an editor session snapshot (see § 9) suppresses these carryover defaults so restored work isn't overwritten.
 
 #### Anthems (v1.6)
 
@@ -295,14 +324,19 @@ One **Anthems** section replaces the three per-Mass dropdown blocks: an Offertor
 ### 17. Hymn Usage Stats
 
 - **Visible to all roles** (no permission gate) under the "Stats" nav link.
-- `GET /api/stats/hymns` walks every saved draft in `data/drafts/` (or
-  the equivalent Netlify Blob namespace) and aggregates how often each
-  hymn title appears: total count, by month (`YYYY-MM`), and by
-  liturgical season. Each title is counted at most once per draft
-  regardless of how many mass times list it.
-- The view is a sortable table: hymn / total / by-season / by-month.
-  Useful for OneLicense reporting and for the music director when
-  planning rotation across the year.
+- **Stats measure what was actually PRINTED (v1.7).** `POST /api/generate-pdf`
+  writes one record per `liturgicalDate` to the new `export-log` KV namespace
+  (feast, season, the three per-Mass music blocks, who exported, when). The
+  last export of a week overwrites — re-exports don't double-count.
+- `GET /api/stats/hymns` aggregates the `export-log` records (it previously
+  walked every saved draft, which over-counted revisions and drafts that
+  never shipped): total count, by month (`YYYY-MM`), and by liturgical
+  season. Each title is counted at most once per exported week regardless
+  of how many mass times list it.
+- The view is a sortable table: hymn / total / by-season / by-month, with
+  copy stating how many **exported weeks** were analyzed. Useful for
+  OneLicense reporting and for the music director when planning rotation
+  across the year.
 
 ### 18. Generic Attachments Library
 
@@ -355,9 +389,13 @@ One **Anthems** section replaces the three per-Mass dropdown blocks: an Offertor
   sub-settings (Gloria, creed, Holy Holy setting, etc.) are preserved
   because `onSeasonChange()` only runs when the season actually
   changes. The reconciliation helper is `reconcileSeasonAndFeastFromDate({ feastFillIfEmpty })` in `src/server.js`.
-- **Feast / Sunday Name auto-fills only when empty** — a manually
-  typed override is preserved; clearing the field then changing the
-  date refills it.
+- **Feast / Sunday Name TRACKS the date (v1.7).** Changing the date
+  updates the field. (The old fill-only-when-empty rule never fired
+  again once the startup auto-fill or a loaded draft had filled the
+  field, so the name silently went stale.) Manually typing a name sets
+  `dataset.userSet` (via `oninput`) and is preserved until the field is
+  cleared — clearing re-enables tracking; `populateForm` clears the
+  flag so a loaded draft updates on the next date change.
 
 ### 20. Sanctus / Holy, Holy, Holy Language Toggle
 
@@ -425,7 +463,7 @@ If persistence reports `in-memory` on Netlify, sessions/settings/uploads will no
 | POST | `/api/cover-suggestions` | Cover image concept ideas + search links |
 | POST | `/api/validate` | Validate input + return overflow warnings |
 | POST | `/api/preview` | Generate HTML preview |
-| POST | `/api/generate-pdf` | Generate PDF (accepts `bookletSize`), return download URL |
+| POST | `/api/generate-pdf` | Generate PDF (accepts `bookletSize`), return download URL; logs the export per liturgical week (`export-log`) |
 | POST | `/api/drafts` | Save draft |
 | GET | `/api/drafts` | List all drafts |
 | GET | `/api/drafts/:id` | Load draft by ID |
@@ -439,13 +477,15 @@ If persistence reports `in-memory` on Netlify, sessions/settings/uploads will no
 | GET | `/api/user-prefs` | Load per-user preferences (auth required) |
 | PUT | `/api/user-prefs` | Merge per-user preferences (auth required) |
 | GET | `/api/health` | KV backend status (filesystem / netlify-blobs / in-memory) |
-| POST | `/api/upload/notation` | Upload notation scan (auto-cropped) |
+| POST | `/api/upload/notation` | Upload notation scan (normalized; title-header strip via `stripTitle`; content-hash deduped) |
+| DELETE | `/api/uploads/notation/:filename` | Remove an uploaded notation image (`upload_images`) |
+| GET | `/api/notation-usage` | Per-image "last printed in" history from drafts (auth) |
 | POST | `/api/upload/cover` | Upload cover image |
 | POST | `/api/upload/logo` | Upload parish logo (admin only) |
 | GET | `/api/hymns` | Get hymn library |
 | GET | `/api/hymns/search?q&limit&includeNonEnglish` | Typeahead search (smart-quote normalized) |
 | PUT | `/api/hymns` | Save hymn library (admin only) |
-| GET | `/api/stats/hymns` | Hymn usage frequency across all drafts |
+| GET | `/api/stats/hymns` | Hymn usage frequency across exported weeks (`export-log`) |
 | GET | `/api/attachments` | List attachments (filter `kind`, `kinds`, `q`) |
 | POST | `/api/attachments` | Upload attachment (multipart, manage_settings) |
 | PUT | `/api/attachments/:id` | Update attachment metadata (manage_settings) |
@@ -458,10 +498,12 @@ If persistence reports `in-memory` on Netlify, sessions/settings/uploads will no
 
 ## Test Coverage
 
-**290 tests across 12 test files. All passing.** Test files run serialized
-(`--test-concurrency=1`) and the suites that share the on-disk `data/` store
-take a cross-process lock (`src/tests/_shared-state-lock.js`), so runs are
-deterministic.
+**~340 tests across 15 test files** (318/318 at v1.6; the v1.6.1–v1.7 work
+adds `uat-fixes2.test.js`, `notation-resolver.test.js`, and new cases in
+`uat-fixes.test.js` — run `npm test` for the exact count). Test files run
+serialized (`--test-concurrency=1`) and the suites that share the on-disk
+`data/` store take a cross-process lock
+(`src/tests/_shared-state-lock.js`), so runs are deterministic.
 
 | Suite | What It Covers |
 |---|---|
@@ -478,6 +520,9 @@ deterministic.
 | **Feedback Fixes** | Hymnal+number on hymn entries, OneLicense URL helper, music-formatter hymnal rendering, Responsorial Psalm slot, OneLicense buttons, stateless HMAC tokens (survive store wipe + tampering), per-user prefs API merge semantics, health endpoint, preview matches selected booklet size, settings round-trip |
 | **Hymn Space (v1.4)** | Paste areas render on pages 2/6/7 in both renderers, geometry per trim size, `reserveHymnSpace:false` opt-out, page-bounds safety, long-announcements interaction |
 | **Security regressions (v1.4)** | 401/403 on unauthenticated or under-permissioned draft/settings/export routes, path-traversal draft ids and filenames rejected, approval-gate unsaved-export block, settings merge-on-save |
+| **UAT Fixes (v1.6–v1.6.4)** | Notation embedding + reserved music areas, carryover, anthems, missing-file preview fallback + named warning (v1.6.2), full-width/centered images + raised caps (v1.6.3), title-header auto-crop incl. idempotence and lyrics/copyright survival (v1.6.4) |
+| **UAT Fixes 2 (v1.6.1)** | Serverless binary responses, assignable Notation Images list, library attachments in per-slot pickers |
+| **Notation Resolver (v1.6.1)** | URL→buffer pre-resolution for notation uploads and library attachments, `findMissingNotationSlots` existence checks |
 | Utilities | escapeHtml, nl2br, formatDate (folded into renderer suite) |
 
 ---

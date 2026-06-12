@@ -21,6 +21,16 @@ const { getImageDimensions } = require('./image-utils');
 // 72pt = 1 inch
 const PT = 72;
 
+// Default printed widths for uploaded music images, in inches on the
+// 8.5in-wide (tabloid) page — the parish's spec: service music 6in,
+// hymns + responsorial psalm refrain 5in, all centered. Other trims scale
+// proportionally to their page width.
+const NOTATION_WIDTHS_IN = {
+  processional: 5, communion: 5, thanksgiving: 5, psalmRefrain: 5,
+  kyrie: 6, gloria: 6, sanctus: 6, mysteryOfFaith: 6, lambOfGod: 6,
+  gospelAcclamation: 6
+};
+
 // Embedded TrueType fonts — Liberation Sans covers the full Latin Unicode
 // range (curly quotes, em/en dashes, accented chars, currency symbols)
 // that Helvetica's WinAnsi encoding silently drops.
@@ -150,6 +160,11 @@ class WorshipAidPdfGenerator {
     // Page-level state used by tests and bounds tracking
     this._maxYReached = 0;
     this.pageEvents = [];
+    // Spread bridging: 1-based page number of the page being rendered, and
+    // the pending remainder of a music image that continues onto the
+    // facing page (set on even pages, consumed at the top of 3/7).
+    this._pageNo = 1;
+    this._carryNotation = null;
 
     // 8-page guarantee state: shrink-to-fit factor for body text and the
     // dry-run flag used while measuring a page before rendering it.
@@ -233,6 +248,7 @@ class WorshipAidPdfGenerator {
     this._maxYReached = 0;
     this.doc.addPage();
     this.y = this.MARGIN_TOP;
+    this._pageNo++;
   }
 
   // Write text inside the bottom margin band (folios, copyright lines)
@@ -379,6 +395,9 @@ class WorshipAidPdfGenerator {
   // _textBlock with a warning, so the booklet is always exactly 8 pages.
   _fitPageText(renderFn, opts = {}) {
     const MIN_MARGIN = 0.5 * PT;
+    // Content already drawn at the top of this page (a carried notation
+    // remainder) — every margin stage must start below it.
+    const carriedY = this.y > this.MARGIN_TOP ? this.y : null;
     const orig = {
       side: this.MARGIN_SIDE, top: this.MARGIN_TOP, bottom: this.MARGIN,
       width: this.CONTENT_WIDTH, y: this.y
@@ -404,9 +423,10 @@ class WorshipAidPdfGenerator {
       this.doc.page.margins.right = side;
       this.doc.page.margins.top = top;
       this.doc.page.margins.bottom = bottom;
-      // _fitPageText runs immediately after newPage(), so nothing has been
-      // drawn yet and the content start can follow the relaxed top margin.
-      this.y = top;
+      // _fitPageText normally runs right after newPage() so content starts
+      // at the (possibly relaxed) top margin — but when a bridged music
+      // image was carried onto this page, content must start below it.
+      this.y = carriedY !== null ? carriedY : top;
     };
     const measure = () => {
       this._dryRun = true;
@@ -453,24 +473,77 @@ class WorshipAidPdfGenerator {
   }
 
   // Draw an uploaded notation image scaled to the full content width keeping
-  // its proportions, capped at maxH (base units, pre-scale) and the space
-  // left on the page. When the cap forces a shrink, the image is centered
-  // horizontally instead of pinned to the left margin. Returns true when the
-  // slot had an image (drawn or dry-run-measured).
-  _notationImage(slot, maxHBase, reserveBelowBase = 0) {
+  // its proportions. Music can NEVER be cut off or lost:
+  //   * On an EVEN page (2/4/6), an image too tall for the space left may
+  //     BRIDGE onto the facing odd page — the open spread (2-3, 6-7) is
+  //     visible all at once, so the assembly keeps singing. The image is
+  //     drawn lossless in two clipped parts; never across a page turn
+  //     (odd -> even).
+  //   * On an ODD page (or when bridging is off) the image shrinks
+  //     proportionally to fit — smaller, but complete.
+  // When a height cap or shrink narrows the image, it is centered.
+  // Returns true when the slot had an image (drawn or dry-run-measured).
+  // Spec width for a slot's music image: inches on the tabloid page,
+  // proportional on other trims, never wider than the content area.
+  _notationTargetWidth(slot) {
+    const inches = NOTATION_WIDTHS_IN[slot] || 6;
+    return Math.min(inches * PT * (this.PAGE_WIDTH / (8.5 * PT)), this.CONTENT_WIDTH);
+  }
+
+  _notationImage(slot, maxHBase, reserveBelowBase = 0, opts = {}) {
     const buf = this.notationImages[slot];
     if (!buf) return false;
-    const maxH = this.s(maxHBase);
     const reserveBelow = this.s(reserveBelowBase);
     const available = this.PAGE_HEIGHT - this.MARGIN - reserveBelow - this.y;
+    const dims = getImageDimensions(buf);
+
+    // Natural size at the slot's spec width (6in service music / 5in hymns
+    // and psalm refrain on tabloid), centered by the drawX math below.
+    let drawW = this._notationTargetWidth(slot);
+    let drawH = dims ? (dims.height / dims.width) * drawW : this.s(maxHBase);
+
+    const canBridge = !!opts.bridge && !this._dryRun &&
+      this._pageNo % 2 === 0 && this._pageNo < 8;
+
+    if (canBridge && drawH > available) {
+      // Budget: what's left here plus most of the facing page. An image
+      // even taller than that shrinks to the budget (still complete).
+      const facingBudget = (this.PAGE_HEIGHT - this.MARGIN_TOP - this.MARGIN) * 0.6;
+      const totalBudget = Math.max(available, 0) + facingBudget;
+      if (drawH > totalBudget) {
+        drawW = drawW * (totalBudget / drawH);
+        drawH = totalBudget;
+      }
+      const part1H = Math.max(0, available);
+      const drawX = this.MARGIN_SIDE + (this.CONTENT_WIDTH - drawW) / 2;
+      if (part1H > this.s(12)) {
+        this.doc.save().rect(drawX, this.y, drawW, part1H).clip();
+        let failed = null;
+        try {
+          this.doc.image(buf, drawX, this.y, { width: drawW, height: drawH });
+        } catch (e) { failed = e; }
+        this.doc.restore();
+        if (failed) {
+          this.warnings.push(`Could not embed ${slot} notation image: ${failed.message}`);
+          return false; // fall back to the paste box
+        }
+      }
+      this._carryNotation = { buf, drawW, drawH, shownH: part1H, slot };
+      this.warnings.push(`${slot} music continues onto the facing page (pages ${this._pageNo}–${this._pageNo + 1}) — the open spread reads as one piece.`);
+      this.y += part1H;
+      this._trackY();
+      return true;
+    }
+
+    // Single-page path: bridgeable slots use their natural height up to the
+    // space available; others honor the height cap. Shrink keeps the image
+    // complete.
+    const maxH = opts.bridge ? Infinity : this.s(maxHBase);
     const capH = Math.min(maxH, available);
     if (capH < this.s(20)) {
       if (!this._dryRun) this.warnings.push(`Page is too full to place the ${slot} notation image.`);
       return true; // the slot HAS music; we just couldn't fit it
     }
-    const dims = getImageDimensions(buf);
-    let drawW = this.CONTENT_WIDTH;
-    let drawH = dims ? (dims.height / dims.width) * drawW : capH;
     if (drawH > capH) {
       drawW = drawW * (capH / drawH);
       drawH = capH;
@@ -491,6 +564,32 @@ class WorshipAidPdfGenerator {
     return true;
   }
 
+  // Draw the continuation of a music image that bridged from the previous
+  // (even) page. Runs at the very top of the facing page, before any other
+  // content. The full image is drawn shifted up with a clip window over the
+  // unseen remainder — pixels line up exactly with part 1, nothing is lost.
+  _drawCarriedNotation() {
+    const c = this._carryNotation;
+    if (!c) return;
+    this._carryNotation = null;
+    const remH = c.drawH - c.shownH;
+    if (remH <= 0) return;
+    const drawX = this.MARGIN_SIDE + (this.CONTENT_WIDTH - c.drawW) / 2;
+    this.doc.save().rect(drawX, this.y, c.drawW, remH).clip();
+    try {
+      this.doc.image(c.buf, drawX, this.y - c.shownH, { width: c.drawW, height: c.drawH });
+    } catch (e) {
+      this.warnings.push(`Could not finish the ${c.slot} notation on the facing page: ${e.message}`);
+    }
+    this.doc.restore();
+    this.doc.fontSize(this.s(6)).fillColor('#B5B5B5').font('Sans-Italic')
+      .text('(continued)', this.MARGIN_SIDE, this.y + remH + this.s(1),
+        { width: this.CONTENT_WIDTH, align: 'right', lineBreak: false });
+    this.doc.font('Sans');
+    this.y += remH + this.s(10);
+    this._trackY();
+  }
+
   // Reserved blank area under a congregational hymn slot. OneLicense has no
   // public API, so the booklet deliberately leaves room for the parish to
   // paste licensed notation in by hand after export (Acrobat, print + paste,
@@ -502,7 +601,7 @@ class WorshipAidPdfGenerator {
   // embedded in place of the dashed box.
   hymnMusicSpace(opts = {}) {
     if (opts.slot && this.notationImages[opts.slot]) {
-      if (this._notationImage(opts.slot, opts.height !== undefined ? opts.height : 160, opts.reserveBelow || 0)) return;
+      if (this._notationImage(opts.slot, opts.height !== undefined ? opts.height : 160, opts.reserveBelow || 0, { bridge: true })) return;
     }
     if (this.data.reserveHymnSpace === false) return;
     const desired = this.s(opts.height !== undefined ? opts.height : 160);
@@ -566,12 +665,12 @@ class WorshipAidPdfGenerator {
   // by hand after export — smaller than hymn spaces since ordinary settings
   // are the same every week and already identified by name above. When the
   // slot carries an uploaded notation image, the image renders instead.
-  ordinaryMusicSpace(slot, label) {
+  ordinaryMusicSpace(slot, label, opts = {}) {
     if (slot && this.notationImages[slot]) {
       // Image cap is far more generous than the 55-unit paste guide: real
       // ordinary-part music runs 2-3 staves at full content width. Mirrors
       // the HTML renderer's ordinaryImageMax (2.4in / 3in).
-      if (this._notationImage(slot, 170)) return;
+      if (this._notationImage(slot, 170, opts.reserveBelow || 0, { bridge: !!opts.bridge })) return;
     }
     if (this.data.reserveHymnSpace === false) return;
     const h = this.s(55);
@@ -815,7 +914,7 @@ class WorshipAidPdfGenerator {
       // Which setting the Gloria is sung from (e.g. "Mass of Creation").
       if (this.ss.gloriaSetting) this.bodyText(this.ss.gloriaSetting, { italic: true, gap: 1 });
       if (this._slotHasMusic('gloria')) {
-        this.ordinaryMusicSpace('gloria', 'Gloria — music notation');
+        this.ordinaryMusicSpace('gloria', 'Gloria — music notation', { bridge: true, reserveBelow: this.data.childrenLiturgyEnabled ? 85 : 0 });
       } else {
         this.bodyText('Glory to God in the highest, and on earth peace to people of good will.');
       }
@@ -874,6 +973,8 @@ class WorshipAidPdfGenerator {
 
   renderPage3LiturgyOfWord() {
     this.newPage();
+    // A music image bridging from page 2 finishes here, above everything.
+    this._drawCarriedNotation();
     this._fitPageText(() => {
       this.sectionHeader('The Liturgy of the Word');
       this.rubric(RUBRICS.sit);
@@ -1036,6 +1137,8 @@ class WorshipAidPdfGenerator {
 
   renderPage7ConcludingRites() {
     this.newPage();
+    // A music image bridging from page 6 finishes here, above everything.
+    this._drawCarriedNotation();
     // keepBottom: the copyright line is anchored inside the bottom margin
     // band on this page, so the content area must not grow down into it.
     this._fitPageText(() => {
