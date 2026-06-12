@@ -160,14 +160,13 @@ class WorshipAidPdfGenerator {
     // Page-level state used by tests and bounds tracking
     this._maxYReached = 0;
     this.pageEvents = [];
-    // Spread bridging: 1-based page number of the page being rendered, and
-    // the pending remainder of a music image that continues onto the
-    // facing page (set on even pages, consumed at the top of 3/7).
     this._pageNo = 1;
-    this._carryNotation = null;
+    // True when the current page carries an embedded notation image — the
+    // short license line prints in that page's footer.
+    this._pageHasNotation = false;
 
-    // 8-page guarantee state: shrink-to-fit factor for body text and the
-    // dry-run flag used while measuring a page before rendering it.
+    // 8-page guarantee state: global shrink factor for body text AND
+    // notation images, and the dry-run flag used while measuring blocks.
     this.textScale = 1;
     this._dryRun = false;
     this._clipWarnedPage = 0;
@@ -207,13 +206,7 @@ class WorshipAidPdfGenerator {
 
       try {
         this.renderPage1Cover();
-        this.renderPage2IntroductoryRites();
-        this.renderPage3LiturgyOfWord();
-        this.renderPage4GospelCreed();
-        this.renderPage5LiturgyEucharist();
-        this.renderPage6CommunionRite();
-        this.renderPage7ConcludingRites();
-        this.renderPage8BackCover();
+        this.renderContentFlow();
         // Capture the final page's maxY for layout introspection.
         this.pageEvents.push({ maxY: this._maxYReached });
         const bufferedPageCount = doc.bufferedPageRange().count;
@@ -239,6 +232,8 @@ class WorshipAidPdfGenerator {
   // Track the lowest Y coordinate written on the current page so tests can
   // verify no content has run past the bottom margin.
   _trackY() {
+    // Dry-run measurement must never pollute the real bounds tracking.
+    if (this._dryRun) return;
     if (this.doc.y > this._maxYReached) this._maxYReached = this.doc.y;
     if (this.y > this._maxYReached)     this._maxYReached = this.y;
   }
@@ -383,87 +378,103 @@ class WorshipAidPdfGenerator {
     this.doc.font('Sans');
   }
 
-  // Shrink-to-fit, in order of preference:
-  //   1. Normal margins, normal type.
-  //   2. Relax the side and bottom margins to 0.5" (wider + taller text
-  //      area; a no-op on half-letter, which is already at 0.5").
-  //   3. Relax the top margin to 0.5" as well — top last so the page
-  //      keeps its visual anchor as long as possible.
-  //   4. Only then reduce the body-text scale, never below 0.75 of normal
-  //      so the type stays legible.
-  // Anything that still doesn't fit at minimum scale gets truncated by
-  // _textBlock with a warning, so the booklet is always exactly 8 pages.
-  _fitPageText(renderFn, opts = {}) {
-    const MIN_MARGIN = 0.5 * PT;
-    // Content already drawn at the top of this page (a carried notation
-    // remainder) — every margin stage must start below it.
-    const carriedY = this.y > this.MARGIN_TOP ? this.y : null;
-    const orig = {
-      side: this.MARGIN_SIDE, top: this.MARGIN_TOP, bottom: this.MARGIN,
-      width: this.CONTENT_WIDTH, y: this.y
-    };
-    // Pages with furniture anchored inside the bottom margin band (the
-    // page-7 copyright line) keep their bottom margin so content can't
-    // collide with it.
-    const minBottom = opts.keepBottom ? orig.bottom : Math.min(orig.bottom, MIN_MARGIN);
-    const stages = [
-      [orig.side, orig.top, orig.bottom],
-      [Math.min(orig.side, MIN_MARGIN), orig.top, minBottom],
-      [Math.min(orig.side, MIN_MARGIN), Math.min(orig.top, MIN_MARGIN), minBottom]
-    ];
-    const applyMargins = ([side, top, bottom]) => {
-      this.MARGIN_SIDE = side;
-      this.MARGIN_TOP = top;
-      this.MARGIN = bottom;
-      this.CONTENT_WIDTH = this.PAGE_WIDTH - 2 * side;
-      // PDFKit auto-page-breaks any text that crosses its own bottom
-      // margin, so the document margins must follow the relaxed values or
-      // text written into the reclaimed band would spawn a ninth page.
-      this.doc.page.margins.left = side;
-      this.doc.page.margins.right = side;
-      this.doc.page.margins.top = top;
-      this.doc.page.margins.bottom = bottom;
-      // _fitPageText normally runs right after newPage() so content starts
-      // at the (possibly relaxed) top margin — but when a bridged music
-      // image was carried onto this page, content must start below it.
-      this.y = carriedY !== null ? carriedY : top;
-    };
-    const measure = () => {
-      this._dryRun = true;
-      const y0 = this.y;
-      renderFn();
-      const needed = this.y - y0;
-      this._dryRun = false;
-      this.y = y0;
-      return needed;
-    };
+  // FLOW LAYOUT ============================================
+  // The liturgy is a sequence of atomic blocks (a heading plus its prayer
+  // text, a hymn line plus its notation image, one paragraph of a reading,
+  // ...). Pages 2-8 are NOT fixed section slots: blocks are measured and
+  // packed in order, breaking to a new page whenever the next block's real
+  // height doesn't fit — so the layout is conditional on the vertical
+  // height of the actual hymns, prayers, and readings. Hard rules:
+  //   * a block is never split (music and its heading stay together);
+  //   * nothing is ever dropped silently — if the content can't fit the
+  //     7 content pages even at 75% scale, the overflow is truncated on
+  //     page 8 WITH a warning the editor surfaces at export.
 
-    this.textScale = 1;
-    let needed = 0;
-    let fits = false;
-    for (const stage of stages) {
-      applyMargins(stage);
-      needed = measure();
-      if (needed <= this._bottom() - this.y) { fits = true; break; }
-    }
-    if (!fits) {
-      // Fully relaxed margins weren't enough — shrink type, floor 0.75.
-      const available = this._bottom() - this.y;
-      for (let i = 0; i < 2 && needed > available && this.textScale > 0.75; i++) {
-        this.textScale = Math.max(0.75, this.textScale * Math.max(0.75, available / needed));
-        needed = measure();
+  // Height of a block as if rendered from the top of a fresh page.
+  _measureBlock(block) {
+    this._dryRun = true;
+    const y0 = this.y;
+    this.y = this.MARGIN_TOP;
+    block.render();
+    const h = this.y - this.MARGIN_TOP;
+    this._dryRun = false;
+    this.y = y0;
+    return h;
+  }
+
+  _countPagesNeeded(blocks) {
+    const pageH = this._bottom() - this.MARGIN_TOP;
+    let pages = 1;
+    let y = this.MARGIN_TOP;
+    for (const block of blocks) {
+      const h = Math.min(this._measureBlock(block), pageH);
+      if (h > this._bottom() - y && y > this.MARGIN_TOP + 1) {
+        pages++;
+        y = this.MARGIN_TOP;
       }
+      y += h;
     }
-    renderFn();
+    return pages;
+  }
+
+  // Folio + (when the page carries licensed notation) the short license
+  // line, then reset the per-page notation flag.
+  _finishContentPage(pageNo) {
+    if (this._pageHasNotation) {
+      let line = String(this.parishSettings.copyrightShort ||
+        getDefaultCopyrightShort(this.parishSettings.onelicenseNumber)).replace(/\s+/g, ' ').trim();
+      this.doc.font('Sans').fontSize(this.s(7));
+      if (this.doc.widthOfString(line) > this.CONTENT_WIDTH) {
+        while (line.length > 1 && this.doc.widthOfString(line + '…') > this.CONTENT_WIDTH) {
+          line = line.slice(0, -1);
+        }
+        line = line.trimEnd() + '…';
+      }
+      this._footerText(line, this.PAGE_HEIGHT - this.MARGIN * 0.85, { lineBreak: false });
+      this._pageHasNotation = false;
+    }
+    this.pageNumber(pageNo);
+  }
+
+  renderContentFlow() {
+    const blocks = this._buildContentBlocks();
+
+    // Global shrink: text and notation images scale together (floor 0.75)
+    // until the whole liturgy packs into the 7 content pages.
+    let scale = 1;
+    for (;;) {
+      this.textScale = scale;
+      if (this._countPagesNeeded(blocks) <= 7 || scale <= 0.751) break;
+      scale = Math.max(0.75, scale - 0.05);
+    }
+    this.textScale = scale;
+    if (scale < 1) {
+      this.warnings.push(`Content was scaled to ${Math.round(scale * 100)}% to fit the 8-page booklet.`);
+    }
+
+    this.newPage();
+    let pageNo = 2;
+    for (const block of blocks) {
+      const h = this._measureBlock(block);
+      const remaining = this._bottom() - this.y;
+      if (h > remaining + 1 && pageNo < 8 && this.y > this.MARGIN_TOP + 1) {
+        this._finishContentPage(pageNo);
+        this.newPage();
+        pageNo++;
+      }
+      // On page 8 with no room left, the block's own clamps truncate it
+      // with a loud warning — never a ninth page, never a silent drop.
+      block.render();
+    }
+    this._finishContentPage(pageNo);
+
+    // Saddle-stitch booklets print in multiples of 4 — pad to 8 pages.
+    while (pageNo < 8) {
+      this.newPage();
+      pageNo++;
+      this.pageNumber(pageNo);
+    }
     this.textScale = 1;
-    // Restore layout margins so footers (folio, copyright) sit at the same
-    // place on every page. The doc-level bottom margin stays relaxed for
-    // the rest of this page — restoring it mid-page would re-trigger
-    // PDFKit's page break for content already placed in the relaxed band.
-    this.MARGIN_SIDE = orig.side;
-    this.MARGIN_TOP = orig.top;
-    this.MARGIN = orig.bottom;
-    this.CONTENT_WIDTH = orig.width;
   }
 
   // True when this slot will render music (an uploaded image or a reserved
@@ -472,16 +483,11 @@ class WorshipAidPdfGenerator {
     return !!this.notationImages[slot] || this.data.reserveHymnSpace !== false;
   }
 
-  // Draw an uploaded notation image scaled to the full content width keeping
-  // its proportions. Music can NEVER be cut off or lost:
-  //   * On an EVEN page (2/4/6), an image too tall for the space left may
-  //     BRIDGE onto the facing odd page — the open spread (2-3, 6-7) is
-  //     visible all at once, so the assembly keeps singing. The image is
-  //     drawn lossless in two clipped parts; never across a page turn
-  //     (odd -> even).
-  //   * On an ODD page (or when bridging is off) the image shrinks
-  //     proportionally to fit — smaller, but complete.
-  // When a height cap or shrink narrows the image, it is centered.
+  // Draw an uploaded notation image at its slot's spec width, centered,
+  // keeping proportions. Music is NEVER split across pages and NEVER cut
+  // off: the flow paginator gives the image a fresh page when it doesn't
+  // fit the current one, and an image taller than a full page shrinks
+  // proportionally — smaller, but complete.
   // Returns true when the slot had an image (drawn or dry-run-measured).
   // Spec width for a slot's music image: inches on the tabloid page,
   // proportional on other trims, never wider than the content area.
@@ -490,57 +496,26 @@ class WorshipAidPdfGenerator {
     return Math.min(inches * PT * (this.PAGE_WIDTH / (8.5 * PT)), this.CONTENT_WIDTH);
   }
 
-  _notationImage(slot, maxHBase, reserveBelowBase = 0, opts = {}) {
+  _notationImage(slot, maxHBase, opts = {}) {
     const buf = this.notationImages[slot];
     if (!buf) return false;
-    const reserveBelow = this.s(reserveBelowBase);
-    const available = this.PAGE_HEIGHT - this.MARGIN - reserveBelow - this.y;
+    const available = this._bottom() - this.y;
     const dims = getImageDimensions(buf);
 
     // Natural size at the slot's spec width (6in service music / 5in hymns
-    // and psalm refrain on tabloid), centered by the drawX math below.
-    let drawW = this._notationTargetWidth(slot);
+    // and psalm refrain on tabloid). textScale: when the flow engine
+    // shrinks the booklet to fit 8 pages, images shrink with the text so
+    // the layout compresses evenly instead of starving the last slot.
+    let drawW = this._notationTargetWidth(slot) * this.textScale;
     let drawH = dims ? (dims.height / dims.width) * drawW : this.s(maxHBase);
 
-    const canBridge = !!opts.bridge && !this._dryRun &&
-      this._pageNo % 2 === 0 && this._pageNo < 8;
-
-    if (canBridge && drawH > available) {
-      // Budget: what's left here plus most of the facing page. An image
-      // even taller than that shrinks to the budget (still complete).
-      const facingBudget = (this.PAGE_HEIGHT - this.MARGIN_TOP - this.MARGIN) * 0.6;
-      const totalBudget = Math.max(available, 0) + facingBudget;
-      if (drawH > totalBudget) {
-        drawW = drawW * (totalBudget / drawH);
-        drawH = totalBudget;
-      }
-      const part1H = Math.max(0, available);
-      const drawX = this.MARGIN_SIDE + (this.CONTENT_WIDTH - drawW) / 2;
-      if (part1H > this.s(12)) {
-        this.doc.save().rect(drawX, this.y, drawW, part1H).clip();
-        let failed = null;
-        try {
-          this.doc.image(buf, drawX, this.y, { width: drawW, height: drawH });
-        } catch (e) { failed = e; }
-        this.doc.restore();
-        if (failed) {
-          this.warnings.push(`Could not embed ${slot} notation image: ${failed.message}`);
-          return false; // fall back to the paste box
-        }
-      }
-      this._carryNotation = { buf, drawW, drawH, shownH: part1H, slot };
-      this.warnings.push(`${slot} music continues onto the facing page (pages ${this._pageNo}–${this._pageNo + 1}) — the open spread reads as one piece.`);
-      this.y += part1H;
-      this._trackY();
-      return true;
-    }
-
-    // Single-page path: bridgeable slots use their natural height up to the
-    // space available; others honor the height cap. Shrink keeps the image
-    // complete.
-    const maxH = opts.bridge ? Infinity : this.s(maxHBase);
+    // Hymn slots are uncapped (a full-page hymn owns its page); ordinary
+    // parts keep a height cap. Shrink keeps the image complete.
+    const maxH = opts.uncapped ? Infinity : this.s(maxHBase) * this.textScale;
     const capH = Math.min(maxH, available);
     if (capH < this.s(20)) {
+      // NEVER silent: the flow paginator should have prevented this; if a
+      // page still can't take the image, say so.
       if (!this._dryRun) this.warnings.push(`Page is too full to place the ${slot} notation image.`);
       return true; // the slot HAS music; we just couldn't fit it
     }
@@ -555,6 +530,7 @@ class WorshipAidPdfGenerator {
     const drawX = this.MARGIN_SIDE + (this.CONTENT_WIDTH - drawW) / 2;
     try {
       this.doc.image(buf, drawX, this.y, { width: drawW, height: drawH });
+      this._pageHasNotation = true;
       this.y += drawH + this.s(4);
       this._trackY();
     } catch (e) {
@@ -562,32 +538,6 @@ class WorshipAidPdfGenerator {
       return false; // fall back to the paste box
     }
     return true;
-  }
-
-  // Draw the continuation of a music image that bridged from the previous
-  // (even) page. Runs at the very top of the facing page, before any other
-  // content. The full image is drawn shifted up with a clip window over the
-  // unseen remainder — pixels line up exactly with part 1, nothing is lost.
-  _drawCarriedNotation() {
-    const c = this._carryNotation;
-    if (!c) return;
-    this._carryNotation = null;
-    const remH = c.drawH - c.shownH;
-    if (remH <= 0) return;
-    const drawX = this.MARGIN_SIDE + (this.CONTENT_WIDTH - c.drawW) / 2;
-    this.doc.save().rect(drawX, this.y, c.drawW, remH).clip();
-    try {
-      this.doc.image(c.buf, drawX, this.y - c.shownH, { width: c.drawW, height: c.drawH });
-    } catch (e) {
-      this.warnings.push(`Could not finish the ${c.slot} notation on the facing page: ${e.message}`);
-    }
-    this.doc.restore();
-    this.doc.fontSize(this.s(6)).fillColor('#B5B5B5').font('Sans-Italic')
-      .text('(continued)', this.MARGIN_SIDE, this.y + remH + this.s(1),
-        { width: this.CONTENT_WIDTH, align: 'right', lineBreak: false });
-    this.doc.font('Sans');
-    this.y += remH + this.s(10);
-    this._trackY();
   }
 
   // Reserved blank area under a congregational hymn slot. OneLicense has no
@@ -601,12 +551,11 @@ class WorshipAidPdfGenerator {
   // embedded in place of the dashed box.
   hymnMusicSpace(opts = {}) {
     if (opts.slot && this.notationImages[opts.slot]) {
-      if (this._notationImage(opts.slot, opts.height !== undefined ? opts.height : 160, opts.reserveBelow || 0, { bridge: !!opts.bridge })) return;
+      if (this._notationImage(opts.slot, opts.height !== undefined ? opts.height : 160, { uncapped: true })) return;
     }
     if (this.data.reserveHymnSpace === false) return;
-    const desired = this.s(opts.height !== undefined ? opts.height : 160);
-    const reserveBelow = this.s(opts.reserveBelow || 0);
-    const available = this.PAGE_HEIGHT - this.MARGIN - reserveBelow - this.y;
+    const desired = this.s(opts.height !== undefined ? opts.height : 160) * this.textScale;
+    const available = this._bottom() - this.y;
     const h = Math.min(desired, available);
     if (h < this.s(50)) {
       if (!this._dryRun) this.warnings.push('Page is too full to reserve space for pasted hymn music.');
@@ -665,17 +614,21 @@ class WorshipAidPdfGenerator {
   // by hand after export — smaller than hymn spaces since ordinary settings
   // are the same every week and already identified by name above. When the
   // slot carries an uploaded notation image, the image renders instead.
-  ordinaryMusicSpace(slot, label, opts = {}) {
+  ordinaryMusicSpace(slot, label) {
     if (slot && this.notationImages[slot]) {
       // Image cap is far more generous than the 55-unit paste guide: real
       // ordinary-part music runs 2-3 staves at full content width. Mirrors
       // the HTML renderer's ordinaryImageMax (2.4in / 3in).
-      if (this._notationImage(slot, 170, opts.reserveBelow || 0, { bridge: !!opts.bridge })) return;
+      if (this._notationImage(slot, 170)) return;
     }
     if (this.data.reserveHymnSpace === false) return;
-    const h = this.s(55);
+    const h = this.s(55) * this.textScale;
     const available = this._bottom() - this.y;
-    if (available < this.s(30)) return;
+    if (available < this.s(30)) {
+      // NEVER skip silently — a missing Kyrie/Gloria box must be reported.
+      if (!this._dryRun) this.warnings.push(`Page is too full to fit the ${label || slot || 'music'} area — shorten the content above it.`);
+      return;
+    }
     const drawH = Math.min(h, available);
     if (this._dryRun) { this.y += drawH + this.s(4); return; }
     this.doc.save()
@@ -866,53 +819,81 @@ class WorshipAidPdfGenerator {
     }
     this._trackY();
   }
+  // The ordered liturgy as atomic blocks for the flow paginator. Each
+  // block renders at this.y with the shared helpers (all dry-run aware).
+  // Granularity rules:
+  //   * a heading travels with the first piece of its content;
+  //   * a hymn line and its notation image/paste box are ONE block;
+  //   * long prose (readings, gospel) splits into per-paragraph blocks so
+  //     it can flow across pages without orphaning its heading.
+  _buildContentBlocks() {
+    const blocks = [];
+    const b = (fn) => blocks.push({ render: fn });
 
-  renderPage2IntroductoryRites() {
-    this.newPage();
-    this._fitPageText(() => {
+    // Heading + citation + first paragraph stay together; the remaining
+    // paragraphs flow as their own blocks.
+    const reading = (heading, citation, text, opts = {}) => {
+      const paras = String(text || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+      b(() => {
+        this.subHeading(heading);
+        if (citation) this.citation(citation);
+        if (paras[0]) this.bodyText(paras[0], opts);
+      });
+      for (const p of paras.slice(1)) b(() => this.bodyText(p, opts));
+    };
+
+    // --- The Introductory Rites ---
+    b(() => {
       this.sectionHeader('The Introductory Rites');
-
       this.subHeading('Organ Prelude');
       this.musicLine('organPrelude', 'organPreludeComposer', 'Prelude');
-
       this.rubric(RUBRICS.stand);
+    });
 
-      const entranceType = this.ss.entranceType || 'processional';
+    const entranceType = this.ss.entranceType || 'processional';
+    b(() => {
       this.subHeading(entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon');
       this.musicLine('processionalOrEntrance', 'processionalOrEntranceComposer',
         entranceType === 'processional' ? 'Processional' : 'Antiphon');
-      // No bridge — keeps the hymn notation self-contained on this page so
-      // it isn't split across the spread with penitential act in between.
       if (entranceType === 'processional') {
         this.hymnMusicSpace({ slot: 'processional' });
       }
+    });
 
-      if (this.showAdventWreath) {
+    if (this.showAdventWreath) {
+      b(() => {
         this.y += this.s(3);
-        const adventBoxH = this.s(18);
+        const boxH = this.s(18);
         if (!this._dryRun) {
-          this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, adventBoxH)
+          this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, boxH)
             .fillColor('#f0eaf5').fill().restore();
           this.doc.fontSize(this.s(9)).fillColor(COLORS.purple).font('Sans-Bold')
             .text('Lighting of the Advent Wreath', this.MARGIN_SIDE, this.y + this.s(4),
               { width: this.CONTENT_WIDTH, align: 'center', lineBreak: false });
           this.doc.font('Sans');
         }
-        this.y += adventBoxH + this.s(4);
-      }
+        this.y += boxH + this.s(4);
+        this._trackY();
+      });
+    }
 
-      if ((this.ss.penitentialAct || 'confiteor') === 'confiteor') {
+    if ((this.ss.penitentialAct || 'confiteor') === 'confiteor') {
+      b(() => {
         this.subHeading('Penitential Act');
         this.bodyText(CONFITEOR, { size: 8, gap: 3 });
-      }
+      });
+    }
 
+    b(() => {
       this.subHeading('Lord, Have Mercy');
       this.musicLine('kyrieSetting', 'kyrieComposer', 'Kyrie');
       this.ordinaryMusicSpace('kyrie', 'Kyrie — music notation');
+    });
 
-      const showGloria = this.ss.gloria !== undefined ? this.ss.gloria :
-        (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
-      if (showGloria) {
+    const showGloria = this.ss.gloria !== undefined ? this.ss.gloria :
+      (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
+    if (showGloria) {
+      b(() => {
         this.subHeading('Gloria');
         if (this.ss.gloriaSetting) this.bodyText(this.ss.gloriaSetting, { italic: true, gap: 1 });
         if (this._slotHasMusic('gloria')) {
@@ -920,72 +901,31 @@ class WorshipAidPdfGenerator {
         } else {
           this.bodyText('Glory to God in the highest, and on earth peace to people of good will.');
         }
-      }
+      });
+    }
 
-      // Children's Liturgy dismissal — after the Opening Prayer, before the
-      // First Reading. They return at the Offertory (page 5).
-      if (this.data.childrenLiturgyEnabled) {
-        this.y += this.s(4);
-        const _clTimes = (Array.isArray(this.data.childrenLiturgyMassTimes) && this.data.childrenLiturgyMassTimes.length)
-          ? this.data.childrenLiturgyMassTimes
-          : (this.data.childrenLiturgyMassTime ? [this.data.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
-        const innerX = this.MARGIN_SIDE + this.s(4);
-        const innerW = this.CONTENT_WIDTH - this.s(8);
-        const clLines = [
-          [`Children's Liturgy of the Word — ${_clTimes.join(' & ')}`, 'Sans-Bold', 8]
-        ];
-        if (this.data.childrenLiturgyLeader)
-          clLines.push([`Led by ${this.data.childrenLiturgyLeader}`, 'Sans', 7.5]);
-        if (this.data.childrenLiturgyMusic) {
-          clLines.push([`${this.data.childrenLiturgyMusic}${this.data.childrenLiturgyMusicComposer ? ', ' + this.data.childrenLiturgyMusicComposer : ''}`, 'Sans-Italic', 7.5]);
-        }
-        const notes = this.data.childrenLiturgyNotes ||
-          'Children are dismissed after the Opening Prayer and will rejoin during the Offertory.';
-        clLines.push([notes, 'Sans-Italic', 7]);
-        let contentH = 0;
-        for (const [text, font, size] of clLines) {
-          this.doc.font(font).fontSize(this.s(size));
-          contentH += this.doc.heightOfString(text, { width: innerW });
-        }
-        const boxH = Math.min(contentH + this.s(8), Math.max(0, this._bottom() - this.y));
-        if (this._dryRun) {
-          this.y += contentH + this.s(12);
-        } else if (boxH > this.s(10)) {
-          this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, boxH)
-            .fillColor('#f5f0e6').fill().restore();
-          const boxBottom = this.y + boxH;
-          let cursorY = this.y + this.s(4);
-          for (const [text, font, size] of clLines) {
-            this.doc.font(font).fontSize(this.s(size)).fillColor(COLORS.text);
-            const remaining = boxBottom - cursorY;
-            if (remaining < this.doc.currentLineHeight(true)) { this._warnClipped(); break; }
-            this.doc.text(text, innerX, cursorY, { width: innerW, height: remaining, ellipsis: true });
-            cursorY = this.doc.y;
-          }
-          this.y += boxH + this.s(4);
-        }
-        this.doc.font('Sans');
-        this._trackY();
-      }
-    });
+    // Children's Liturgy dismissal — children leave after the Opening
+    // Prayer (end of Introductory Rites) and return at the Offertory.
+    if (this.data.childrenLiturgyEnabled) {
+      b(() => this._childrenLiturgyBox());
+    }
 
-    this.pageNumber(2);
-  }
+    // --- The Liturgy of the Word ---
+    {
+      const paras = String(this.r.firstReadingText || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+      b(() => {
+        this.sectionHeader('The Liturgy of the Word');
+        this.rubric(RUBRICS.sit);
+        this.subHeading('First Reading');
+        if (this.r.firstReadingCitation) this.citation(this.r.firstReadingCitation);
+        if (paras[0]) this.bodyText(paras[0], { size: 9 });
+      });
+      for (const p of paras.slice(1)) b(() => this.bodyText(p, { size: 9 }));
+    }
 
-  renderPage3LiturgyOfWord() {
-    this.newPage();
-    // A music image bridging from page 2 finishes here, above everything.
-    this._drawCarriedNotation();
-    this._fitPageText(() => {
-      this.sectionHeader('The Liturgy of the Word');
-      this.rubric(RUBRICS.sit);
-
-      this.subHeading('First Reading');
-      this.citation(this.r.firstReadingCitation);
-      this.bodyText(this.r.firstReadingText, { size: 9 });
-
+    b(() => {
       this.subHeading('Responsorial Psalm');
-      this.citation(this.r.psalmCitation);
+      if (this.r.psalmCitation) this.citation(this.r.psalmCitation);
       this.musicLine('responsorialPsalmSetting', 'responsorialPsalmSettingComposer', 'Setting');
       // Music (uploaded refrain notation or a paste area) replaces the
       // text refrain — the notation carries the words.
@@ -994,14 +934,18 @@ class WorshipAidPdfGenerator {
       } else if (this.r.psalmRefrain) {
         this.bodyText(`R. ${this.r.psalmRefrain}`, { bold: true, size: 9 });
       }
-      if (this.r.psalmVerses) this.bodyText(this.r.psalmVerses, { size: 8.5, x: this.MARGIN_SIDE + this.s(10), width: this.CONTENT_WIDTH - this.s(10) });
-
-      if (!this.r.noSecondReading && this.r.secondReadingCitation) {
-        this.subHeading('Second Reading');
-        this.citation(this.r.secondReadingCitation);
-        this.bodyText(this.r.secondReadingText, { size: 9 });
+    });
+    if (this.r.psalmVerses) {
+      for (const v of String(this.r.psalmVerses).split(/\n\s*\n/).map(p => p.trim()).filter(Boolean)) {
+        b(() => this.bodyText(v, { size: 8.5, x: this.MARGIN_SIDE + this.s(10), width: this.CONTENT_WIDTH - this.s(10) }));
       }
+    }
 
+    if (!this.r.noSecondReading && this.r.secondReadingCitation) {
+      reading('Second Reading', this.r.secondReadingCitation, this.r.secondReadingText, { size: 9 });
+    }
+
+    b(() => {
       this.rubric(RUBRICS.stand);
       this.subHeading('Gospel Acclamation');
       const isLenten = this.data.liturgicalSeason === 'lent';
@@ -1018,30 +962,21 @@ class WorshipAidPdfGenerator {
       } else {
         this.bodyText(acclamationText, { bold: true, size: 9 });
       }
-      // Order mirrors the HTML renderer: acclamation, reference, verse.
-      if (this.r.gospelAcclamationReference) {
-        this.citation(this.r.gospelAcclamationReference);
-      }
-      if (this.r.gospelAcclamationVerse) {
-        this.bodyText(this.r.gospelAcclamationVerse, { italic: true, size: 8.5 });
-      }
+      if (this.r.gospelAcclamationReference) this.citation(this.r.gospelAcclamationReference);
+      if (this.r.gospelAcclamationVerse) this.bodyText(this.r.gospelAcclamationVerse, { italic: true, size: 8.5 });
     });
 
-    this.pageNumber(3);
-  }
+    // --- Gospel, Homily, Creed ---
+    reading('Gospel', this.r.gospelCitation, this.r.gospelText, { size: 9.5 });
 
-  renderPage4GospelCreed() {
-    this.newPage();
-    this._fitPageText(() => {
-      this.subHeading('Gospel');
-      this.citation(this.r.gospelCitation);
-      this.bodyText(this.r.gospelText, { size: 9.5 });
-
+    b(() => {
       this.subHeading('Homily');
       this.rubric(RUBRICS.sit);
       this.y += this.s(4);
       this.rubric(RUBRICS.stand);
+    });
 
+    {
       const creedType = this.ss.creedType || 'nicene';
       const creedHeading = {
         apostles:       "The Apostles' Creed",
@@ -1053,124 +988,116 @@ class WorshipAidPdfGenerator {
         baptismal_vows: RENEWAL_OF_BAPTISMAL_VOWS,
         nicene:         NICENE_CREED
       }[creedType] || NICENE_CREED;
-      this.subHeading(creedHeading);
-      if (this.ss.twoColumnCreed && creedType !== 'baptismal_vows') {
-        this._renderCreedTwoColumn(creedText);
-      } else {
-        this.bodyText(creedText);
-      }
+      b(() => {
+        this.subHeading(creedHeading);
+        if (this.ss.twoColumnCreed && creedType !== 'baptismal_vows') {
+          this._renderCreedTwoColumn(creedText);
+        } else {
+          this.bodyText(creedText);
+        }
+      });
+    }
 
+    b(() => {
       this.subHeading('Prayer of the Faithful');
       this.bodyText('The intentions are read; the assembly responds.', { italic: true, size: 8 });
     });
 
-    this.pageNumber(4);
-  }
+    // --- The Liturgy of the Eucharist ---
+    b(() => {
+      this.sectionHeader('The Liturgy of the Eucharist');
+      this.rubric(RUBRICS.sit);
+      this.subHeading('Offertory');
+      this.musicLine('offertoryAnthem', 'offertoryAnthemComposer', 'Offertory Anthem');
+      if (this.data.childrenLiturgyEnabled) {
+        const _clTimes = (Array.isArray(this.data.childrenLiturgyMassTimes) && this.data.childrenLiturgyMassTimes.length)
+          ? this.data.childrenLiturgyMassTimes
+          : (this.data.childrenLiturgyMassTime ? [this.data.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
+        this.rubric(`† Children return from Children's Liturgy of the Word (${_clTimes.join(' & ')}).`);
+      }
+    });
 
-  renderPage5LiturgyEucharist() {
-    this.newPage();
-    this.sectionHeader('The Liturgy of the Eucharist');
-    this.rubric(RUBRICS.sit);
+    b(() => {
+      this.rubric(RUBRICS.stand);
+      this.subHeading('Invitation to Prayer');
+      this.bodyText(`Priest: ${INVITATION_TO_PRAYER.priest}`);
+      this.bodyText(`All: ${INVITATION_TO_PRAYER.all}`, { bold: true });
+    });
 
-    this.subHeading('Offertory');
-    this.musicLine('offertoryAnthem', 'offertoryAnthemComposer', 'Offertory Anthem');
+    b(() => {
+      // Sanctus language: per-aid override > parish default > English
+      const holyHolyLanguage = this.ss.holyHolyLanguage || this.parishSettings.defaultSanctusLanguage || 'english';
+      this.subHeading(holyHolyLanguage === 'latin' ? 'Sanctus' : 'Holy, Holy, Holy');
+      this.bodyText(this.ss.holyHolySetting || 'Mass of St. Theresa', { italic: true });
+      if (this._slotHasMusic('sanctus')) {
+        this.ordinaryMusicSpace('sanctus', 'Holy, Holy, Holy — music notation');
+      } else {
+        this.bodyText(getHolyHolyHolyText(holyHolyLanguage));
+      }
+    });
 
-    // Children return from Children's Liturgy of the Word at the Offertory.
-    if (this.data.childrenLiturgyEnabled) {
-      const _clTimes = (Array.isArray(this.data.childrenLiturgyMassTimes) && this.data.childrenLiturgyMassTimes.length)
-        ? this.data.childrenLiturgyMassTimes
-        : (this.data.childrenLiturgyMassTime ? [this.data.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
-      this.rubric(`† Children return from Children's Liturgy of the Word (${_clTimes.join(' & ')}).`);
-    }
+    b(() => {
+      this.rubric(RUBRICS.kneel);
+      this.subHeading('Mystery of Faith');
+      this.bodyText(this.ss.mysteryOfFaithSetting || 'Mass of St. Theresa', { italic: true });
+      this.ordinaryMusicSpace('mysteryOfFaith', 'Mystery of Faith — music notation');
+    });
 
-    this.rubric(RUBRICS.stand);
+    b(() => this.subHeading('Great Amen'));
 
-    this.subHeading('Invitation to Prayer');
-    this.bodyText(`Priest: ${INVITATION_TO_PRAYER.priest}`);
-    this.bodyText(`All: ${INVITATION_TO_PRAYER.all}`, { bold: true });
+    // --- The Communion Rite ---
+    b(() => {
+      this.sectionHeader('The Communion Rite');
+      this.subHeading("The Lord's Prayer");
+      this.rubric(RUBRICS.stand);
+      this.bodyText(LORDS_PRAYER);
+    });
 
-    // Sanctus language: per-aid override > parish default > English
-    const holyHolyLanguage = this.ss.holyHolyLanguage || this.parishSettings.defaultSanctusLanguage || 'english';
-    this.subHeading(holyHolyLanguage === 'latin' ? 'Sanctus' : 'Holy, Holy, Holy');
-    this.bodyText(this.ss.holyHolySetting || 'Mass of St. Theresa', { italic: true });
-    if (this._slotHasMusic('sanctus')) {
-      this.ordinaryMusicSpace('sanctus', 'Holy, Holy, Holy — music notation');
-    } else {
-      this.bodyText(getHolyHolyHolyText(holyHolyLanguage));
-    }
+    b(() => this.subHeading('Sign of Peace'));
 
-    this.rubric(RUBRICS.kneel);
+    b(() => {
+      this.subHeading('Lamb of God');
+      this.bodyText(this.ss.lambOfGodSetting || 'Mass of St. Theresa', { italic: true });
+      this.ordinaryMusicSpace('lambOfGod', 'Lamb of God — music notation');
+    });
 
-    this.subHeading('Mystery of Faith');
-    this.bodyText(this.ss.mysteryOfFaithSetting || 'Mass of St. Theresa', { italic: true });
-    this.ordinaryMusicSpace('mysteryOfFaith', 'Mystery of Faith — music notation');
+    b(() => {
+      this.rubric(RUBRICS.kneel);
+      this.subHeading('Communion Hymn');
+      this.musicLine('communionHymn', 'communionHymnComposer', 'Communion');
+      this.hymnMusicSpace({ slot: 'communion' });
+    });
 
-    this.subHeading('Great Amen');
+    b(() => {
+      this.subHeading('Choral Anthem');
+      this.musicLine('choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem');
+    });
 
-    this.pageNumber(5);
-  }
-
-  renderPage6CommunionRite() {
-    this.newPage();
-    this.sectionHeader('The Communion Rite');
-
-    this.subHeading("The Lord's Prayer");
-    this.rubric(RUBRICS.stand);
-    this.bodyText(LORDS_PRAYER);
-
-    this.subHeading('Sign of Peace');
-
-    this.subHeading('Lamb of God');
-    this.bodyText(this.ss.lambOfGodSetting || 'Mass of St. Theresa', { italic: true });
-    this.ordinaryMusicSpace('lambOfGod', 'Lamb of God — music notation');
-
-    this.rubric(RUBRICS.kneel);
-
-    this.subHeading('Communion Hymn');
-    this.musicLine('communionHymn', 'communionHymnComposer', 'Communion');
-    this.hymnMusicSpace({ slot: 'communion', reserveBelow: 50 });
-
-    this.subHeading('Choral Anthem');
-    this.musicLine('choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem');
-
-    this.pageNumber(6);
-  }
-
-  renderPage7ConcludingRites() {
-    this.newPage();
-    // A music image bridging from page 6 finishes here before any content.
-    this._drawCarriedNotation();
-    this._fitPageText(() => {
+    // --- The Concluding Rites ---
+    b(() => {
       this.sectionHeader('The Concluding Rites');
-
       this.subHeading('Hymn of Thanksgiving');
       this.musicLine('hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving');
-      // Full hymn space — no large reserveBelow because blessing/dismissal
-      // and the rest of the concluding rites continue on page 8.
       this.hymnMusicSpace({ slot: 'thanksgiving' });
     });
 
-    this.pageNumber(7);
-  }
-
-  renderPage8BackCover() {
-    this.newPage();
-    // keepBottom so the copyright line anchored inside the bottom margin
-    // band doesn't get overrun by content.
-    this._fitPageText(() => {
+    b(() => {
       this.rubric(RUBRICS.stand);
-
       this.subHeading('Blessing & Dismissal');
       this.bodyText('Priest: The Lord be with you. All: And with your spirit.', { size: 8 });
       this.bodyText('Priest: May almighty God bless you, the Father, and the Son, ✠ and the Holy Spirit. All: Amen.', { size: 8 });
       this.bodyText('Deacon: Go forth, the Mass is ended. All: Thanks be to God.', { size: 8 });
+    });
 
-      if (this.includePostlude) {
+    if (this.includePostlude) {
+      b(() => {
         this.subHeading('Organ Postlude');
         this.musicLine('organPostlude', 'organPostludeComposer', 'Postlude');
-      }
+      });
+    }
 
-      if (this.data.announcements) {
+    if (this.data.announcements) {
+      b(() => {
         this.y += this.s(4);
         if (!this._dryRun) {
           this.doc.save()
@@ -1181,21 +1108,85 @@ class WorshipAidPdfGenerator {
         this.y += this.s(4);
         this.subHeading('Announcements');
         this.bodyText(this.data.announcements, { size: 7.5 });
-      }
-    }, { keepBottom: true });
-
-    let copyrightShort = String(this.parishSettings.copyrightShort ||
-      getDefaultCopyrightShort(this.parishSettings.onelicenseNumber)).replace(/\s+/g, ' ').trim();
-    this.doc.font('Sans').fontSize(this.s(7));
-    if (this.doc.widthOfString(copyrightShort) > this.CONTENT_WIDTH) {
-      while (copyrightShort.length > 1 && this.doc.widthOfString(copyrightShort + '…') > this.CONTENT_WIDTH) {
-        copyrightShort = copyrightShort.slice(0, -1);
-      }
-      copyrightShort = copyrightShort.trimEnd() + '…';
+      });
     }
-    this._footerText(copyrightShort, this.PAGE_HEIGHT - this.MARGIN * 0.85, { lineBreak: false });
 
-    this.pageNumber(8);
+    // Special notes and the parish's standing closing message (formerly
+    // the back cover), then the full copyright block.
+    if (this.data.specialNotes) {
+      b(() => {
+        this.y += this.s(4);
+        this.bodyText(this.data.specialNotes, { italic: true, size: 8.5, align: 'center', color: COLORS.muted });
+      });
+    }
+    if (this.parishSettings.closingMessage) {
+      b(() => {
+        this.y += this.s(2);
+        this.bodyText(this.parishSettings.closingMessage, { size: 8, align: 'center', color: COLORS.muted });
+      });
+    }
+
+    b(() => {
+      const copyrightFull = this.parishSettings.copyrightFull ||
+        getDefaultCopyrightFull(this.parishSettings.onelicenseNumber);
+      this.y += this.s(8);
+      this.doc.fontSize(this.s(6.5) * this.textScale).fillColor(COLORS.light).font('Sans');
+      this._textBlock(copyrightFull, this.MARGIN_SIDE + this.s(10), {
+        width: this.CONTENT_WIDTH - this.s(20), align: 'center', lineGap: this.s(1.5) * this.textScale
+      }, 0);
+    });
+
+    return blocks;
+  }
+
+  // Tinted info box for the Children's Liturgy dismissal. Dry-run aware.
+  _childrenLiturgyBox() {
+    this.y += this.s(4);
+    const _clTimes = (Array.isArray(this.data.childrenLiturgyMassTimes) && this.data.childrenLiturgyMassTimes.length)
+      ? this.data.childrenLiturgyMassTimes
+      : (this.data.childrenLiturgyMassTime ? [this.data.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
+    const innerX = this.MARGIN_SIDE + this.s(4);
+    const innerW = this.CONTENT_WIDTH - this.s(8);
+    const clLines = [
+      [`Children's Liturgy of the Word — ${_clTimes.join(' & ')}`, 'Sans-Bold', 8]
+    ];
+    if (this.data.childrenLiturgyLeader)
+      clLines.push([`Led by ${this.data.childrenLiturgyLeader}`, 'Sans', 7.5]);
+    if (this.data.childrenLiturgyMusic) {
+      clLines.push([`${this.data.childrenLiturgyMusic}${this.data.childrenLiturgyMusicComposer ? ', ' + this.data.childrenLiturgyMusicComposer : ''}`, 'Sans-Italic', 7.5]);
+    }
+    const notes = this.data.childrenLiturgyNotes ||
+      'Children are dismissed after the Opening Prayer and will rejoin during the Offertory.';
+    clLines.push([notes, 'Sans-Italic', 7]);
+    let contentH = 0;
+    for (const [text, font, size] of clLines) {
+      this.doc.font(font).fontSize(this.s(size) * this.textScale);
+      contentH += this.doc.heightOfString(text, { width: innerW });
+    }
+    if (this._dryRun) {
+      this.y += contentH + this.s(12);
+      this.doc.font('Sans');
+      return;
+    }
+    const boxH = Math.min(contentH + this.s(8), Math.max(0, this._bottom() - this.y));
+    if (boxH > this.s(10)) {
+      this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, boxH)
+        .fillColor('#f5f0e6').fill().restore();
+      const boxBottom = this.y + boxH;
+      let cursorY = this.y + this.s(4);
+      for (const [text, font, size] of clLines) {
+        this.doc.font(font).fontSize(this.s(size) * this.textScale).fillColor(COLORS.text);
+        const remaining = boxBottom - cursorY;
+        if (remaining < this.doc.currentLineHeight(true)) { this._warnClipped(); break; }
+        this.doc.text(text, innerX, cursorY, { width: innerW, height: remaining, ellipsis: true });
+        cursorY = this.doc.y;
+      }
+      this.y += boxH + this.s(4);
+    } else {
+      this._warnClipped();
+    }
+    this.doc.font('Sans');
+    this._trackY();
   }
 }
 

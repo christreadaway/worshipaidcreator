@@ -1534,3 +1534,54 @@ No new env vars needed.**
 version becomes the FINAL of record — the previous FINAL reverts to a
 superseded draft and hymn stats follow the override. History rows show a
 gold-outlined "Mark FINAL" button on non-final entries (confirm dialog).
+
+## Session 11 — v1.7.1: June 2026 print-feedback fixes (block integrity, no silent drops)
+
+Parish ran a real export and marked up the PDF. Root causes and fixes,
+branch `claude/dazzling-turing-xapgwf`:
+
+1. **Kyrie/Gloria vanished from page 2.** Page 2 was the only content page
+   without `_fitPageText`; `ordinaryMusicSpace` had a silent skip when
+   <30 units remained (no warning at all), and the page relied on a fixed
+   `reserveBelow: 150` guess that under-reserved by ~2x once the
+   processional image bridge consumed every pixel down to the reserve
+   line. Fixed: page 2 (and 5 and 6) now run through `_fitPageText`;
+   `ordinaryMusicSpace` always warns when it can't fit.
+2. **Spread bridging RETIRED.** `hymnMusicSpace` hardcoded `bridge: true`,
+   splitting the processional around the Penitential Act (pages 2/3) and
+   the communion hymn around the Choral Anthem (pages 6/7) — and dropping
+   the 11 AM anthem entirely when space ran out. Bridge is now opt-in and
+   no caller uses it; music blocks stay whole, shrinking proportionally
+   if needed. The `_carryNotation`/`_drawCarriedNotation` machinery
+   remains but is dormant.
+3. **FLOW LAYOUT (v1.8) — the big one.** Pages 2-8 of the PDF are no
+   longer fixed section slots. `renderContentFlow` packs an ordered list
+   of atomic blocks (`_buildContentBlocks`) by measured height, breaking
+   pages wherever the content dictates — layout conditional on the
+   vertical height of the actual hymns/prayers/readings. Exactly 8 pages
+   always: short content pads blanks, oversize content shrinks text+images
+   together (floor 75%) and only then truncates the page-8 tail WITH a
+   warning. Blocks never split; readings flow per-paragraph. The Hymn of
+   Thanksgiving microscopic bug (fixed 130-unit reserve) and the wasted
+   decorative back cover are both gone as a consequence. The short
+   license line prints on any page with embedded notation; the full
+   copyright block is the final flow block. HTML preview keeps fixed
+   sections (legacy) and points to the export for true layout.
+4. **No silent drops, ever.** Every page now either fits (shrink-to-fit)
+   or records a warning, and export warnings finally reach the user: the
+   local JSON response's `warnings` and a new `X-Export-Warnings` header
+   on the Netlify direct-PDF path are rendered as banners in the editor
+   plus an error toast. (Previously `result.warnings` was computed and
+   thrown away — never shown on either path.)
+5. **Title-header stripping is the default everywhere.** Detection
+   thresholds are height-adaptive (gap `clamp(H*0.035, 5, 12)`, pad
+   `clamp(H*0.02, 3, 10)`, analysis width 360→480) so short-wide scans
+   (single psalm-refrain staff) crop correctly. `/api/attachments` now
+   normalizes ALL image attachments (not just TIFF conversions) with
+   stripping on; the client only sends `stripTitle=0` on an explicit
+   uncheck (a missing checkbox used to silently disable it via `ch()`).
+6. **Text alignment** unified: `.reading-text` justify → left.
+7. Tests updated: the v1.7 "Gloria bridges 2→3" case asserts the
+   opposite (no bridge, block stays whole); fixed-page-position tests
+   re-aimed at flow invariants (total ink, in-bounds, exactly 8 pages,
+   scale-vs-truncate warnings). Full suite 348/348.

@@ -726,6 +726,10 @@ function renderBookletHtml(data, options = {}) {
   <div class="announcement-block">${nl2br(d.announcements)}</div>
   ` : ''}
 
+  ${d.specialNotes ? `<div style="margin:8pt auto 0;font-size:8pt;font-style:italic;text-align:center;max-width:4in;">${nl2br(d.specialNotes)}</div>` : ''}
+  ${closingMessage ? `<div style="margin:8pt auto 0;font-size:8pt;text-align:center;max-width:4in;">${nl2br(closingMessage)}</div>` : ''}
+
+  <div class="copyright-full" style="margin:10pt auto 0;">${nl2br(copyrightFull)}</div>
   <div class="copyright-short">${escapeHtml(copyrightShort)}</div>
 
   <div class="page-number">8</div>

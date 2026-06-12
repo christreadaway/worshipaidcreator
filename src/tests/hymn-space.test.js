@@ -133,21 +133,24 @@ describe('PDF generator — hymn music paste areas', () => {
     assert.equal(result.pageCount, 8);
   });
 
-  it('pushes content lower on pages 6, 7 than with paste areas off', async () => {
+  it('paste areas consume more total vertical space than without', async () => {
+    // The flow paginator redistributes blocks across pages, so compare the
+    // booklet's TOTAL used height rather than fixed per-page positions.
     const on = (await gen('cmp-on', sample)).result;
     const off = (await gen('cmp-off', { ...sample, reserveHymnSpace: false })).result;
-    // pages 6, 7 are indices 5, 6
-    for (const idx of [5, 6]) {
-      assert.ok(on.pageMaxY[idx] > off.pageMaxY[idx],
-        `page ${idx + 1}: expected maxY with space (${on.pageMaxY[idx]}) > without (${off.pageMaxY[idx]})`);
-    }
+    const total = r => r.pageMaxY.reduce((a, v) => a + v, 0);
+    assert.ok(total(on) > total(off),
+      `expected total maxY with space (${total(on)}) > without (${total(off)})`);
   });
 
   it('still fits within page bounds when announcements are long', async () => {
     const announcements = 'Parish picnic next Sunday after the 11 AM Mass. '.repeat(8);
-    const { result } = await gen('long-ann', { ...sample, announcements });
+    const { result } = await gen('long-ann', { ...sample, announcements }, { bookletSize: 'half-letter' });
     const L = LAYOUTS['half-letter'];
-    assert.ok(result.pageMaxY[6] <= L.pageHeight - L.margin + 70,
-      `page 7 maxY=${result.pageMaxY[6]} ran past the margin`);
+    const bottomEdge = L.pageHeight - L.margin;
+    for (let i = 0; i < result.pageMaxY.length; i++) {
+      assert.ok(result.pageMaxY[i] <= bottomEdge + 70,
+        `page ${i + 1} maxY=${result.pageMaxY[i]} ran past the margin`);
+    }
   });
 });

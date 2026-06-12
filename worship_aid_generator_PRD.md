@@ -450,8 +450,8 @@ Based on analysis of 10 existing worship aids (Christmas Eve 2025 through 2nd Su
 | 4 | Gospel + Creed | Gospel (full text), Creed (full text) | Homily cue, Prayer of the Faithful cue, Creed text (from template) |
 | 5 | Liturgy of the Eucharist | Offertory anthem (per mass time), Holy Holy setting | Section header, Invitation to Prayer dialogue (fixed), Mystery of Faith cue, Great Amen cue |
 | 6 | Communion Rite | Communion hymn, Lamb of God setting, **Choral Anthem at Communion** (per-Mass) | Section header, Lord's Prayer cue, Sign of Peace cue, Communion Antiphon cue |
-| 7 | Concluding Rites | Hymn of Thanksgiving, Organ Postlude | Blessing & Dismissal cue, short copyright block |
-| 8 | Back Cover | (sometimes hymn lyrics for Christmas) | Full copyright block |
+| 7 | Concluding Rites I | Hymn of Thanksgiving (full-page hymn area) | Short copyright block (license line on the notation page) |
+| 8 | Concluding Rites II | Organ Postlude, Announcements | Blessing & Dismissal cue, special notes, closing message, full copyright block |
 
 ---
 
