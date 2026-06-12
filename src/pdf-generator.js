@@ -601,7 +601,7 @@ class WorshipAidPdfGenerator {
   // embedded in place of the dashed box.
   hymnMusicSpace(opts = {}) {
     if (opts.slot && this.notationImages[opts.slot]) {
-      if (this._notationImage(opts.slot, opts.height !== undefined ? opts.height : 160, opts.reserveBelow || 0, { bridge: true })) return;
+      if (this._notationImage(opts.slot, opts.height !== undefined ? opts.height : 160, opts.reserveBelow || 0, { bridge: !!opts.bridge })) return;
     }
     if (this.data.reserveHymnSpace === false) return;
     const desired = this.s(opts.height !== undefined ? opts.height : 160);
@@ -869,86 +869,88 @@ class WorshipAidPdfGenerator {
 
   renderPage2IntroductoryRites() {
     this.newPage();
-    this.sectionHeader('The Introductory Rites');
+    this._fitPageText(() => {
+      this.sectionHeader('The Introductory Rites');
 
-    this.subHeading('Organ Prelude');
-    this.musicLine('organPrelude', 'organPreludeComposer', 'Prelude');
+      this.subHeading('Organ Prelude');
+      this.musicLine('organPrelude', 'organPreludeComposer', 'Prelude');
 
-    this.rubric(RUBRICS.stand);
+      this.rubric(RUBRICS.stand);
 
-    const entranceType = this.ss.entranceType || 'processional';
-    this.subHeading(entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon');
-    this.musicLine('processionalOrEntrance', 'processionalOrEntranceComposer',
-      entranceType === 'processional' ? 'Processional' : 'Antiphon');
-    // Hymn paste area only when a processional hymn is sung (not antiphon).
-    // Reserve space for penitential act, Kyrie, Gloria, optional Advent wreath,
-    // and optional Children's Liturgy dismissal box.
-    if (entranceType === 'processional') {
-      const clReserve = this.data.childrenLiturgyEnabled ? 75 : 0;
-      this.hymnMusicSpace({ slot: 'processional', reserveBelow: 150 + clReserve });
-    }
-
-    if (this.showAdventWreath) {
-      this.y += this.s(3);
-      this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, this.s(18))
-        .fillColor('#f0eaf5').fill().restore();
-      this.doc.fontSize(this.s(9)).fillColor(COLORS.purple).font('Sans-Bold')
-        .text('Lighting of the Advent Wreath', this.MARGIN_SIDE, this.y + this.s(4), { width: this.CONTENT_WIDTH, align: 'center' });
-      this.doc.font('Sans');
-      this.y = this.doc.y + this.s(8);
-    }
-
-    if ((this.ss.penitentialAct || 'confiteor') === 'confiteor') {
-      this.subHeading('Penitential Act');
-      this.bodyText(CONFITEOR, { size: 8, gap: 3 });
-    }
-
-    this.subHeading('Lord, Have Mercy');
-    this.musicLine('kyrieSetting', 'kyrieComposer', 'Kyrie');
-    this.ordinaryMusicSpace('kyrie', 'Kyrie — music notation');
-
-    const showGloria = this.ss.gloria !== undefined ? this.ss.gloria :
-      (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
-    if (showGloria) {
-      this.subHeading('Gloria');
-      // Which setting the Gloria is sung from (e.g. "Mass of Creation").
-      if (this.ss.gloriaSetting) this.bodyText(this.ss.gloriaSetting, { italic: true, gap: 1 });
-      if (this._slotHasMusic('gloria')) {
-        this.ordinaryMusicSpace('gloria', 'Gloria — music notation', { bridge: true, reserveBelow: this.data.childrenLiturgyEnabled ? 85 : 0 });
-      } else {
-        this.bodyText('Glory to God in the highest, and on earth peace to people of good will.');
+      const entranceType = this.ss.entranceType || 'processional';
+      this.subHeading(entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon');
+      this.musicLine('processionalOrEntrance', 'processionalOrEntranceComposer',
+        entranceType === 'processional' ? 'Processional' : 'Antiphon');
+      // No bridge — keeps the hymn notation self-contained on this page so
+      // it isn't split across the spread with penitential act in between.
+      if (entranceType === 'processional') {
+        this.hymnMusicSpace({ slot: 'processional' });
       }
-    }
 
-    // Children's Liturgy dismissal — placed here because children are
-    // dismissed AFTER the Opening Prayer (end of Introductory Rites),
-    // BEFORE the First Reading. They return at the Offertory (page 5).
-    if (this.data.childrenLiturgyEnabled) {
-      this.y += this.s(4);
-      const _clTimes = (Array.isArray(this.data.childrenLiturgyMassTimes) && this.data.childrenLiturgyMassTimes.length)
-        ? this.data.childrenLiturgyMassTimes
-        : (this.data.childrenLiturgyMassTime ? [this.data.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
-      const innerX = this.MARGIN_SIDE + this.s(4);
-      const innerW = this.CONTENT_WIDTH - this.s(8);
-      const clLines = [
-        [`Children's Liturgy of the Word — ${_clTimes.join(' & ')}`, 'Sans-Bold', 8]
-      ];
-      if (this.data.childrenLiturgyLeader)
-        clLines.push([`Led by ${this.data.childrenLiturgyLeader}`, 'Sans', 7.5]);
-      if (this.data.childrenLiturgyMusic) {
-        clLines.push([`${this.data.childrenLiturgyMusic}${this.data.childrenLiturgyMusicComposer ? ', ' + this.data.childrenLiturgyMusicComposer : ''}`, 'Sans-Italic', 7.5]);
-      }
-      const notes = this.data.childrenLiturgyNotes ||
-        'Children are dismissed after the Opening Prayer and will rejoin during the Offertory.';
-      clLines.push([notes, 'Sans-Italic', 7]);
-      let contentH = 0;
-      for (const [text, font, size] of clLines) {
-        this.doc.font(font).fontSize(this.s(size));
-        contentH += this.doc.heightOfString(text, { width: innerW });
-      }
-      const boxH = Math.min(contentH + this.s(8), Math.max(0, this._bottom() - this.y));
-      if (boxH > this.s(10)) {
+      if (this.showAdventWreath) {
+        this.y += this.s(3);
+        const adventBoxH = this.s(18);
         if (!this._dryRun) {
+          this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, adventBoxH)
+            .fillColor('#f0eaf5').fill().restore();
+          this.doc.fontSize(this.s(9)).fillColor(COLORS.purple).font('Sans-Bold')
+            .text('Lighting of the Advent Wreath', this.MARGIN_SIDE, this.y + this.s(4),
+              { width: this.CONTENT_WIDTH, align: 'center', lineBreak: false });
+          this.doc.font('Sans');
+        }
+        this.y += adventBoxH + this.s(4);
+      }
+
+      if ((this.ss.penitentialAct || 'confiteor') === 'confiteor') {
+        this.subHeading('Penitential Act');
+        this.bodyText(CONFITEOR, { size: 8, gap: 3 });
+      }
+
+      this.subHeading('Lord, Have Mercy');
+      this.musicLine('kyrieSetting', 'kyrieComposer', 'Kyrie');
+      this.ordinaryMusicSpace('kyrie', 'Kyrie — music notation');
+
+      const showGloria = this.ss.gloria !== undefined ? this.ss.gloria :
+        (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
+      if (showGloria) {
+        this.subHeading('Gloria');
+        if (this.ss.gloriaSetting) this.bodyText(this.ss.gloriaSetting, { italic: true, gap: 1 });
+        if (this._slotHasMusic('gloria')) {
+          this.ordinaryMusicSpace('gloria', 'Gloria — music notation');
+        } else {
+          this.bodyText('Glory to God in the highest, and on earth peace to people of good will.');
+        }
+      }
+
+      // Children's Liturgy dismissal — after the Opening Prayer, before the
+      // First Reading. They return at the Offertory (page 5).
+      if (this.data.childrenLiturgyEnabled) {
+        this.y += this.s(4);
+        const _clTimes = (Array.isArray(this.data.childrenLiturgyMassTimes) && this.data.childrenLiturgyMassTimes.length)
+          ? this.data.childrenLiturgyMassTimes
+          : (this.data.childrenLiturgyMassTime ? [this.data.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
+        const innerX = this.MARGIN_SIDE + this.s(4);
+        const innerW = this.CONTENT_WIDTH - this.s(8);
+        const clLines = [
+          [`Children's Liturgy of the Word — ${_clTimes.join(' & ')}`, 'Sans-Bold', 8]
+        ];
+        if (this.data.childrenLiturgyLeader)
+          clLines.push([`Led by ${this.data.childrenLiturgyLeader}`, 'Sans', 7.5]);
+        if (this.data.childrenLiturgyMusic) {
+          clLines.push([`${this.data.childrenLiturgyMusic}${this.data.childrenLiturgyMusicComposer ? ', ' + this.data.childrenLiturgyMusicComposer : ''}`, 'Sans-Italic', 7.5]);
+        }
+        const notes = this.data.childrenLiturgyNotes ||
+          'Children are dismissed after the Opening Prayer and will rejoin during the Offertory.';
+        clLines.push([notes, 'Sans-Italic', 7]);
+        let contentH = 0;
+        for (const [text, font, size] of clLines) {
+          this.doc.font(font).fontSize(this.s(size));
+          contentH += this.doc.heightOfString(text, { width: innerW });
+        }
+        const boxH = Math.min(contentH + this.s(8), Math.max(0, this._bottom() - this.y));
+        if (this._dryRun) {
+          this.y += contentH + this.s(12);
+        } else if (boxH > this.s(10)) {
           this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, boxH)
             .fillColor('#f5f0e6').fill().restore();
           const boxBottom = this.y + boxH;
@@ -960,13 +962,12 @@ class WorshipAidPdfGenerator {
             this.doc.text(text, innerX, cursorY, { width: innerW, height: remaining, ellipsis: true });
             cursorY = this.doc.y;
           }
+          this.y += boxH + this.s(4);
         }
-        this.y += boxH + this.s(4);
+        this.doc.font('Sans');
+        this._trackY();
       }
-      if (this._dryRun) this.y += contentH + this.s(12);
-      this.doc.font('Sans');
-      this._trackY();
-    }
+    });
 
     this.pageNumber(2);
   }
@@ -1137,22 +1138,26 @@ class WorshipAidPdfGenerator {
 
   renderPage7ConcludingRites() {
     this.newPage();
-    // A music image bridging from page 6 finishes here, above everything.
+    // A music image bridging from page 6 finishes here before any content.
     this._drawCarriedNotation();
-    // keepBottom: the copyright line is anchored inside the bottom margin
-    // band on this page, so the content area must not grow down into it.
     this._fitPageText(() => {
       this.sectionHeader('The Concluding Rites');
 
       this.subHeading('Hymn of Thanksgiving');
       this.musicLine('hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving');
-      // Leave room below for the blessing & dismissal, postlude, announcements
-      // (estimated from text length), and the copyright line.
-      const announcementReserve = this.data.announcements
-        ? Math.min(120, Math.ceil(String(this.data.announcements).length / 80) * 10 + 25)
-        : 0;
-      this.hymnMusicSpace({ slot: 'thanksgiving', reserveBelow: 130 + announcementReserve });
+      // Full hymn space — no large reserveBelow because blessing/dismissal
+      // and the rest of the concluding rites continue on page 8.
+      this.hymnMusicSpace({ slot: 'thanksgiving' });
+    });
 
+    this.pageNumber(7);
+  }
+
+  renderPage8BackCover() {
+    this.newPage();
+    // keepBottom so the copyright line anchored inside the bottom margin
+    // band doesn't get overrun by content.
+    this._fitPageText(() => {
       this.rubric(RUBRICS.stand);
 
       this.subHeading('Blessing & Dismissal');
@@ -1179,8 +1184,6 @@ class WorshipAidPdfGenerator {
       }
     }, { keepBottom: true });
 
-    // Single line only — a wrapped copyright line would overlap the folio.
-    // Manually truncate with an ellipsis if it can't fit the content width.
     let copyrightShort = String(this.parishSettings.copyrightShort ||
       getDefaultCopyrightShort(this.parishSettings.onelicenseNumber)).replace(/\s+/g, ' ').trim();
     this.doc.font('Sans').fontSize(this.s(7));
@@ -1192,80 +1195,7 @@ class WorshipAidPdfGenerator {
     }
     this._footerText(copyrightShort, this.PAGE_HEIGHT - this.MARGIN * 0.85, { lineBreak: false });
 
-    this.pageNumber(7);
-  }
-
-  renderPage8BackCover() {
-    this.newPage();
-    const cx = this.PAGE_WIDTH / 2;
-
-    this.y = this.MARGIN_TOP + this.s(80);
-    const armLen = this.s(18);
-    this.doc.save().lineWidth(this.s(3)).strokeColor(COLORS.navy);
-    this.doc.moveTo(cx, this.y - armLen).lineTo(cx, this.y + armLen).stroke();
-    this.doc.moveTo(cx - armLen, this.y).lineTo(cx + armLen, this.y).stroke();
-    this.doc.lineWidth(this.s(1));
-    const corner = this.s(11), tick = this.s(4);
-    for (const [ox, oy] of [[-corner, -corner], [corner, -corner], [-corner, corner], [corner, corner]]) {
-      this.doc.moveTo(cx + ox, this.y + oy - tick).lineTo(cx + ox, this.y + oy + tick).stroke();
-      this.doc.moveTo(cx + ox - tick, this.y + oy).lineTo(cx + ox + tick, this.y + oy).stroke();
-    }
-    this.doc.restore();
-
-    this.y = this.MARGIN_TOP + this.s(120);
-    this.doc.fontSize(this.s(13)).fillColor(COLORS.navy).font('Sans-Bold')
-      .text(this.data.feastName, this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center' });
-    this.y = this.doc.y + this.s(3);
-    this.doc.fontSize(this.s(10)).fillColor(COLORS.muted).font('Sans')
-      .text(formatDate(this.data.liturgicalDate), this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center' });
-
-    // Anchor copyright above the bottom margin so it never crosses it.
-    const copyrightBlockHeight = this.s(90);
-    const copyrightY = this.PAGE_HEIGHT - this.MARGIN - copyrightBlockHeight;
-
-    this.y = this.doc.y + this.s(14);
-    if (this.data.specialNotes) {
-      // Clamp to the top of the copyright block so long notes can't push
-      // the back cover onto a ninth page.
-      const notesRoom = copyrightY - this.s(6) - this.y;
-      if (notesRoom > this.s(12)) {
-        this.doc.fontSize(this.s(9)).fillColor(COLORS.muted).font('Sans-Italic')
-          .text(this.data.specialNotes, this.MARGIN_SIDE + this.s(20), this.y,
-            { width: this.CONTENT_WIDTH - this.s(40), align: 'center', height: notesRoom, ellipsis: true });
-        this.y = Math.min(this.doc.y, copyrightY - this.s(6)) + this.s(8);
-      } else {
-        this._warnClipped();
-      }
-      this.doc.font('Sans');
-    }
-
-    // Standing closing message (like the HTML back cover), above the
-    // copyright block and clamped to it.
-    if (this.parishSettings.closingMessage) {
-      const closingRoom = copyrightY - this.s(6) - this.y;
-      if (closingRoom > this.s(12)) {
-        this.doc.fontSize(this.s(8)).fillColor(COLORS.muted).font('Sans')
-          .text(this.parishSettings.closingMessage, this.MARGIN_SIDE + this.s(20), this.y,
-            { width: this.CONTENT_WIDTH - this.s(40), align: 'center', height: closingRoom, ellipsis: true });
-      } else {
-        this._warnClipped();
-      }
-    }
-
-    // Default wording shared with the HTML renderer (single source:
-    // DEFAULT_PARISH_SETTINGS in config/defaults.js).
-    const copyrightFull = this.parishSettings.copyrightFull ||
-      getDefaultCopyrightFull(this.parishSettings.onelicenseNumber);
-    // Footer-style write: a custom copyright block longer than the reserved
-    // space is clipped at the page edge instead of spilling to a new page.
-    const prevBottom = this.doc.page.margins.bottom;
-    this.doc.page.margins.bottom = 0;
-    this.doc.fontSize(this.s(6.5)).fillColor(COLORS.light)
-      .text(copyrightFull, this.MARGIN_SIDE + this.s(10), copyrightY, {
-        width: this.CONTENT_WIDTH - this.s(20), align: 'center', lineGap: this.s(1.5),
-        height: this.PAGE_HEIGHT - copyrightY, ellipsis: true
-      });
-    this.doc.page.margins.bottom = prevBottom;
+    this.pageNumber(8);
   }
 }
 
