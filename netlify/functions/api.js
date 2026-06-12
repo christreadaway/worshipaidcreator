@@ -3,6 +3,7 @@
 const serverless = require('serverless-http');
 const app = require('../../src/server');
 const userStore = require('../../src/store/user-store');
+const kv = require('../../src/store/kv');
 
 const handler = serverless(app);
 let _seededInHandler = false;
@@ -11,6 +12,17 @@ let _seededInHandler = false;
 // Lambda request context which isn't available at module load time.
 module.exports.handler = async (event, context) => {
   console.log('[NETLIFY] Request:', event.httpMethod, event.path);
+
+  // Wire the Netlify Blobs context from the Lambda event BEFORE any storage
+  // access. Without this, getStore() throws on Lambda-compat functions and
+  // every request silently fell back to per-instance in-memory storage —
+  // the root cause of the beta "session expired" loops, upload lists
+  // resetting, and parish settings never persisting.
+  const connected = kv.connectBlobsFromLambdaEvent(event);
+  if (!connected) {
+    console.warn('[NETLIFY] No Blobs context on event — storage may not persist. event.blobs missing.');
+  }
+
   if (!_seededInHandler) {
     console.log('[NETLIFY] Cold start — seeding users in handler context...');
     try {

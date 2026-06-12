@@ -107,20 +107,39 @@ describe('renderBookletHtml', () => {
     assert.ok(!html.includes('Glory to God in the highest'));
   });
 
-  it('should show Gloria in Ordinary Time', () => {
+  // With a reserved music area (the default), the sung Gloria / acclamation
+  // text is replaced by the notation box; the spoken text only prints when
+  // reserveHymnSpace is off. (UAT June 2026: "providing text instead of
+  // music file".)
+  it('should show Gloria heading + music area in Ordinary Time by default', () => {
     const ordinaryData = { ...sampleData, liturgicalSeason: 'ordinary', seasonalSettings: { ...sampleData.seasonalSettings, gloria: true } };
+    const { html } = renderBookletHtml(ordinaryData);
+    assert.ok(html.includes('Gloria'));
+    assert.ok(html.includes('Gloria — music notation'));
+    assert.ok(!html.includes('Glory to God in the highest'));
+  });
+
+  it('should show Gloria text in Ordinary Time when no music area is reserved', () => {
+    const ordinaryData = { ...sampleData, liturgicalSeason: 'ordinary', reserveHymnSpace: false, seasonalSettings: { ...sampleData.seasonalSettings, gloria: true } };
     const { html } = renderBookletHtml(ordinaryData);
     assert.ok(html.includes('Glory to God in the highest'));
   });
 
+  it('should print the Gloria setting line when configured', () => {
+    const ordinaryData = { ...sampleData, liturgicalSeason: 'ordinary', seasonalSettings: { ...sampleData.seasonalSettings, gloria: true, gloriaSetting: 'Missa Simplex' } };
+    const { html } = renderBookletHtml(ordinaryData);
+    assert.ok(html.includes('Missa Simplex'));
+  });
+
   it('should use Lenten acclamation in Lent', () => {
-    const { html } = renderBookletHtml(sampleData);
+    const { html } = renderBookletHtml({ ...sampleData, reserveHymnSpace: false });
     assert.ok(html.includes('Praise to you, Lord Jesus Christ'));
   });
 
   it('should use alternate Lenten acclamation when selected', () => {
     const altData = {
       ...sampleData,
+      reserveHymnSpace: false,
       seasonalSettings: { ...sampleData.seasonalSettings, lentenAcclamation: 'alternate' }
     };
     const { html } = renderBookletHtml(altData);
@@ -128,7 +147,7 @@ describe('renderBookletHtml', () => {
   });
 
   it('should use Alleluia in Ordinary Time', () => {
-    const ordinaryData = { ...sampleData, liturgicalSeason: 'ordinary' };
+    const ordinaryData = { ...sampleData, liturgicalSeason: 'ordinary', reserveHymnSpace: false };
     const { html } = renderBookletHtml(ordinaryData);
     assert.ok(html.includes('Alleluia'));
   });
@@ -153,9 +172,12 @@ describe('renderBookletHtml', () => {
     assert.ok(html.includes('Luke 9:28b-36'));
   });
 
-  it('should include psalm refrain', () => {
-    const { html } = renderBookletHtml(sampleData);
-    assert.ok(html.includes('The Lord is my light'));
+  it('should reserve a psalm-refrain music area by default and print the refrain text when off', () => {
+    const withSpace = renderBookletHtml(sampleData).html;
+    assert.ok(withSpace.includes('Responsorial Psalm refrain — music notation'));
+    assert.ok(!withSpace.includes('The Lord is my light'));
+    const noSpace = renderBookletHtml({ ...sampleData, reserveHymnSpace: false }).html;
+    assert.ok(noSpace.includes('The Lord is my light'));
   });
 
   it('should include Confiteor', () => {

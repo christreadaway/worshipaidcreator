@@ -13,7 +13,8 @@ const { getSeasonDefaults, SEASONS, LENTEN_ACCLAMATION_OPTIONS } = require('./co
 const store = require('./store/file-store');
 const userStore = require('./store/user-store');
 const { fetchReadings, TRANSLATIONS } = require('./readings-fetcher');
-const { autoCropNotation } = require('./image-utils');
+const { normalizeNotationImage, CONVERTIBLE_EXTS } = require('./image-utils');
+const { resolveNotationImages } = require('./notation-resolver');
 const hymnLibrary = require('./store/hymn-library');
 const attachmentsStore = require('./store/attachments');
 const { getLiturgicalInfo } = require('./liturgical-calendar');
@@ -34,56 +35,43 @@ if (!kv.IS_NETLIFY) {
   [NOTATION_DIR, COVERS_DIR, ATTACHMENTS_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
 }
 
-// Multer config — memory storage on Netlify, disk storage locally
-function makeUploadConfig(destDir, prefixFn, allowedExts, maxSize) {
-  const storage = kv.IS_NETLIFY
-    ? multer.memoryStorage()
-    : multer.diskStorage({
-        destination: destDir,
-        filename: (req, file, cb) => {
-          const ext = path.extname(file.originalname);
-          cb(null, prefixFn(ext));
-        }
-      });
+// Multer config — memory storage everywhere. Uploads are post-processed
+// (TIFF→PNG conversion, auto-crop) before being written to disk locally or
+// to Netlify Blobs, so the original never needs to land on disk first.
+// A rejected file type produces a descriptive 400 (handled by the upload
+// error middleware below) instead of the old silent "No file uploaded".
+function makeUploadConfig(allowedExts, maxSize) {
   return multer({
-    storage,
+    storage: multer.memoryStorage(),
     fileFilter: (req, file, cb) => {
-      cb(null, allowedExts.includes(path.extname(file.originalname).toLowerCase()));
+      const ext = path.extname(file.originalname).toLowerCase();
+      if (allowedExts.includes(ext)) return cb(null, true);
+      const err = new Error(`File type "${ext || 'unknown'}" is not accepted here. Allowed: ${allowedExts.join(', ')}`);
+      err.statusCode = 400;
+      cb(err);
     },
     limits: { fileSize: maxSize }
   });
 }
 
-const notationUpload = makeUploadConfig(
-  NOTATION_DIR,
-  ext => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`,
-  ['.png', '.jpg', '.jpeg', '.gif', '.svg'],
-  5 * 1024 * 1024
-);
+// Notation images now accept TIFF (what OneLicense supplies) plus BMP and
+// WebP — everything that isn't already PNG/JPEG is converted to PNG at
+// upload time so browsers and the PDF embedder can render it.
+const IMAGE_UPLOAD_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.tif', '.tiff', '.bmp', '.webp'];
+const notationUpload = makeUploadConfig(IMAGE_UPLOAD_EXTS, 15 * 1024 * 1024);
 
-const coverUpload = makeUploadConfig(
-  COVERS_DIR,
-  ext => `cover-${Date.now()}${ext}`,
-  ['.png', '.jpg', '.jpeg'],
-  10 * 1024 * 1024
-);
+const coverUpload = makeUploadConfig(['.png', '.jpg', '.jpeg'], 10 * 1024 * 1024);
 
-const logoUpload = makeUploadConfig(
-  COVERS_DIR,
-  ext => `logo-${Date.now()}${ext}`,
-  ['.png', '.jpg', '.jpeg'],
-  5 * 1024 * 1024
-);
+const logoUpload = makeUploadConfig(['.png', '.jpg', '.jpeg'], 5 * 1024 * 1024);
 
-// Attachments: any audio / PDF / image / score the parish wants reused.
+// Attachments: notation images first and foremost (PNG/JPG/TIFF), plus
+// audio / PDF / score files the parish wants reused.
 // Keep the size cap generous so MP3 anthems and full PDF scores still fit.
 const attachmentUpload = makeUploadConfig(
-  ATTACHMENTS_DIR,
-  ext => `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`,
   [
+    ...IMAGE_UPLOAD_EXTS,
     '.mp3', '.m4a', '.wav', '.ogg', '.aac', '.flac',
     '.pdf',
-    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp',
     '.mid', '.midi', '.mxl', '.musicxml', '.xml',
     '.txt', '.md', '.docx', '.doc', '.rtf'
   ],
@@ -387,12 +375,30 @@ app.get('/api/attachments', async (req, res) => {
 
 app.post('/api/attachments', requireAuth, requirePermission('manage_attachments'), attachmentUpload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  const ext = path.extname(req.file.originalname);
-  const filename = req.file.filename || `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
-  const mime = req.file.mimetype || guessMime(filename);
+  let ext = path.extname(req.file.originalname).toLowerCase();
+  let buffer = req.file.buffer;
+  let mime = req.file.mimetype || guessMime(req.file.originalname);
+  let converted = false;
 
+  // Image attachments in formats browsers/PDF can't show (TIFF first and
+  // foremost) get converted to PNG so they actually work downstream.
+  if (CONVERTIBLE_EXTS.has(ext)) {
+    try {
+      const processed = await normalizeNotationImage(buffer, ext);
+      buffer = processed.buffer;
+      ext = processed.ext;
+      mime = processed.mime;
+      converted = processed.converted;
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+  }
+
+  const filename = `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
   if (kv.IS_NETLIFY) {
-    await kv.set(attachmentsStore.BLOB_NS, filename, { data: req.file.buffer.toString('base64'), mime });
+    await kv.set(attachmentsStore.BLOB_NS, filename, { data: buffer.toString('base64'), mime });
+  } else {
+    fs.writeFileSync(path.join(ATTACHMENTS_DIR, filename), buffer);
   }
 
   const url = kv.IS_NETLIFY ? `/api/uploads/attachments/${filename}` : `/uploads/attachments/${filename}`;
@@ -405,7 +411,8 @@ app.post('/api/attachments', requireAuth, requirePermission('manage_attachments'
     tags: String(req.body.tags || '').split(',').map(s => s.trim()).filter(Boolean),
     notes: String(req.body.notes || '').trim(),
     mime,
-    size: req.file.size,
+    size: buffer.length,
+    converted,
     url,
     uploadedBy: req.user.displayName,
     uploadedAt: new Date().toISOString()
@@ -622,10 +629,17 @@ app.post('/api/generate-pdf', requireAuth, requirePermission('export_pdf'), asyn
     const outputDir = kv.IS_NETLIFY ? '/tmp' : store.getExportsDir();
     const outputPath = path.join(outputDir, filename);
     const bookletSize = (req.body.bookletSize || req.query.bookletSize || 'tabloid');
+    // Load any per-slot notation images so the PDF embeds them in the
+    // reserved music areas (uploaded TIFFs were converted to PNG at upload).
+    const notation = await resolveNotationImages(req.body);
     const result = await generatePdf(req.body, outputPath, {
       parishSettings: settings,
-      bookletSize
+      bookletSize,
+      notationImages: notation.images
     });
+    if (notation.missing.length) {
+      result.warnings.push('Notation images missing for: ' + notation.missing.join(', '));
+    }
 
     // Mark draft as exported if it has an id
     if (req.body.id) {
@@ -658,37 +672,43 @@ app.post('/api/generate-pdf', requireAuth, requirePermission('export_pdf'), asyn
 });
 
 // --- IMAGE UPLOADS ---
+// Notation images: normalize at upload (EXIF rotation, white-margin crop,
+// TIFF/BMP/GIF/SVG/WebP → PNG) so every stored file is a PNG/JPEG that the
+// HTML preview can display and the PDF generator can embed.
 app.post('/api/upload/notation', requireAuth, requirePermission('upload_images'), notationUpload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  const ext = path.extname(req.file.originalname);
-  const filename = req.file.filename || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+  const ext = path.extname(req.file.originalname).toLowerCase();
 
-  // Auto-crop white margins so scanned sheet music doesn't waste page space.
-  let cropInfo = { skipped: true };
+  let processed;
+  try {
+    processed = await normalizeNotationImage(req.file.buffer, ext);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${processed.ext}`;
   if (kv.IS_NETLIFY) {
-    const result = await autoCropNotation({ buffer: req.file.buffer, mime: req.file.mimetype });
-    const finalBuf = result.buffer || req.file.buffer;
-    await kv.set('uploads-notation', filename, { data: finalBuf.toString('base64'), mime: req.file.mimetype });
-    cropInfo = { cropped: !!result.cropped };
+    await kv.set('uploads-notation', filename, { data: processed.buffer.toString('base64'), mime: processed.mime });
   } else {
-    const filePath = path.join(NOTATION_DIR, filename);
-    cropInfo = await autoCropNotation({ filePath, mime: req.file.mimetype });
+    fs.writeFileSync(path.join(NOTATION_DIR, filename), processed.buffer);
   }
 
   res.json({
     filename,
     url: kv.IS_NETLIFY ? `/api/uploads/notation/${filename}` : `/uploads/notation/${filename}`,
     originalName: req.file.originalname,
-    autoCrop: cropInfo
+    converted: processed.converted
   });
 });
 
 app.post('/api/upload/logo', requireAuth, requirePermission('manage_settings'), logoUpload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  const ext = path.extname(req.file.originalname);
-  const filename = req.file.filename || `logo-${Date.now()}${ext}`;
+  const ext = path.extname(req.file.originalname).toLowerCase();
+  const filename = `logo-${Date.now()}${ext}`;
   if (kv.IS_NETLIFY) {
     await kv.set('uploads-covers', filename, { data: req.file.buffer.toString('base64'), mime: req.file.mimetype });
+  } else {
+    fs.writeFileSync(path.join(COVERS_DIR, filename), req.file.buffer);
   }
   const url = kv.IS_NETLIFY ? `/api/uploads/covers/${filename}` : `/uploads/covers/${filename}`;
   // Persist as the active logo path in parish settings.
@@ -704,10 +724,12 @@ app.post('/api/upload/logo', requireAuth, requirePermission('manage_settings'), 
 
 app.post('/api/upload/cover', requireAuth, requirePermission('edit_cover'), coverUpload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  const ext = path.extname(req.file.originalname);
-  const filename = req.file.filename || `cover-${Date.now()}${ext}`;
+  const ext = path.extname(req.file.originalname).toLowerCase();
+  const filename = `cover-${Date.now()}${ext}`;
   if (kv.IS_NETLIFY) {
     await kv.set('uploads-covers', filename, { data: req.file.buffer.toString('base64'), mime: req.file.mimetype });
+  } else {
+    fs.writeFileSync(path.join(COVERS_DIR, filename), req.file.buffer);
   }
   res.json({
     filename,
@@ -898,12 +920,44 @@ app.put('/api/user-prefs', requireAuth, async (req, res) => {
 
 // --- SAMPLE ---
 app.get('/api/sample', (req, res) => {
-  const samplePath = path.join(__dirname, '..', 'sample', 'second-sunday-lent.json');
-  if (fs.existsSync(samplePath)) {
-    const data = JSON.parse(fs.readFileSync(samplePath, 'utf8'));
-    return res.json(data);
+  // Candidate paths cover the local checkout AND the Netlify bundle, where
+  // __dirname is the bundled function dir and included_files live under
+  // process.cwd() (/var/task).
+  const candidates = [
+    path.join(__dirname, '..', 'sample', 'second-sunday-lent.json'),
+    path.join(process.cwd(), 'sample', 'second-sunday-lent.json'),
+    path.join(__dirname, '..', '..', 'sample', 'second-sunday-lent.json')
+  ];
+  for (const samplePath of candidates) {
+    try {
+      if (fs.existsSync(samplePath)) {
+        return res.json(JSON.parse(fs.readFileSync(samplePath, 'utf8')));
+      }
+    } catch (e) { /* try next */ }
   }
   res.status(404).json({ error: 'Sample not found' });
+});
+
+// --- UPLOAD ERROR HANDLER ---
+// Multer rejections (bad file type, file too large) and any other route
+// error become a descriptive JSON message instead of the generic "No file
+// uploaded" / HTML error page the beta testers hit.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err && err.code === 'LIMIT_FILE_SIZE') {
+    const note = kv.IS_NETLIFY
+      ? ' Note: the hosted site cannot accept uploads over ~4.5 MB — downscale the image or save it at a lower resolution and try again.'
+      : '';
+    return res.status(413).json({ error: 'That file is too large.' + note });
+  }
+  if (err && (err.statusCode || err.status)) {
+    return res.status(err.statusCode || err.status).json({ error: err.message });
+  }
+  if (err) {
+    console.error('[ERROR]', req.method, req.path, err);
+    return res.status(500).json({ error: err.message || 'Server error' });
+  }
+  next();
 });
 
 // --- MAIN UI ---
@@ -1090,6 +1144,31 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
 .attachment-pick-row select { font-size: 11px; padding: 4px 6px; min-width: 0; }
 .attachment-pick-row a { font-size: 10px; color: var(--gold); text-decoration: none; white-space: nowrap; }
 .attachment-pick-row a:hover { text-decoration: underline; }
+
+/* Anthem rows — one row per anthem with per-Mass checkboxes. */
+.anthem-row { background: var(--parchment); border: 1px solid var(--border); border-radius: 4px; padding: 6px; margin-bottom: 6px; }
+.anthem-row .anthem-inputs { display: grid; grid-template-columns: 3fr 2fr; gap: 4px; margin-bottom: 4px; }
+.anthem-row input[type="text"] { width: 100%; padding: 5px 7px; border: 1px solid var(--border); border-radius: 3px; font-size: 12px; }
+.anthem-row .anthem-masses { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; }
+.anthem-row .anthem-masses label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.anthem-row .anthem-remove { margin-left: auto; background: none; border: none; color: var(--gray); cursor: pointer; font-size: 13px; padding: 0 4px; }
+.anthem-row .anthem-remove:hover { color: var(--error); }
+
+/* Per-slot notation attach control: upload button + existing-image picker + thumbnail. */
+.notation-ctl { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.notation-ctl .btn { padding: 3px 8px; font-size: 10px; }
+.notation-ctl select { font-size: 10px; padding: 3px 5px; max-width: 150px; }
+.notation-thumb { display: inline-flex; align-items: center; gap: 4px; }
+.notation-thumb img { height: 28px; border: 1px solid var(--border); border-radius: 2px; background: #fff; }
+.notation-thumb button { background: none; border: none; color: var(--error); cursor: pointer; font-size: 12px; padding: 0 2px; }
+
+/* Storage health warning — shown when the server is running on the lossy
+   in-memory fallback (Netlify Blobs not connected). */
+.storage-warning { background: #c0392b; color: #fff; font-size: 12px; padding: 8px 16px; text-align: center; }
+.storage-warning a { color: #ffd9d2; }
+
+/* Service-music carryover */
+.carryover-note { font-size: 11px; color: var(--success); margin: 2px 0 8px; }
 </style>
 </head>
 <body>
@@ -1135,6 +1214,11 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
   <button class="btn btn-outline btn-sm" onclick="doLogout()">Logout</button>
 </nav>
 
+<div id="storage-warning" class="storage-warning" style="display:none;">
+  &#9888; Server storage is not connected &mdash; logins, settings, drafts, and uploads will NOT be saved.
+  Ask the site admin to enable Netlify Blobs (see /api/health).
+</div>
+
 <!-- EDITOR PAGE -->
 <div class="app" id="page-editor" style="display:none;">
   <div class="editor" id="editor">
@@ -1159,27 +1243,46 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
       </div>
     </div>
 
-    <!-- SEASONAL OVERRIDES -->
+    <!-- SERVICE MUSIC + SEASONAL SETTINGS -->
     <div class="form-section" id="section-seasonal">
-      <div class="form-section-hdr" onclick="toggle(this)">Seasonal Settings <span>&#9660;</span></div>
+      <div class="form-section-hdr" onclick="toggle(this)">Service Music &amp; Seasonal Settings <span>&#9660;</span></div>
       <div class="form-section-body">
-        <p class="section-lock" id="seasonal-lock-note">These are seasonally static and usually locked for several weeks.</p>
+        <p class="section-lock" id="seasonal-lock-note">The sung Mass parts (Kyrie, Gloria, Holy Holy Holy, Mystery of Faith, Lamb of God) usually stay the same for a whole season.</p>
+        <div class="fg-check">
+          <input type="checkbox" id="serviceMusicCarryover" checked onchange="onServiceMusicCarryoverToggle()">
+          <label for="serviceMusicCarryover">Same service music as last week (carry over)</label>
+        </div>
+        <p class="carryover-note" id="carryoverNote"></p>
+        <div id="serviceMusicFields">
+          <div class="fg-row">
+            <div class="fg"><label>Lord, Have Mercy (Kyrie) Setting</label><input type="text" id="shared_kyrie" placeholder="e.g., Kyrie, Mass of St. Theresa" autocomplete="off" data-pair-composer="shared_kyrieComposer"></div>
+            <div class="fg"><label>&nbsp;</label><input type="text" id="shared_kyrieComposer" placeholder="Composer"></div>
+          </div>
+          ${notationCtl('kyrie', 'Kyrie notation')}
+          <div class="fg"><label>Gloria Setting <span style="font-weight:400;text-transform:none;color:var(--gray);">(which setting is being sung)</span></label><input type="text" id="gloriaSetting" placeholder="e.g., Mass of Creation"></div>
+          ${notationCtl('gloria', 'Gloria notation')}
+          <div class="fg-row">
+            <div class="fg"><label>Holy, Holy, Holy Setting</label><input type="text" id="holyHolySetting" placeholder="e.g., Mass of St. Theresa"></div>
+            <div class="fg"><label>Sanctus Language</label>
+              <select id="holyHolyLanguage" onchange="this.dataset.userSet='1'">
+                <option value="english">English (Holy, Holy, Holy)</option>
+                <option value="latin">Latin (Sanctus)</option>
+              </select>
+            </div>
+          </div>
+          ${notationCtl('sanctus', 'Holy Holy Holy notation')}
+          <div class="fg"><label>Mystery of Faith Setting</label><input type="text" id="mysteryOfFaithSetting"></div>
+          ${notationCtl('mysteryOfFaith', 'Mystery of Faith notation')}
+          <div class="fg"><label>Lamb of God Setting</label><input type="text" id="lambOfGodSetting"></div>
+          ${notationCtl('lambOfGod', 'Lamb of God notation')}
+          <div class="fg"><label>Gospel Acclamation Music <span style="font-weight:400;text-transform:none;color:var(--gray);">(the sung Alleluia setting)</span></label></div>
+          ${notationCtl('gospelAcclamation', 'Gospel Acclamation notation')}
+        </div>
         <div class="fg-check"><input type="checkbox" id="gloria"><label for="gloria">Include Gloria</label></div>
         <div class="fg-row">
           <div class="fg"><label>Creed</label><select id="creedType"><option value="nicene">Nicene Creed</option><option value="apostles">Apostles' Creed</option><option value="baptismal_vows">Renewal of Baptismal Vows</option></select></div>
           <div class="fg"><label>Entrance Type</label><select id="entranceType"><option value="processional">Processional Hymn</option><option value="antiphon">Entrance Antiphon</option></select></div>
         </div>
-        <div class="fg-row">
-          <div class="fg"><label>Holy, Holy, Holy Setting</label><input type="text" id="holyHolySetting" placeholder="e.g., Mass of St. Theresa"></div>
-          <div class="fg"><label>Sanctus Language</label>
-            <select id="holyHolyLanguage" onchange="this.dataset.userSet='1'">
-              <option value="english">English (Holy, Holy, Holy)</option>
-              <option value="latin">Latin (Sanctus)</option>
-            </select>
-          </div>
-        </div>
-        <div class="fg"><label>Mystery of Faith Setting</label><input type="text" id="mysteryOfFaithSetting"></div>
-        <div class="fg"><label>Lamb of God Setting</label><input type="text" id="lambOfGodSetting"></div>
         <div class="fg"><label>Penitential Act</label><select id="penitentialAct"><option value="confiteor">Confiteor (I confess)</option><option value="kyrie_only">Kyrie Only</option></select></div>
         <div class="fg-check"><input type="checkbox" id="includePostlude"><label for="includePostlude">Include Organ Postlude</label></div>
         <div class="fg-check" id="adventWreathRow" style="display:none;"><input type="checkbox" id="adventWreath"><label for="adventWreath">Lighting of the Advent Wreath</label></div>
@@ -1237,40 +1340,31 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
     <div class="form-section" id="section-shared-music">
       <div class="form-section-hdr" onclick="toggle(this)">Shared Music (same at every Mass) <span>&#9660;</span></div>
       <div class="form-section-body">
-        <p class="section-lock">Organ prelude/postlude, Kyrie setting, processional hymn, communion hymn, and the hymn of thanksgiving are the same at every Mass — enter them once here.  The only items that legitimately differ per Mass are the Offertory Anthem and the Choral Anthem at Communion (different choirs / ensembles).</p>
-        <p class="section-lock">Hymn music is <strong>not</strong> embedded automatically (OneLicense has no public API). Instead, the booklet reserves a blank paste area under each hymn so you can drop the licensed notation in by hand after export.</p>
+        <p class="section-lock">Organ prelude/postlude and the congregational hymns are the same at every Mass — type the title and composer once here. Anthems (the only music that differs per Mass) have their own section below; the sung Mass parts live under Service Music above.</p>
+        <p class="section-lock">Drop the licensed notation (from OneLicense — TIFFs are converted automatically) onto each hymn with <em>Attach notation</em> and it prints right in the booklet. With no image attached, the booklet reserves a blank paste area instead.</p>
         <div class="fg-check">
           <input type="checkbox" id="reserveHymnSpace" checked>
-          <label for="reserveHymnSpace">Reserve paste areas for hymn music (processional, communion, thanksgiving)</label>
+          <label for="reserveHymnSpace">Reserve music areas for hymns &amp; sung responses when no image is attached</label>
         </div>
         ${sharedMusicFields()}
       </div>
     </div>
 
-    <!-- MUSIC: SAT 5PM -->
-    <div class="form-section" id="section-music-sat5pm">
-      <div class="form-section-hdr" onclick="toggle(this)">Music — Sat 5:00 PM (anthems) <span>&#9660;</span></div>
-      <div class="form-section-body" id="music-sat5pm-body">
-        <p class="section-lock">Anthems may differ at this Mass — fill in only what's specific to it. Leave blank to inherit nothing (the offertory + choral-anthem slots are optional).</p>
-        ${musicBlockFields('sat5pm')}
-      </div>
-    </div>
-
-    <!-- MUSIC: SUN 9AM -->
-    <div class="form-section" id="section-music-sun9am">
-      <div class="form-section-hdr" onclick="toggle(this)">Music — Sun 9:00 AM (anthems) <span>&#9660;</span></div>
-      <div class="form-section-body" id="music-sun9am-body">
-        <p class="section-lock">Anthems may differ at this Mass — fill in only what's specific to it.</p>
-        ${musicBlockFields('sun9am')}
-      </div>
-    </div>
-
-    <!-- MUSIC: SUN 11AM -->
-    <div class="form-section" id="section-music-sun11am">
-      <div class="form-section-hdr" onclick="toggle(this)">Music — Sun 11:00 AM (anthems) <span>&#9660;</span></div>
-      <div class="form-section-body" id="music-sun11am-body">
-        <p class="section-lock">Anthems may differ at this Mass — fill in only what's specific to it.</p>
-        ${musicBlockFields('sun11am')}
+    <!-- ANTHEMS (the only per-Mass music) -->
+    <div class="form-section" id="section-anthems">
+      <div class="form-section-hdr" onclick="toggle(this)">Anthems (vary by Mass) <span>&#9660;</span></div>
+      <div class="form-section-body">
+        <p class="section-lock">Enter each anthem once — title and composer — and check the Masses where it will be sung. Use <em>Add anthem</em> for additional pieces.</p>
+        <div class="fg">
+          <label>Offertory Anthems</label>
+          <div id="offertoryAnthemRows"></div>
+          <button type="button" class="btn btn-outline btn-sm" onclick="addAnthemRow('offertory')">+ Add anthem</button>
+        </div>
+        <div class="fg" style="margin-top:10px;">
+          <label>Choral Anthem (Communion)</label>
+          <div id="choralAnthemRows"></div>
+          <button type="button" class="btn btn-outline btn-sm" onclick="addAnthemRow('choral')">+ Add anthem</button>
+        </div>
       </div>
     </div>
 
@@ -1278,10 +1372,10 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
     <div class="form-section" id="section-notation">
       <div class="form-section-hdr" onclick="toggle(this)">Notation Images <span>&#9660;</span></div>
       <div class="form-section-body">
-        <p style="font-size:11px;color:var(--gray);margin-bottom:8px;">Upload MuseScore exports, score screenshots, or OneLicense notation PNGs.</p>
+        <p style="font-size:11px;color:var(--gray);margin-bottom:8px;">All uploaded notation images (PNG, JPG, TIFF — TIFFs convert to PNG automatically, white margins are trimmed). Attach an image to a specific spot in the booklet with the <em>Attach notation</em> buttons in Service Music and Shared Music.</p>
         <div class="upload-area" onclick="document.getElementById('notationFileInput').click()">
-          <input type="file" id="notationFileInput" accept="image/*" onchange="uploadNotation(this)">
-          <p style="font-size:11px;color:var(--gray);">Click to upload notation image (PNG, JPG, SVG)</p>
+          <input type="file" id="notationFileInput" accept="image/*,.tif,.tiff" onchange="uploadNotation(this)">
+          <p style="font-size:11px;color:var(--gray);">Click to upload a notation image (PNG, JPG, TIFF, BMP, WebP, SVG)</p>
         </div>
         <div id="notation-list"></div>
       </div>
@@ -1399,14 +1493,14 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
 <div id="page-library" style="display:none;">
   <div class="history-view">
     <h2>Music &amp; Document Library</h2>
-    <p style="font-size:12px;color:var(--gray);margin-bottom:14px;">Upload mass settings, preludes, postludes, anthems, kyries, and any other audio / PDF / image / score files referenced in worship aids. Files are reusable across every booklet — just pick them in the Editor's <em>Files Referenced</em> section or from any non-hymn music slot.</p>
+    <p style="font-size:12px;color:var(--gray);margin-bottom:14px;">Upload notation images (PNG, JPG, <strong>TIFF</strong> — TIFFs are converted automatically) plus any audio / PDF / score files you want on hand. Files are reusable across every booklet — pick them in the Editor's <em>Files Referenced</em> section.</p>
 
     <div class="form-section">
       <div class="form-section-hdr">Upload a New File</div>
       <div class="form-section-body">
         <div class="upload-area" onclick="document.getElementById('attachmentFileInput').click()">
-          <input type="file" id="attachmentFileInput" onchange="uploadAttachmentFromSettings(this)">
-          <p style="font-size:12px;color:var(--gray);">Click to upload a file (audio, PDF, image, MusicXML, MIDI, doc — up to 50&nbsp;MB)</p>
+          <input type="file" id="attachmentFileInput" accept="image/*,.tif,.tiff,.pdf,audio/*,.mid,.midi,.mxl,.musicxml,.xml,.txt,.md,.doc,.docx,.rtf" onchange="uploadAttachmentFromSettings(this)">
+          <p style="font-size:12px;color:var(--gray);">Click to upload a file — images (PNG, JPG, TIFF), audio, PDF, MusicXML, MIDI, doc. On the hosted site keep files under ~4.5&nbsp;MB.</p>
         </div>
         <div class="fg-row" style="grid-template-columns: 1fr 1fr;">
           <div class="fg"><label>Title</label><input type="text" id="att_title" placeholder="Toccata in D Minor"></div>
@@ -1678,6 +1772,44 @@ async function showApp() {
 
   applyRolePermissions();
   showPage('editor');
+  checkStorageHealth();
+  applyServiceMusicCarryover({ silent: true });
+}
+
+// Surface the lossy in-memory fallback loudly — this is the failure mode
+// behind "session expired" loops, upload lists resetting, and settings
+// never persisting on a misconfigured deploy.
+async function checkStorageHealth() {
+  try {
+    const res = await fetch('/api/health');
+    const h = await res.json();
+    window._serverHealth = h || {};
+    const warn = document.getElementById('storage-warning');
+    if (warn) warn.style.display = (h && h.persistence === 'in-memory') ? '' : 'none';
+  } catch(e) { /* health endpoint unreachable — leave banner hidden */ }
+}
+
+// Serverless deployments cap request bodies at ~6 MB (≈4.5 MB of file after
+// form encoding). Fail fast with advice instead of a mysterious network
+// error. Local/Docker servers have no such cap.
+function uploadTooLarge(file) {
+  const isServerless = window._serverHealth && window._serverHealth.environment === 'netlify';
+  if (isServerless && file.size > 4.5 * 1024 * 1024) {
+    toast('That file is over the hosted upload limit (~4.5 MB). Downscale the scan or re-save it smaller and try again.', 'error');
+    return true;
+  }
+  return false;
+}
+
+// Shared 401 handling: clear the stale token and bounce to login with a
+// clear message instead of surfacing a raw "Not authenticated" error.
+function handle401(res) {
+  if (!res || res.status !== 401) return false;
+  toast('Your session expired — please log in again.', 'error');
+  _sessionToken = null;
+  localStorage.removeItem('wa_token');
+  showLogin();
+  return true;
 }
 
 // Save the user's per-user prefs in the background.  Fire-and-forget; no UI
@@ -1741,7 +1873,7 @@ function hasRole(perm) {
 
 function applyRolePermissions() {
   // Music sections: only music_director, admin, staff
-  const musicSections = ['section-music-sat5pm', 'section-music-sun9am', 'section-music-sun11am', 'section-notation'];
+  const musicSections = ['section-shared-music', 'section-anthems', 'section-notation'];
   musicSections.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.classList.toggle('disabled', !hasRole('edit_music'));
@@ -1805,68 +1937,120 @@ function ch(id) { const el = document.getElementById(id); return el ? el.checked
 function sv(id, val) { const el = document.getElementById(id); if (el) el.value = val || ''; }
 function sc(id, val) { const el = document.getElementById(id); if (el) el.checked = !!val; }
 
-function buildMusicBlock(prefix) {
-  // All shared values come from the Shared Music section and are copied into
-  // every per-Mass block here so the saved-draft schema (musicSat5pm /
-  // musicSun9am / musicSun11am) stays the same — this keeps the renderer's
-  // consolidation logic happy and means legacy drafts open cleanly.
-  const sharedPreludeTitle    = v('shared_organPrelude');
-  const sharedPreludeComposer = v('shared_organPreludeComposer');
-  const sharedProcTitle       = v('shared_processional');
-  const sharedProcComposer    = v('shared_processionalComposer');
-  const sharedProcHymnal      = v('shared_processional_hymnal');
-  const sharedProcHymnNumber  = v('shared_processional_hymnNumber');
-  const sharedKyrieTitle      = v('shared_kyrie');
-  const sharedKyrieComposer   = v('shared_kyrieComposer');
-  const sharedPsalmTitle      = v('shared_responsorialPsalm');
-  const sharedPsalmComposer   = v('shared_responsorialPsalmComposer');
-  const sharedCommTitle       = v('shared_communion');
-  const sharedCommComposer    = v('shared_communionComposer');
-  const sharedCommHymnal      = v('shared_communion_hymnal');
-  const sharedCommHymnNumber  = v('shared_communion_hymnNumber');
-  const sharedThanksTitle     = v('shared_thanksgiving');
-  const sharedThanksComposer  = v('shared_thanksgivingComposer');
-  const sharedThanksHymnal    = v('shared_thanksgiving_hymnal');
-  const sharedThanksHymnNumber = v('shared_thanksgiving_hymnNumber');
-  const sharedPostludeTitle   = v('shared_postlude');
-  const sharedPostludeComposer = v('shared_postludeComposer');
-  return {
-    organPrelude: sharedPreludeTitle,
-    organPreludeComposer: sharedPreludeComposer,
-    processionalOrEntrance: sharedProcTitle,
-    processionalOrEntranceComposer: sharedProcComposer,
-    processionalOrEntranceHymnal: sharedProcHymnal,
-    processionalOrEntranceHymnNumber: sharedProcHymnNumber,
-    kyrieSetting: sharedKyrieTitle,
-    kyrieComposer: sharedKyrieComposer,
-    responsorialPsalmSetting: sharedPsalmTitle,
-    responsorialPsalmSettingComposer: sharedPsalmComposer,
-    offertoryAnthem: v(prefix + '_offertory'),
-    offertoryAnthemComposer: v(prefix + '_offertoryComposer'),
-    communionHymn: sharedCommTitle,
-    communionHymnComposer: sharedCommComposer,
-    communionHymnHymnal: sharedCommHymnal,
-    communionHymnHymnNumber: sharedCommHymnNumber,
-    hymnOfThanksgiving: sharedThanksTitle,
-    hymnOfThanksgivingComposer: sharedThanksComposer,
-    hymnOfThanksgivingHymnal: sharedThanksHymnal,
-    hymnOfThanksgivingHymnNumber: sharedThanksHymnNumber,
-    organPostlude: sharedPostludeTitle,
-    organPostludeComposer: sharedPostludeComposer,
-    choralAnthemConcluding: v(prefix + '_choral'),
-    choralAnthemConcludingComposer: v(prefix + '_choralComposer')
-  };
+// --- Anthems: one Offertory list + one Choral list, each anthem tagged with
+// the Masses where it's sung (UAT June 2026 — no more retyping the same
+// anthem into three per-Mass dropdowns).
+const ANTHEM_MASSES = [
+  ['sat5pm',  'Sat 5:00 PM'],
+  ['sun9am',  'Sun 9:00 AM'],
+  ['sun11am', 'Sun 11:00 AM']
+];
+
+function addAnthemRow(slot, data) {
+  const container = document.getElementById(slot === 'offertory' ? 'offertoryAnthemRows' : 'choralAnthemRows');
+  if (!container) return;
+  data = data || {};
+  const masses = new Set(data.masses || []);
+  const row = document.createElement('div');
+  row.className = 'anthem-row';
+  row.innerHTML =
+    '<div class="anthem-inputs">' +
+      '<input type="text" class="anthem-title" placeholder="Title">' +
+      '<input type="text" class="anthem-composer" placeholder="Composer">' +
+    '</div>' +
+    '<div class="anthem-masses">' +
+      ANTHEM_MASSES.map(([key, label]) =>
+        '<label><input type="checkbox" class="anthem-mass" value="' + key + '"' + (masses.has(key) ? ' checked' : '') + '> ' + label + '</label>'
+      ).join('') +
+      '<button type="button" class="anthem-remove" title="Remove this anthem" onclick="this.closest(\\'.anthem-row\\').remove()">&times;</button>' +
+    '</div>';
+  row.querySelector('.anthem-title').value = data.title || '';
+  row.querySelector('.anthem-composer').value = data.composer || '';
+  container.appendChild(row);
 }
 
-function populateMusicBlock(prefix, block) {
-  if (!block) return;
-  // Per-Mass slots only — offertory anthem + choral anthem.  The shared
-  // slots (organ pieces, Kyrie, hymns) are populated by populateSharedMusic()
-  // so the value lives in one place in the UI.
-  sv(prefix + '_offertory', block.offertoryAnthem);
-  sv(prefix + '_offertoryComposer', block.offertoryAnthemComposer);
-  sv(prefix + '_choral', block.choralAnthemConcluding);
-  sv(prefix + '_choralComposer', block.choralAnthemConcludingComposer);
+function renderAnthemRows(slot, rows, minRows) {
+  const container = document.getElementById(slot === 'offertory' ? 'offertoryAnthemRows' : 'choralAnthemRows');
+  if (!container) return;
+  container.innerHTML = '';
+  (rows || []).forEach(r => addAnthemRow(slot, r));
+  while (container.children.length < (minRows || 1)) addAnthemRow(slot);
+}
+
+function collectAnthems(slot) {
+  const container = document.getElementById(slot === 'offertory' ? 'offertoryAnthemRows' : 'choralAnthemRows');
+  if (!container) return [];
+  const rows = [];
+  container.querySelectorAll('.anthem-row').forEach(row => {
+    const title = row.querySelector('.anthem-title').value.trim();
+    const composer = row.querySelector('.anthem-composer').value.trim();
+    const masses = Array.from(row.querySelectorAll('.anthem-mass:checked')).map(cb => cb.value);
+    if (title) rows.push({ title, composer, masses });
+  });
+  return rows;
+}
+
+// For one Mass, combine every anthem checked for it into the per-Mass block
+// fields the renderers consume ("A / B" when two anthems are sung).
+function anthemFieldsForMass(rows, massKey) {
+  const sung = rows.filter(r => (r.masses || []).includes(massKey));
+  const titles = sung.map(r => r.title).join(' / ');
+  const composers = [];
+  sung.forEach(r => { if (r.composer && !composers.includes(r.composer)) composers.push(r.composer); });
+  return { title: titles, composer: composers.join('; ') };
+}
+
+// Reconstruct anthem rows from a draft's per-Mass blocks (legacy drafts and
+// any draft saved before the anthems field existed).
+function anthemRowsFromBlocks(data, titleField, composerField) {
+  const blockKeys = [['sat5pm', 'musicSat5pm'], ['sun9am', 'musicSun9am'], ['sun11am', 'musicSun11am']];
+  const map = new Map();
+  blockKeys.forEach(([massKey, blockKey]) => {
+    const block = (data && data[blockKey]) || {};
+    const title = (block[titleField] || '').trim();
+    if (!title) return;
+    const composer = (block[composerField] || '').trim();
+    const key = title + '|||' + composer;
+    if (!map.has(key)) map.set(key, { title, composer, masses: [] });
+    map.get(key).masses.push(massKey);
+  });
+  return Array.from(map.values());
+}
+
+function buildMusicBlock(prefix, offertoryRows, choralRows) {
+  // All shared values come from the Shared Music + Service Music sections
+  // and are copied into every per-Mass block here so the saved-draft schema
+  // (musicSat5pm / musicSun9am / musicSun11am) stays the same — this keeps
+  // the renderer's consolidation logic happy and means legacy drafts open
+  // cleanly. Anthems come from the anthem rows filtered to this Mass.
+  const off = anthemFieldsForMass(offertoryRows, prefix);
+  const cho = anthemFieldsForMass(choralRows, prefix);
+  return {
+    organPrelude: v('shared_organPrelude'),
+    organPreludeComposer: v('shared_organPreludeComposer'),
+    processionalOrEntrance: v('shared_processional'),
+    processionalOrEntranceComposer: v('shared_processionalComposer'),
+    processionalOrEntranceHymnal: v('shared_processional_hymnal'),
+    processionalOrEntranceHymnNumber: v('shared_processional_hymnNumber'),
+    kyrieSetting: v('shared_kyrie'),
+    kyrieComposer: v('shared_kyrieComposer'),
+    responsorialPsalmSetting: v('shared_responsorialPsalm'),
+    responsorialPsalmSettingComposer: v('shared_responsorialPsalmComposer'),
+    offertoryAnthem: off.title,
+    offertoryAnthemComposer: off.composer,
+    communionHymn: v('shared_communion'),
+    communionHymnComposer: v('shared_communionComposer'),
+    communionHymnHymnal: v('shared_communion_hymnal'),
+    communionHymnHymnNumber: v('shared_communion_hymnNumber'),
+    hymnOfThanksgiving: v('shared_thanksgiving'),
+    hymnOfThanksgivingComposer: v('shared_thanksgivingComposer'),
+    hymnOfThanksgivingHymnal: v('shared_thanksgiving_hymnal'),
+    hymnOfThanksgivingHymnNumber: v('shared_thanksgiving_hymnNumber'),
+    organPostlude: v('shared_postlude'),
+    organPostludeComposer: v('shared_postludeComposer'),
+    choralAnthemConcluding: cho.title,
+    choralAnthemConcludingComposer: cho.composer
+  };
 }
 
 // Pull the shared values out of a saved draft.  We look at every per-Mass
@@ -1903,6 +2087,8 @@ function populateSharedMusic(data) {
 }
 
 function buildData() {
+  const offertoryRows = collectAnthems('offertory');
+  const choralRows = collectAnthems('choral');
   return {
     id: window._currentDraftId || undefined,
     feastName: v('feastName'),
@@ -1911,6 +2097,7 @@ function buildData() {
     lastEditedBy: _currentUser ? _currentUser.displayName : undefined,
     seasonalSettings: {
       gloria: ch('gloria'),
+      gloriaSetting: v('gloriaSetting'),
       creedType: v('creedType'),
       entranceType: v('entranceType'),
       holyHolySetting: v('holyHolySetting'),
@@ -1938,10 +2125,13 @@ function buildData() {
       gospelCitation: v('gospelCitation'),
       gospelText: v('gospelText')
     },
-    musicSat5pm: buildMusicBlock('sat5pm'),
-    musicSun9am: buildMusicBlock('sun9am'),
-    musicSun11am: buildMusicBlock('sun11am'),
+    musicSat5pm: buildMusicBlock('sat5pm', offertoryRows, choralRows),
+    musicSun9am: buildMusicBlock('sun9am', offertoryRows, choralRows),
+    musicSun11am: buildMusicBlock('sun11am', offertoryRows, choralRows),
+    anthems: { offertory: offertoryRows, choral: choralRows },
     reserveHymnSpace: ch('reserveHymnSpace'),
+    serviceMusicCarryover: ch('serviceMusicCarryover'),
+    notationImages: { ...(window._notationImages || {}) },
     childrenLiturgyEnabled: ch('childrenLiturgyEnabled'),
     childrenLiturgyMassTimes: collectChildrenLiturgyTimes(),
     childrenLiturgyMusic: v('childrenLiturgyMusic'),
@@ -1962,6 +2152,7 @@ function populateForm(data) {
   sv('liturgicalSeason', data.liturgicalSeason);
   const ss = data.seasonalSettings || {};
   sc('gloria', ss.gloria);
+  sv('gloriaSetting', ss.gloriaSetting);
   sv('creedType', ss.creedType);
   sv('entranceType', ss.entranceType);
   sv('holyHolySetting', ss.holyHolySetting);
@@ -1987,10 +2178,25 @@ function populateForm(data) {
   sv('gospelAcclamationVerse', r.gospelAcclamationVerse);
   sv('gospelCitation', r.gospelCitation);
   sv('gospelText', r.gospelText);
-  populateMusicBlock('sat5pm', data.musicSat5pm);
-  populateMusicBlock('sun9am', data.musicSun9am);
-  populateMusicBlock('sun11am', data.musicSun11am);
+  // Anthems: prefer the structured anthem lists; reconstruct from the
+  // per-Mass blocks for drafts saved before the anthems field existed.
+  const anthems = data.anthems || {};
+  const offertoryRows = (anthems.offertory && anthems.offertory.length)
+    ? anthems.offertory
+    : anthemRowsFromBlocks(data, 'offertoryAnthem', 'offertoryAnthemComposer');
+  const choralRows = (anthems.choral && anthems.choral.length)
+    ? anthems.choral
+    : anthemRowsFromBlocks(data, 'choralAnthemConcluding', 'choralAnthemConcludingComposer');
+  renderAnthemRows('offertory', offertoryRows, 2);
+  renderAnthemRows('choral', choralRows, 1);
   populateSharedMusic(data);
+  // Per-slot notation images (uploaded music that prints in the booklet).
+  window._notationImages = (data.notationImages && typeof data.notationImages === 'object') ? { ...data.notationImages } : {};
+  renderNotationThumbs();
+  // Saved drafts show their actual values — reflect the stored carryover
+  // flag but never re-copy from a previous week on load.
+  sc('serviceMusicCarryover', !!data.serviceMusicCarryover);
+  updateServiceMusicVisibility();
   // Default ON for drafts saved before the field existed.
   sc('reserveHymnSpace', data.reserveHymnSpace !== false);
   sc('childrenLiturgyEnabled', data.childrenLiturgyEnabled);
@@ -2482,7 +2688,7 @@ async function pickAttachmentIntoMusicSlot(prefix, slotKey, kind) {
   const lib = await getAttachmentCache();
   const matching = lib.filter(a => a.kind === kind);
   if (!matching.length) {
-    toast('No ' + (ATTACHMENT_KIND_LABELS[kind] || kind) + 's in the library yet. Upload one in Settings.', 'error');
+    toast('No ' + (ATTACHMENT_KIND_LABELS[kind] || kind) + 's in the library yet. Upload one on the Library page.', 'error');
     return;
   }
   const sel = document.getElementById(prefix + '_' + slotKey + '_attachmentSelect');
@@ -2526,6 +2732,7 @@ async function uploadAttachmentFromSettings(input) {
   }
   const file = input.files[0];
   const status = document.getElementById('att_uploadStatus');
+  if (uploadTooLarge(file)) { input.value = ''; return; }
   if (status) status.textContent = 'Uploading ' + file.name + '…';
   const fd = new FormData();
   fd.append('file', file);
@@ -2587,11 +2794,158 @@ async function loadAttachmentList() {
 
 async function deleteAttachment(id) {
   if (!confirm('Delete this file from the library? Worship aids that reference it will show "missing".')) return;
-  await fetch('/api/attachments/' + id, { method: 'DELETE', headers: { 'x-session-token': _sessionToken } });
+  try {
+    const res = await fetch('/api/attachments/' + id, { method: 'DELETE', headers: { 'x-session-token': _sessionToken } });
+    if (handle401(res)) return;
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      toast('Delete failed: ' + (data.error || res.status), 'error');
+      return;
+    }
+  } catch (e) { toast('Delete failed: ' + e.message, 'error'); return; }
   await loadAttachmentList();
   await refreshAttachmentPicker();
   await refreshAttachmentSlotSelectors();
   toast('File removed', 'success');
+}
+
+// --- Per-slot notation images ---
+// Each music slot (hymns, Mass ordinary parts, sung responses) can carry an
+// uploaded notation image that prints inside its reserved area in the
+// booklet. window._notationImages maps slot -> upload URL.
+window._notationImages = window._notationImages || {};
+
+async function uploadNotationForSlot(slot, input) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  if (!_sessionToken) {
+    toast('You are signed out — please log in to upload notation.', 'error');
+    showLogin(); input.value = ''; return;
+  }
+  if (uploadTooLarge(file)) { input.value = ''; return; }
+  const fd = new FormData();
+  fd.append('image', file);
+  toast('Uploading ' + file.name + '…', 'success');
+  try {
+    const res = await fetch('/api/upload/notation', { method: 'POST', headers: { 'x-session-token': _sessionToken }, body: fd });
+    if (handle401(res)) return;
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
+    attachNotation(slot, data.url);
+    loadNotationList();
+    refreshNotationPicks();
+    toast((data.converted ? 'Converted to PNG and attached' : 'Notation attached'), 'success');
+  } catch (e) {
+    toast('Upload error: ' + e.message, 'error');
+  } finally {
+    input.value = '';
+  }
+}
+
+function attachNotation(slot, url) {
+  if (!url) return;
+  window._notationImages[slot] = url;
+  renderNotationThumbs();
+}
+
+function detachNotation(slot) {
+  delete window._notationImages[slot];
+  renderNotationThumbs();
+}
+
+function attachNotationFromPick(slot, sel) {
+  if (sel.value) attachNotation(slot, sel.value);
+  sel.value = '';
+}
+
+// Fill every per-slot "uploaded images" picker with the notation files
+// already on the server, so one upload can be reused across slots/weeks.
+async function refreshNotationPicks() {
+  let files = [];
+  try {
+    const res = await fetch('/api/uploads/notation');
+    files = await res.json();
+  } catch (e) { files = []; }
+  document.querySelectorAll('select[data-notation-pick]').forEach(sel => {
+    sel.innerHTML = '<option value="">' + (files.length ? '— or pick an uploaded image —' : '— no uploaded images yet —') + '</option>' +
+      files.map(f => '<option value="' + esc(f.url) + '">' + esc(f.filename) + '</option>').join('');
+  });
+}
+
+function renderNotationThumbs() {
+  document.querySelectorAll('.notation-thumb[data-slot]').forEach(span => {
+    const slot = span.dataset.slot;
+    const url = window._notationImages[slot];
+    span.innerHTML = url
+      ? '<img src="' + esc(url) + '" alt="notation"> <button type="button" title="Remove this notation" onclick="detachNotation(\\'' + slot + '\\')">&times;</button>'
+      : '';
+  });
+}
+
+// --- Service music carryover ---
+// Default behavior (UAT June 2026): a new week's draft carries the service
+// music over from the most recent draft. Checked = full carryover (fields
+// collapsed); unchecked = the individual parts open up for editing.
+function updateServiceMusicVisibility() {
+  const fields = document.getElementById('serviceMusicFields');
+  if (fields) fields.style.display = ch('serviceMusicCarryover') ? 'none' : '';
+}
+
+async function applyServiceMusicCarryover(opts) {
+  opts = opts || {};
+  updateServiceMusicVisibility();
+  if (!ch('serviceMusicCarryover')) return;
+  if (window._currentDraftId) return; // editing a saved draft — keep its values
+  if (!_sessionToken) return;
+  try {
+    const res = await fetch('/api/drafts', { headers: { 'x-session-token': _sessionToken } });
+    if (!res.ok) return;
+    const drafts = await res.json();
+    if (!drafts.length) {
+      const note = document.getElementById('carryoverNote');
+      if (note) note.textContent = 'No previous week found yet — fill in the parts below.';
+      const cb = document.getElementById('serviceMusicCarryover');
+      if (cb) { cb.checked = false; updateServiceMusicVisibility(); }
+      return;
+    }
+    const latest = drafts[0]; // listed newest-first
+    const dres = await fetch('/api/drafts/' + latest.id, { headers: { 'x-session-token': _sessionToken } });
+    if (!dres.ok) return;
+    const d = await dres.json();
+    const ss = d.seasonalSettings || {};
+    sv('gloriaSetting', ss.gloriaSetting);
+    sv('holyHolySetting', ss.holyHolySetting);
+    sv('holyHolyLanguage', ss.holyHolyLanguage || 'english');
+    sv('mysteryOfFaithSetting', ss.mysteryOfFaithSetting);
+    sv('lambOfGodSetting', ss.lambOfGodSetting);
+    if (ss.penitentialAct) sv('penitentialAct', ss.penitentialAct);
+    // Kyrie lives in the per-Mass blocks (same at every Mass).
+    const blocks = [d.musicSat5pm, d.musicSun9am, d.musicSun11am].filter(Boolean);
+    const kyrieBlock = blocks.find(b => b.kyrieSetting) || {};
+    sv('shared_kyrie', kyrieBlock.kyrieSetting);
+    sv('shared_kyrieComposer', kyrieBlock.kyrieComposer);
+    // Carry the ordinary-part notation images too (the whole point of the
+    // carryover: the same sung settings print again this week).
+    const prevNi = d.notationImages || {};
+    ['kyrie', 'gloria', 'sanctus', 'mysteryOfFaith', 'lambOfGod', 'gospelAcclamation'].forEach(slot => {
+      if (prevNi[slot]) window._notationImages[slot] = prevNi[slot];
+      else delete window._notationImages[slot];
+    });
+    renderNotationThumbs();
+    const note = document.getElementById('carryoverNote');
+    if (note) note.textContent = 'Carried over from ' + (d.feastName || 'previous draft') + (d.liturgicalDate ? ' (' + d.liturgicalDate + ')' : '') + '.';
+    if (!opts.silent) toast('Service music carried over from last week', 'success');
+  } catch (e) { /* carryover is best-effort */ }
+}
+
+function onServiceMusicCarryoverToggle() {
+  if (ch('serviceMusicCarryover')) {
+    applyServiceMusicCarryover();
+  } else {
+    updateServiceMusicVisibility();
+    const note = document.getElementById('carryoverNote');
+    if (note) note.textContent = '';
+  }
 }
 
 // --- Image Uploads ---
@@ -2618,8 +2972,9 @@ async function uploadNotation(input) {
     }
     const data = await res.json();
     if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
-    toast('Image uploaded: ' + data.originalName, 'success');
+    toast('Image uploaded' + (data.converted ? ' (converted to PNG)' : '') + ': ' + data.originalName, 'success');
     loadNotationList();
+    refreshNotationPicks();
   } catch(e) { toast('Upload error', 'error'); }
   input.value = '';
 }
@@ -2711,7 +3066,9 @@ async function saveDraft() {
   data.status = data.status || 'draft';
   try {
     const res = await fetch('/api/drafts', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken }, body: JSON.stringify(data) });
+    if (handle401(res)) return;
     const result = await res.json();
+    if (!res.ok) { toast('Save failed: ' + (result.error || res.status), 'error'); return; }
     window._currentDraftId = result.id;
     toast('Draft saved', 'success');
     setStatus('Draft saved at ' + new Date().toLocaleTimeString());
@@ -2759,6 +3116,7 @@ async function generatePdfExport() {
     const sel = document.getElementById('bookletSize');
     if (sel) data.bookletSize = sel.value;
     const res = await fetch('/api/generate-pdf', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken }, body: JSON.stringify(data) });
+    if (handle401(res)) { setStatus('Export blocked — signed out'); return; }
     if (!res.ok) {
       const result = await res.json();
       toast('Error: ' + (result.error || ''), 'error'); setStatus('Export blocked'); return;
@@ -2978,9 +3336,18 @@ async function saveAdminSettings() {
   const s = {};
   settingsFields.forEach(f => s[f] = v('s_' + f));
   settingsCheckboxes.forEach(f => s[f] = ch('s_' + f));
-  await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken }, body: JSON.stringify(s) });
-  window._parishSettings = s;
-  toast('Settings saved', 'success');
+  try {
+    const res = await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken }, body: JSON.stringify(s) });
+    if (handle401(res)) return;
+    const saved = await res.json();
+    if (!res.ok) { toast('Settings NOT saved: ' + (saved.error || res.status), 'error'); return; }
+    // Keep the in-memory copy in sync with what the server actually stored
+    // (merged over existing settings) so previews immediately reflect it.
+    window._parishSettings = saved;
+    toast('Settings saved', 'success');
+  } catch (e) {
+    toast('Settings NOT saved: ' + e.message, 'error');
+  }
 }
 
 // --- User Management ---
@@ -3294,10 +3661,16 @@ initBibleTranslations();
 suggestNextLiturgicalDate();
 initHymnAutocomplete();
 // Attachments lookup — populates editor picker + per-music-slot dropdowns
-// so the user can pick a prelude/postlude/anthem from the library.
+// so the user can pick a psalm setting etc. from the library.
 refreshAttachmentPicker();
 refreshAttachmentSlotSelectors();
 renderAttachmentRefList();
+// Anthem rows: two offertory slots + one choral slot by default (UAT).
+renderAnthemRows('offertory', [], 2);
+renderAnthemRows('choral', [], 1);
+// Notation pickers + carryover field visibility.
+refreshNotationPicks();
+updateServiceMusicVisibility();
 
 // --- Auto-save ---
 let _autoSaveTimer;
@@ -3364,57 +3737,46 @@ setTimeout(initGoogleSignIn, 500);
 </html>`;
 }
 
-// Helper: per-Mass music fields (offertory anthem + choral anthem only).
-// Per the music director's input, the ONLY slots that legitimately vary by
-// Mass are the Offertory Anthem and the Choral Anthem (Communion).  Everything
-// else — organ prelude, processional, Kyrie setting, communion hymn, hymn of
-// thanksgiving, organ postlude — is the same at every Mass and lives in the
-// Shared Music section above the per-Mass blocks.
-function musicBlockFields(prefix) {
-  const fields = [
-    // [titleId, composerId, label, attachment-kind]
-    ['offertory', 'offertoryComposer', 'Offertory Anthem',          'offertory_anthem'],
-    ['choral',    'choralComposer',    'Choral Anthem (Communion)', 'choral_anthem']
-  ];
-  return fields.map(([titleId, compId, label, source]) => {
-    const helper = `
-        <div class="attachment-pick-row">
-          <select data-attachment-slot="${prefix}_${titleId}" data-attachment-kind="${source}" id="${prefix}_${titleId}_attachmentSelect" onchange="pickAttachmentIntoMusicSlot('${prefix}', '${titleId}', '${source}')">
-            <option value="">— pick from library —</option>
+// Helper: per-slot notation attach control. Upload a new image (TIFF/JPG/
+// PNG — converted + cropped server-side) or pick one already uploaded; the
+// image then prints inside the slot's reserved music area in the booklet.
+function notationCtl(slot, label) {
+  return `
+        <div class="notation-ctl" id="nctl_${slot}">
+          <input type="file" id="nfile_${slot}" accept="image/*,.tif,.tiff" style="display:none" onchange="uploadNotationForSlot('${slot}', this)">
+          <button type="button" class="btn btn-outline btn-sm" title="${label}" onclick="document.getElementById('nfile_${slot}').click()">&#9834; Attach notation</button>
+          <select data-notation-pick id="npick_${slot}" onchange="attachNotationFromPick('${slot}', this)">
+            <option value="">— or pick an uploaded image —</option>
           </select>
+          <span class="notation-thumb" data-slot="${slot}"></span>
         </div>`;
-    return `
-      <div class="fg-row">
-        <div class="fg" style="position:relative;">
-          <label>${label}</label>
-          <input type="text" id="${prefix}_${titleId}" placeholder="Title" autocomplete="off" data-pair-composer="${prefix}_${compId}">
-          <span style="font-size:9px;color:var(--gray);">may differ at this Mass — pulls from the Library</span>
-          ${helper}
-        </div>
-        <div class="fg"><label>&nbsp;</label><input type="text" id="${prefix}_${compId}" placeholder="Composer"></div>
-      </div>
-    `;
-  }).join('');
 }
 
-// Helper: the Shared Music section — every slot that's the same at every Mass.
-// Hymns get the hymn-library typeahead; organ pieces and the Kyrie setting
-// get attachment-library quick-picks (they're not congregational hymns).
-// Responsorial Psalm gets the refrain-as-search-query helper.
+// Helper: the Shared Music section — every slot that's the same at every
+// Mass. Organ prelude/postlude are typed in directly (title + composer —
+// no library hookup, per UAT). Hymns get the hymn-library typeahead,
+// hymnal/number inputs, OneLicense search, and a notation attach control.
+// The Kyrie and the other sung Mass parts live in Service Music & Seasonal
+// Settings; anthems have their own per-Mass section.
 function sharedMusicFields() {
-  // [titleId, composerId, label, source]   source: 'hymn', 'psalm', or attachment kind
+  // [titleId, composerId, label, source]   source: 'hymn', 'psalm', or 'plain'
   const fields = [
-    ['organPrelude',         'organPreludeComposer',  'Organ Prelude',                    'prelude'],
+    ['organPrelude',         'organPreludeComposer',  'Organ Prelude',                    'plain'],
     ['processional',         'processionalComposer',  'Processional / Entrance Hymn',     'hymn'],
-    ['kyrie',                'kyrieComposer',         'Lord, Have Mercy (Kyrie)',         'kyrie'],
     // Responsorial Psalm setting — printed in the booklet's psalm section,
     // and the refrain text feeds the OneLicense search so the music
     // director can find a published setting that matches.
     ['responsorialPsalm',    'responsorialPsalmComposer', 'Responsorial Psalm Setting',   'psalm'],
     ['communion',            'communionComposer',     'Communion Hymn',                   'hymn'],
     ['thanksgiving',         'thanksgivingComposer',  'Hymn of Thanksgiving',             'hymn'],
-    ['postlude',             'postludeComposer',      'Organ Postlude',                   'postlude']
+    ['postlude',             'postludeComposer',      'Organ Postlude',                   'plain']
   ];
+  const NOTATION_SLOT = {
+    processional: 'processional',
+    communion: 'communion',
+    thanksgiving: 'thanksgiving',
+    responsorialPsalm: 'psalmRefrain'
+  };
   return fields.map(([titleId, compId, label, source]) => {
     const isHymn = source === 'hymn';
     const isPsalm = source === 'psalm';
@@ -3429,7 +3791,8 @@ function sharedMusicFields() {
           <input type="text" id="shared_${titleId}_hymnal" placeholder="Hymnal (e.g., Worship IV)" style="font-size:11px;padding:4px 6px;">
           <input type="text" id="shared_${titleId}_hymnNumber" placeholder="#" style="font-size:11px;padding:4px 6px;">
           <button type="button" class="btn btn-outline btn-sm" style="padding:4px 8px;font-size:10px;" onclick="openOneLicenseSearch('shared_${titleId}', 'shared_${titleId}_hymnal', 'shared_${titleId}_hymnNumber', 'shared_${compId}')">OneLicense</button>
-        </div>`;
+        </div>
+        ${notationCtl(NOTATION_SLOT[titleId], label + ' notation')}`;
     } else if (isPsalm) {
       helper = `
         <span style="font-size:9px;color:var(--gray);">setting for today's psalm — refrain feeds the OneLicense search</span>
@@ -3438,15 +3801,11 @@ function sharedMusicFields() {
             <option value="">— pick from library —</option>
           </select>
         </div>
-        <button type="button" class="btn btn-outline btn-sm" style="padding:4px 8px;font-size:10px;margin-top:2px;" onclick="openOneLicenseForPsalm()">Search OneLicense by refrain</button>`;
+        <button type="button" class="btn btn-outline btn-sm" style="padding:4px 8px;font-size:10px;margin-top:2px;" onclick="openOneLicenseForPsalm()">Search OneLicense by refrain</button>
+        ${notationCtl(NOTATION_SLOT[titleId], 'Psalm refrain notation')}`;
     } else {
-      helper = `
-        <span style="font-size:9px;color:var(--gray);">not a hymn — pulls from the Library</span>
-        <div class="attachment-pick-row">
-          <select data-attachment-slot="shared_${titleId}" data-attachment-kind="${source}" id="shared_${titleId}_attachmentSelect" onchange="pickAttachmentIntoMusicSlot('shared', '${titleId}', '${source}')">
-            <option value="">— pick from library —</option>
-          </select>
-        </div>`;
+      // Organ prelude / postlude: plain title + composer, typed in directly.
+      helper = '';
     }
     return `
       <div class="fg-row">

@@ -4,8 +4,6 @@
 // if the native binding fails to load.
 'use strict';
 
-const fs = require('fs');
-
 let _sharp = null;
 function getSharp() {
   if (_sharp === null) {
@@ -36,37 +34,69 @@ async function autoCropBuffer(buf, opts = {}) {
   }
 }
 
-// Convenience: crop in place on a file path.
-async function autoCropFile(filePath, opts = {}) {
+// Formats browsers can display inline AND PDFKit can embed. Everything else
+// (TIFF — what OneLicense supplies — plus BMP, GIF, SVG, WebP) gets
+// converted to PNG at upload time.
+const EMBEDDABLE_EXTS = new Set(['.png', '.jpg', '.jpeg']);
+const CONVERTIBLE_EXTS = new Set(['.tif', '.tiff', '.bmp', '.gif', '.webp', '.svg']);
+
+// Normalize an uploaded notation/score image for embedding: rotate per
+// EXIF, trim white margins, and convert non-embeddable formats to PNG.
+// Returns { buffer, ext, mime, converted }. Throws a user-presentable
+// error when the format needs conversion but sharp isn't available.
+async function normalizeNotationImage(buffer, ext) {
+  ext = String(ext || '').toLowerCase();
   const sharp = getSharp();
-  if (!sharp) return { cropped: false, reason: 'sharp unavailable' };
-  try {
-    const original = fs.readFileSync(filePath);
-    const out = await autoCropBuffer(original, opts);
-    if (out.length !== original.length) {
-      fs.writeFileSync(filePath, out);
-      return { cropped: true, beforeBytes: original.length, afterBytes: out.length };
-    }
-    return { cropped: false, reason: 'no whitespace detected' };
-  } catch (e) {
-    return { cropped: false, reason: e.message };
-  }
-}
 
-// Higher-level wrapper used by the notation upload route. Accepts the
-// multer file object and the on-disk path (when not running on Netlify
-// where the file lives in memory). Returns the buffer or path of the
-// processed image. SVGs are passed through unchanged.
-async function autoCropNotation({ buffer, filePath, mime }) {
-  if (mime && mime.includes('svg')) {
-    return { skipped: true, reason: 'svg' };
-  }
-  if (filePath) return autoCropFile(filePath);
-  if (buffer) {
+  if (EMBEDDABLE_EXTS.has(ext)) {
     const out = await autoCropBuffer(buffer);
-    return { buffer: out, cropped: out.length !== buffer.length };
+    return { buffer: out, ext, mime: ext === '.png' ? 'image/png' : 'image/jpeg', converted: false };
   }
-  return { skipped: true, reason: 'no input' };
+
+  if (!CONVERTIBLE_EXTS.has(ext)) {
+    throw new Error(`Unsupported image type "${ext}". Use PNG, JPG, TIFF, BMP, GIF, WebP, or SVG.`);
+  }
+  if (!sharp) {
+    throw new Error(`This server cannot convert ${ext.toUpperCase().slice(1)} files right now — please upload a PNG or JPG instead.`);
+  }
+  const threshold = 18;
+  let pipeline = sharp(buffer, ext === '.svg' ? { density: 300 } : {}).rotate().png();
+  let out;
+  try {
+    out = await pipeline.toBuffer();
+    // Trim in a second pass — .trim() before format conversion can fail on
+    // some TIFF colorspaces.
+    out = await sharp(out).trim({ background: '#ffffff', threshold }).toBuffer();
+  } catch (e) {
+    throw new Error(`Could not read this ${ext.toUpperCase().slice(1)} file (${e.message}). Try re-saving it as PNG or JPG.`);
+  }
+  return { buffer: out, ext: '.png', mime: 'image/png', converted: true };
 }
 
-module.exports = { autoCropBuffer, autoCropFile, autoCropNotation };
+// Pixel dimensions of a PNG or JPEG buffer — enough for the PDF generator
+// to scale embedded notation without pulling in a full image library.
+function getImageDimensions(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 24) return null;
+  // PNG: 8-byte signature, IHDR width/height at offsets 16/20.
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  }
+  // JPEG: scan segments for a SOFn marker carrying the frame size.
+  if (buf[0] === 0xff && buf[1] === 0xd8) {
+    let off = 2;
+    while (off + 9 < buf.length) {
+      if (buf[off] !== 0xff) { off++; continue; }
+      const marker = buf[off + 1];
+      if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd9)) { off += 2; continue; }
+      const len = buf.readUInt16BE(off + 2);
+      // SOF0–SOF15 except DHT(C4)/JPG(C8)/DAC(CC)
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return { height: buf.readUInt16BE(off + 5), width: buf.readUInt16BE(off + 7) };
+      }
+      off += 2 + len;
+    }
+  }
+  return null;
+}
+
+module.exports = { autoCropBuffer, normalizeNotationImage, getImageDimensions, EMBEDDABLE_EXTS, CONVERTIBLE_EXTS };
