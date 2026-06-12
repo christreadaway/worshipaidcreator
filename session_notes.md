@@ -1545,8 +1545,9 @@ branch `claude/dazzling-turing-xapgwf`:
    <30 units remained (no warning at all), and the page relied on a fixed
    `reserveBelow: 150` guess that under-reserved by ~2x once the
    processional image bridge consumed every pixel down to the reserve
-   line. Fixed: page 2 (and 5 and 6) now run through `_fitPageText`;
-   `ordinaryMusicSpace` always warns when it can't fit.
+   line. Fixed first with per-page `_fitPageText`, then superseded the
+   same session by the flow engine (item 3); `ordinaryMusicSpace` always
+   warns when it can't fit.
 2. **Spread bridging RETIRED.** `hymnMusicSpace` hardcoded `bridge: true`,
    splitting the processional around the Penitential Act (pages 2/3) and
    the communion hymn around the Choral Anthem (pages 6/7) — and dropping

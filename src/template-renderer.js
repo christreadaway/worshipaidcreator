@@ -400,15 +400,6 @@ function renderBookletHtml(data, options = {}) {
   }
   .info-block p { margin: 0; }
 
-  /* --- Back Cover (Page 8) --- */
-  .back-cover {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    height: 100%;
-    text-align: center;
-  }
   .copyright-full {
     font-size: 6.5pt;
     color: #888;

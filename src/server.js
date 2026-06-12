@@ -384,8 +384,9 @@ app.post('/api/attachments', requireAuth, requirePermission('manage_attachments'
   // format conversion (TIFF → PNG), white-margin trim, and title-header
   // removal by default — library attachments can print in the booklet as
   // notation, so a title left on here would still reach the page. The
-  // detector requires a clear music staff, so non-music images (logos,
-  // posters) pass through untouched.
+  // title detector requires a clear music staff, so it never crops
+  // non-music images (logos, posters) — they still get the white-margin
+  // trim and a re-encode like every other upload.
   if (CONVERTIBLE_EXTS.has(ext) || EMBEDDABLE_EXTS.has(ext)) {
     try {
       const processed = await normalizeNotationImage(buffer, ext, {

@@ -160,9 +160,9 @@ class WorshipAidPdfGenerator {
     // Page-level state used by tests and bounds tracking
     this._maxYReached = 0;
     this.pageEvents = [];
-    this._pageNo = 1;
-    // True when the current page carries an embedded notation image — the
-    // short license line prints in that page's footer.
+    // True when the current page carries licensed music — an embedded
+    // notation image OR a reserved hymn paste area — so the short license
+    // line prints in that page's footer.
     this._pageHasNotation = false;
 
     // 8-page guarantee state: global shrink factor for body text AND
@@ -243,7 +243,6 @@ class WorshipAidPdfGenerator {
     this._maxYReached = 0;
     this.doc.addPage();
     this.y = this.MARGIN_TOP;
-    this._pageNo++;
   }
 
   // Write text inside the bottom margin band (folios, copyright lines)
@@ -347,9 +346,10 @@ class WorshipAidPdfGenerator {
 
   bodyText(text, opts = {}) {
     if (!text) return;
-    // Single consistent body-text size throughout — textScale shrinks it
-    // only when _fitPageText needs to fit a page.
-    const baseSize = 9;
+    // Default body size 9; callers may pass opts.size for secondary text
+    // (dialogues, announcements, notes). textScale is the flow engine's
+    // global shrink factor.
+    const baseSize = opts.size || 9;
     this.doc.fontSize(this.s(baseSize) * this.textScale)
       .fillColor(opts.color || COLORS.text)
       .font(opts.bold ? 'Sans-Bold' : opts.italic ? 'Sans-Italic' : 'Sans');
@@ -408,7 +408,9 @@ class WorshipAidPdfGenerator {
     let y = this.MARGIN_TOP;
     for (const block of blocks) {
       const h = Math.min(this._measureBlock(block), pageH);
-      if (h > this._bottom() - y && y > this.MARGIN_TOP + 1) {
+      // Same fit tolerance as the render loop, or a block within 1pt of
+      // exactly fitting would trigger a needless global shrink.
+      if (h > this._bottom() - y + 1 && y > this.MARGIN_TOP + 1) {
         pages++;
         y = this.MARGIN_TOP;
       }
@@ -574,6 +576,9 @@ class WorshipAidPdfGenerator {
         this.MARGIN_SIDE, this.y + h / 2 - this.s(4),
         { width: this.CONTENT_WIDTH, align: 'center' });
     this.doc.font('Sans');
+    // This page will carry licensed music once the parish pastes it in —
+    // it needs the license line just like a page with embedded notation.
+    this._pageHasNotation = true;
     this.y += h + this.s(6);
     this._trackY();
   }

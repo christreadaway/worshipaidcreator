@@ -175,6 +175,13 @@ async function stripTitleHeader(buf) {
   const sharp = getSharp();
   if (!sharp) return { buffer: buf, cropped: false };
   try {
+    // Bake EXIF orientation into the pixels FIRST: detection and extract()
+    // both work on raw pixel rows, and extract() strips the EXIF tag — a
+    // phone-photographed score cropped without this would embed sideways.
+    const meta0 = await sharp(buf).metadata();
+    if (meta0.orientation && meta0.orientation !== 1) {
+      buf = await sharp(buf).rotate().toBuffer();
+    }
     const cropY = await detectTitleCropY(buf);
     if (!cropY || cropY < 4) return { buffer: buf, cropped: false };
     const meta = await sharp(buf).metadata();
