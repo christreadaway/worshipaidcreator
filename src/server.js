@@ -13,7 +13,7 @@ const { getSeasonDefaults, SEASONS, LENTEN_ACCLAMATION_OPTIONS } = require('./co
 const store = require('./store/file-store');
 const userStore = require('./store/user-store');
 const { fetchReadings, TRANSLATIONS } = require('./readings-fetcher');
-const { normalizeNotationImage, CONVERTIBLE_EXTS } = require('./image-utils');
+const { normalizeNotationImage, CONVERTIBLE_EXTS, EMBEDDABLE_EXTS } = require('./image-utils');
 const { resolveNotationImages, findMissingNotationSlots } = require('./notation-resolver');
 const hymnLibrary = require('./store/hymn-library');
 const attachmentsStore = require('./store/attachments');
@@ -380,11 +380,18 @@ app.post('/api/attachments', requireAuth, requirePermission('manage_attachments'
   let mime = req.file.mimetype || guessMime(req.file.originalname);
   let converted = false;
 
-  // Image attachments in formats browsers/PDF can't show (TIFF first and
-  // foremost) get converted to PNG so they actually work downstream.
-  if (CONVERTIBLE_EXTS.has(ext)) {
+  // ALL image attachments get the same normalization as notation uploads:
+  // format conversion (TIFF → PNG), white-margin trim, and title-header
+  // removal by default — library attachments can print in the booklet as
+  // notation, so a title left on here would still reach the page. The
+  // title detector requires a clear music staff, so it never crops
+  // non-music images (logos, posters) — they still get the white-margin
+  // trim and a re-encode like every other upload.
+  if (CONVERTIBLE_EXTS.has(ext) || EMBEDDABLE_EXTS.has(ext)) {
     try {
-      const processed = await normalizeNotationImage(buffer, ext);
+      const processed = await normalizeNotationImage(buffer, ext, {
+        stripTitle: req.body.stripTitle !== '0'
+      });
       buffer = processed.buffer;
       ext = processed.ext;
       mime = processed.mime;
@@ -743,6 +750,11 @@ app.post('/api/generate-pdf', requireAuth, requirePermission('export_pdf'), asyn
       fs.unlinkSync(outputPath);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      // The PDF body leaves no room for a JSON warnings list — carry the
+      // generator's warnings in a header so the editor can still show them.
+      if (result.warnings && result.warnings.length) {
+        res.setHeader('X-Export-Warnings', encodeURIComponent(JSON.stringify(result.warnings)));
+      }
       res.send(pdfBuffer);
     } else {
       res.json({
@@ -3146,7 +3158,11 @@ async function uploadNotationForSlot(slot, input) {
   if (uploadTooLarge(file)) { input.value = ''; return; }
   const fd = new FormData();
   fd.append('image', file);
-  fd.append('stripTitle', ch('stripTitleHeaders') ? '1' : '0');
+  // Strip titles by DEFAULT — only send '0' when the user explicitly
+  // unchecked the box. ch() returns false for a missing element, which
+  // would silently disable stripping.
+  var _stripEl = document.getElementById('stripTitleHeaders');
+  fd.append('stripTitle', _stripEl && !_stripEl.checked ? '0' : '1');
   toast('Uploading ' + file.name + '…', 'success');
   try {
     const res = await fetch('/api/upload/notation', { method: 'POST', headers: { 'x-session-token': _sessionToken }, body: fd });
@@ -3363,7 +3379,9 @@ async function uploadNotation(input) {
   }
   const formData = new FormData();
   formData.append('image', input.files[0]);
-  formData.append('stripTitle', ch('stripTitleHeaders') ? '1' : '0');
+  // Strip titles by DEFAULT — only send '0' on an explicit uncheck.
+  var _stripEl2 = document.getElementById('stripTitleHeaders');
+  formData.append('stripTitle', _stripEl2 && !_stripEl2.checked ? '0' : '1');
   try {
     const res = await fetch('/api/upload/notation', {
       method: 'POST', headers: { 'x-session-token': _sessionToken }, body: formData
@@ -3648,8 +3666,8 @@ async function generatePreview() {
       iframe.style.height = (iframe.contentDocument.body.scrollHeight + 16) + 'px';
       // The HTML preview clips overfull pages (fixed page boxes) — never
       // silently. Flag them so nobody discovers a cut-off Gloria in print:
-      // the exported PDF flows music onto the facing page (even→odd) or
-      // shrinks it to fit, losing nothing.
+      // the exported PDF shrinks content to fit the page (music blocks
+      // stay whole) and reports anything it can't fit as a warning.
       try {
         const clipped = [];
         iframe.contentDocument.querySelectorAll('.page').forEach((p, i) => {
@@ -3658,7 +3676,7 @@ async function generatePreview() {
         if (clipped.length) {
           const warnEl = document.getElementById('overflow-warnings');
           warnEl.innerHTML += '<div class="overflow-indicator">Preview page' + (clipped.length > 1 ? 's' : '') + ' ' +
-            clipped.join(', ') + ' hold more than fits the page box — the preview clips it, but the EXPORTED PDF flows music onto the facing page (even&rarr;odd spread) or shrinks it to fit. Nothing is lost in print; Export to see the real layout.</div>';
+            clipped.join(', ') + ' hold more than fits the page box — the preview clips it, but the EXPORTED PDF shrinks the content to fit the page (music blocks stay whole). Export to see the real layout; any content the PDF cannot fit is reported as an export warning.</div>';
         }
       } catch (e) { /* same-origin only; never block the preview */ }
     };
@@ -3690,8 +3708,13 @@ async function generatePdfExport() {
       toast('Error: ' + (result.error || ''), 'error'); setStatus('Export blocked'); return;
     }
     const contentType = res.headers.get('content-type') || '';
+    let exportWarnings = [];
     if (contentType.includes('application/pdf')) {
-      // Direct PDF download (Netlify)
+      // Direct PDF download (Netlify) — warnings ride in a header.
+      try {
+        const wh = res.headers.get('x-export-warnings');
+        if (wh) exportWarnings = JSON.parse(decodeURIComponent(wh));
+      } catch (e) { /* malformed header — never block the download */ }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const cd = res.headers.get('content-disposition') || '';
@@ -3703,10 +3726,24 @@ async function generatePdfExport() {
     } else {
       // JSON response with download URL (local)
       const result = await res.json();
+      exportWarnings = result.warnings || [];
       const a = document.createElement('a'); a.href = result.downloadUrl; a.download = result.filename; a.click();
       toast('PDF exported: ' + result.filename, 'success');
     }
-    setStatus('PDF exported');
+    // The export must NEVER drop or shrink content silently — show every
+    // generator warning in the warnings panel and call it out in a toast.
+    const exWarnEl = document.getElementById('overflow-warnings');
+    if (exWarnEl) {
+      exWarnEl.innerHTML = exportWarnings.map(w =>
+        '<div class="overflow-indicator">' + esc(w) + '</div>'
+      ).join('');
+    }
+    if (exportWarnings.length) {
+      toast(exportWarnings.length + ' export warning(s) — see the warnings panel above the preview.', 'error');
+      setStatus('PDF exported', exportWarnings.length + ' warning(s)');
+    } else {
+      setStatus('PDF exported');
+    }
   } catch(e) { toast('PDF error: ' + e.message, 'error'); }
 }
 

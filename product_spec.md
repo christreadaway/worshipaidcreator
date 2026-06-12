@@ -150,8 +150,28 @@ Line estimation: character count / 65 chars per line. Overflow warnings identify
 | 4 | Gospel + Creed | Gospel text, Homily cue, Creed (Nicene / Apostles' / Baptismal Vows), Prayer of the Faithful |
 | 5 | Liturgy of the Eucharist | Offertory, Children's Liturgy (conditional), Invitation to Prayer, Holy Holy (English/Latin), Mystery of Faith, Great Amen |
 | 6 | Communion Rite | Lord's Prayer, Sign of Peace, Lamb of God, Communion Hymn **+ hymn paste area**, **Choral Anthem (per-Mass)** |
-| 7 | Concluding Rites | Thanksgiving **+ hymn paste area**, Blessing & Dismissal, Postlude, Announcements (conditional), short copyright |
-| 8 | Back Cover | Cross, feast name, date, special notes (optional), closing message, full copyright block |
+| 7 | (flow) | Determined by content height |
+| 8 | (flow) | Determined by content height; padded blank if content ends early |
+
+> **v1.8 flow layout (June 2026 feedback):** pages 2–8 are NO LONGER fixed
+> section slots. The PDF renders the liturgy as a sequence of atomic
+> blocks (a heading + its prayer text, a hymn line + its notation image,
+> one paragraph of a reading) and packs them in order, breaking to a new
+> page whenever the next block's measured height doesn't fit — the layout
+> is conditional on the vertical height of the actual hymns, prayers, and
+> readings. The decorative back cover is retired; page 8 is working
+> space. Hard rules: **the booklet is always exactly 8 pages** (short
+> content pads with blank pages; oversize content scales text AND images
+> down together, floor 75%, then truncates the tail on page 8 WITH a
+> warning); **a block is never split** (music and its heading stay
+> together — no more sections printing between the halves of a hymn);
+> **nothing is dropped silently** (every compromise is a warning the
+> editor shows at export). The short license line prints in the footer of
+> every page that carries embedded notation; the full copyright block is
+> the final flow block. The HTML preview keeps the legacy fixed-section
+> pages and flags clipping pages with a banner pointing to the export.
+> The table rows above describe the canonical *order* of content, not
+> fixed page assignments.
 
 #### Hymn-Music Paste Areas (v1.4)
 
@@ -278,7 +298,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 - Accepted: PNG, JPG, **TIFF** (what OneLicense supplies), BMP, GIF, WebP, SVG.
 - Every upload is normalized at the door (`normalizeNotationImage`): EXIF rotation, white-margin trim, and conversion of non-embeddable formats to PNG — so every stored notation file displays in the browser and embeds in the PDF.
 - Rejected types and oversized files return descriptive errors (the hosted site's ~4.5 MB serverless payload cap is stated in the message; the SPA also pre-checks size client-side).
-- **Automatic title-header removal (v1.6.4).** Licensed notation usually arrives with a large title block (title / composer / tune) above the first staff; the booklet already prints the title line, so the header only wastes music space. `src/image-utils.js` (`detectTitleCropY` + `stripTitleHeader` + the `TITLE_CROP` constants) builds a row-darkness profile at a 360 px analysis width, treats a row with ≥35% ink as a staff line, finds the first staff system, walks up past anything hugging the staff (tempo/composer lines), and crops at the first white gap of ≥12 analysis rows — ONLY when real header content exists above the gap and the crop removes ≤50% of the image. 10 analysis rows of breathing room are kept above the music. Idempotent; lyrics between staves and the bottom copyright line always survive. Editor checkbox `stripTitleHeaders` (default ON) sends `stripTitle=0/1`; `/api/upload/notation` passes `{stripTitle}` through; the response carries `titleCropped` and the upload toast announces "title header removed".
+- **Automatic title-header removal (v1.6.4, default-everywhere + adaptive in v1.7.1).** Licensed notation usually arrives with a large title block (title / composer / tune) above the first staff; the booklet already prints the title line, so the header only wastes music space. `src/image-utils.js` (`detectTitleCropY` + `stripTitleHeader` + the `TITLE_CROP` constants) builds a row-darkness profile at a 480 px analysis width, treats a row with ≥35% ink as a staff line, finds the first staff system, walks up past anything hugging the staff (tempo/composer lines), and crops at the first white gap — ONLY when real header content exists above the gap and the crop removes ≤50% of the image. The separator-gap and breathing-room thresholds are **height-adaptive** (v1.7.1): `gap = clamp(H × 0.035, 5, 12)` and `pad = clamp(H × 0.02, 3, 10)` analysis rows — a fixed 12-row gap was unreachable on wide-but-short scans (a single psalm-refrain staff), which is why headers like "Psalm 100: …" used to survive. Idempotent; lyrics between staves and the bottom copyright line always survive. **Stripping is the default on every image path**: `/api/upload/notation` AND `/api/attachments` (image attachments can print in the booklet) both strip unless the request explicitly sends `stripTitle=0`; the editor checkbox `stripTitleHeaders` (default ON) is an opt-out, and a missing checkbox can no longer silently disable stripping (the client only sends `0` on an explicit uncheck). Safe for non-music images — no staff detected means no crop.
 - **Content-hash de-dupe (v1.7).** The sha256 of the processed buffer is indexed in the `notation-hash-index` KV namespace; re-uploading identical content reuses the already-stored file (response `deduped: true`, toast "Already uploaded — reusing the existing image") instead of stacking copies in the list.
 
 #### Per-Slot Notation Images (v1.6)
@@ -299,9 +319,9 @@ The upload-everything-then-assign list is the music department's primary workflo
 - The **"Print in" select is sticky**: it shows the image's current spot. Picking a different spot MOVES the single assignment; picking the blank entry removes it; an image printed in multiple spots keeps its pills instead. Assigned rows get a gold border.
 - **"Last printed in" history (v1.7):** `GET /api/notation-usage` (auth) walks drafts newest-first into `{byUrl: {url: {slot, liturgicalDate, feastName}}}`; rows show "last printed in \<spot\> (\<date\>)" with a one-click **Use again** button when the image isn't currently assigned there.
 
-#### PDF Spread Bridging for Music Images (v1.7 — in progress)
+#### PDF Spread Bridging for Music Images (v1.7 — RETIRED in v1.7.1)
 
-A music image that doesn't fit the space left on its page may **continue onto the facing page** — only when flowing even→odd (2→3, 6→7), i.e. across one open spread, so the assembly never turns a page mid-piece. Implemented as a lossless clipped two-part drawing in `pdf-generator.js`: `_notationImage` takes a `bridge` option and records `_carryNotation`; `_drawCarriedNotation` draws the remainder at the top of pages 3/7; `_fitPageText` respects the carried-content start Y. Images on odd pages (no facing page next) shrink losslessly instead. Hard rule: **music must never be cut off or partially lost.** A preview-side overflow detector warns when the PDF will flow/shrink. *Status: implementation in flight at the v1.7 handoff — see session notes.*
+Bridging (an even-page music image continuing onto the facing odd page as a lossless clipped two-part drawing) shipped in v1.7 and was **retired and fully removed in v1.8** after June 2026 parish feedback: in practice the sections that follow the image in render order printed *between* the two halves (processional split around the Penitential Act; communion hymn split around the Choral Anthem), breaking blocks the assembly reads as one piece. The mechanism (`_notationImage`'s `bridge` option, `_carryNotation`, `_drawCarriedNotation`) was deleted when the flow engine replaced the fixed page renderers. Current hard rules: **music blocks stay whole on one page** — a too-tall image shrinks proportionally (complete, never cut) — and **nothing is ever dropped silently**: every content page runs through `_fitPageText` shrink-to-fit, and anything that still cannot fit is truncated *with a warning that is surfaced to the user at export* (JSON `warnings` locally; `X-Export-Warnings` response header on Netlify; both rendered as banners in the editor).
 
 > **Serverless binary responses (v1.6.1):** `serverless-http` must be configured with an explicit `binary` content-type list (`netlify/functions/api.js`). Its default list is empty, which UTF-8-mangled every PDF and image response on Netlify — exported booklets opened as blank pages even though the PDF content was correct. Any new binary content type served by the API must be added to that list.
 

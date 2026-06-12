@@ -250,7 +250,7 @@ function renderBookletHtml(data, options = {}) {
     margin: 1pt 0;
   }
   .reading-text {
-    text-align: justify;
+    text-align: left;
     text-indent: 0;
     margin: 2pt 0 5pt;
     font-size: 9.5pt;
@@ -400,15 +400,6 @@ function renderBookletHtml(data, options = {}) {
   }
   .info-block p { margin: 0; }
 
-  /* --- Back Cover (Page 8) --- */
-  .back-cover {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    height: 100%;
-    text-align: center;
-  }
   .copyright-full {
     font-size: 6.5pt;
     color: #888;
@@ -695,7 +686,7 @@ function renderBookletHtml(data, options = {}) {
   <div class="page-number">6</div>
 </div>
 
-<!-- PAGE 7: CONCLUDING RITES -->
+<!-- PAGE 7: CONCLUDING RITES — HYMN OF THANKSGIVING -->
 <div class="page" id="page-7">
   <div class="section-header">The Concluding Rites</div>
 
@@ -703,6 +694,11 @@ function renderBookletHtml(data, options = {}) {
   ${renderMusicSection(d, 'hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving')}
   ${hymnSpace('thanksgiving')}
 
+  <div class="page-number">7</div>
+</div>
+
+<!-- PAGE 8: CONCLUDING RITES CONTINUED — BLESSING, DISMISSAL, POSTLUDE -->
+<div class="page" id="page-8">
   ${RP + RUBRICS.stand + "</p>"}
 
   <div class="sub-heading">Blessing &amp; Dismissal</div>
@@ -721,25 +717,13 @@ function renderBookletHtml(data, options = {}) {
   <div class="announcement-block">${nl2br(d.announcements)}</div>
   ` : ''}
 
+  ${d.specialNotes ? `<div style="margin:8pt auto 0;font-size:8pt;font-style:italic;text-align:center;max-width:4in;">${nl2br(d.specialNotes)}</div>` : ''}
+  ${closingMessage ? `<div style="margin:8pt auto 0;font-size:8pt;text-align:center;max-width:4in;">${nl2br(closingMessage)}</div>` : ''}
+
+  <div class="copyright-full" style="margin:10pt auto 0;">${nl2br(copyrightFull)}</div>
   <div class="copyright-short">${escapeHtml(copyrightShort)}</div>
 
-  <div class="page-number">7</div>
-</div>
-
-<!-- PAGE 8: BACK COVER -->
-<div class="page" id="page-8">
-  <div class="back-cover">
-    <div class="cover-logo" style="margin-top:30pt;">${getLogoHtml(settings)}</div>
-    <div style="margin:10pt 0;">
-      <div class="cover-feast" style="font-size:13pt;">${escapeHtml(d.feastName)}</div>
-      <div class="cover-date" style="font-size:9pt;">${escapeHtml(formatDate(d.liturgicalDate))}</div>
-    </div>
-
-    ${d.specialNotes ? `<div style="margin:8pt 0;font-size:8pt;font-style:italic;text-align:center;max-width:4in;">${nl2br(d.specialNotes)}</div>` : ''}
-    ${closingMessage ? `<div style="margin:8pt 0;font-size:8pt;text-align:center;max-width:4in;">${nl2br(closingMessage)}</div>` : ''}
-
-    <div class="copyright-full">${nl2br(copyrightFull)}</div>
-  </div>
+  <div class="page-number">8</div>
 </div>
 
 </body>

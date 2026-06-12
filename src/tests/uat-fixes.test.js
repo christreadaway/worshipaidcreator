@@ -477,14 +477,17 @@ describe('stable seed-user ids', () => {
 describe('spread bridging + final flags + library promote (v1.7)', () => {
   const sharp = require('sharp');
 
-  it('a too-tall Gloria bridges from page 2 onto facing page 3 (even→odd only)', async () => {
+  it('a too-tall Gloria never bridges — the block stays whole on page 2', async () => {
+    // Bridging split music blocks across pages with other sections rendered
+    // between the halves (June 2026 feedback). Music must stay together:
+    // a too-tall image shrinks to fit its own page instead.
     const tall = await sharp({ create: { width: 1200, height: 5200, channels: 3, background: '#444' } }).png().toBuffer();
     const data = { ...sample, liturgicalSeason: 'ordinary', seasonalSettings: { ...sample.seasonalSettings, gloria: true } };
     const out = path.join(outputDir, 'bridge-gloria.pdf');
     const r = await generatePdf(data, out, { bookletSize: 'tabloid', notationImages: { gloria: tall } });
     assert.equal(r.pageCount, 8);
-    assert.ok(r.warnings.some(w => w.includes('gloria') && w.includes('facing page (pages 2–3)')),
-      'bridge warning expected: ' + JSON.stringify(r.warnings));
+    assert.ok(!r.warnings.some(w => w.includes('facing page')),
+      'no bridge expected: ' + JSON.stringify(r.warnings));
   });
 
   it('a too-tall image on an ODD page never bridges — it shrinks instead', async () => {

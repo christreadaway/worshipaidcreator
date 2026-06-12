@@ -109,7 +109,7 @@ describe('PDF layout — tabloid (8.5x11)', () => {
 });
 
 describe('PDF layout — long-content stress', () => {
-  it('long readings still produce exactly 8 pages on half-letter (with truncation warnings)', async () => {
+  it('long readings flow across pages at reduced scale — still exactly 8 pages', async () => {
     const longText = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. '.repeat(60);
     const r = await gen('half-letter', 'stress-half', {
       readings: Object.assign({}, sample.readings, {
@@ -120,8 +120,25 @@ describe('PDF layout — long-content stress', () => {
     });
     assert.ok(fs.existsSync(r.out));
     assert.equal(r.result.pageCount, 8);
+    // The flow engine fits this by scaling down (no silent truncation).
+    assert.ok(r.result.warnings.some(w => /scaled to \d+%/.test(w)),
+      'expected a scale warning: ' + JSON.stringify(r.result.warnings));
+    assert.ok(!r.result.warnings.some(w => /truncated/.test(w)),
+      'this much content should flow, not truncate: ' + JSON.stringify(r.result.warnings));
+  });
+
+  it('content that cannot fit even at minimum scale truncates WITH a warning — never a 9th page', async () => {
+    const hugeText = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. '.repeat(300);
+    const r = await gen('half-letter', 'stress-huge', {
+      readings: Object.assign({}, sample.readings, {
+        firstReadingText: hugeText,
+        secondReadingText: hugeText,
+        gospelText: hugeText
+      })
+    });
+    assert.equal(r.result.pageCount, 8);
     assert.ok(r.result.warnings.some(w => /truncated/.test(w)),
-      'expected a truncation warning for content that cannot fit');
+      'expected a truncation warning: ' + JSON.stringify(r.result.warnings));
   });
 
   it('long readings still produce exactly 8 pages on tabloid', async () => {

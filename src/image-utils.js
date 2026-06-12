@@ -57,19 +57,27 @@ const CONVERTIBLE_EXTS = new Set(['.tif', '.tiff', '.bmp', '.gif', '.webp', '.sv
 //   * the crop removes at most half the image.
 // Anything ambiguous returns null and the image is left alone.
 const TITLE_CROP = {
-  ANALYSIS_WIDTH: 360,  // downscale width for the row-darkness profile
+  ANALYSIS_WIDTH: 480,  // downscale width for the row-darkness profile —
+                        // wide enough that short-wide scans (a single psalm
+                        // refrain staff) keep a measurable header gap
   DARK: 160,            // gray value below this counts as "ink"
   CONTENT_FRAC: 0.01,   // row is "content" when >=1% of pixels are ink
   STAFF_FRAC: 0.35,     // row is a staff-line candidate when >=35% is ink
-  LINE_MAX_ROWS: 3,     // a staff LINE is thin — at most this many rows;
+  LINE_MAX_ROWS: 4,     // a staff LINE is thin — at most this many rows;
                         // a thicker dark band (bold display title, banner)
                         // is not a staff line
-  LINE_GAP_MAX: 12,     // staff lines sit within this many rows of each other
+  LINE_GAP_MAX: 14,     // staff lines sit within this many rows of each other
   LINES_REQUIRED: 3,    // need a group of thin lines to call it a staff
-  GAP_MIN: 12,          // analysis rows of white that separate header from music
-  PAD: 10,              // analysis rows of breathing room kept above the music
-                        // (generous: downscale antialiasing makes faint ink
-                        // edges register a few rows late)
+  // Header/music separator gap and the breathing room kept above the music
+  // scale with the analysis height: a fixed 12-row gap was unreachable on
+  // wide-but-short scans (one refrain staff downscales to <80 rows total),
+  // which is exactly why titles like "Psalm 100: ..." survived the crop.
+  GAP_MIN: 12,          // ceiling — taller images use up to this many rows
+  GAP_MIN_FLOOR: 5,     // floor for very short images
+  GAP_FRAC: 0.035,      // gap = clamp(H * GAP_FRAC, floor, ceiling)
+  PAD: 10,              // ceiling for breathing room above the music
+  PAD_FLOOR: 3,         // floor for very short images
+  PAD_FRAC: 0.02,       // pad = clamp(H * PAD_FRAC, floor, ceiling)
   MAX_CROP_FRAC: 0.5    // never remove more than half the image
 };
 
@@ -86,7 +94,10 @@ async function detectTitleCropY(buf) {
     .raw()
     .toBuffer({ resolveWithObject: true });
   const W = info.width, H = info.height;
-  if (H < C.GAP_MIN * 3) return null;
+  // Height-adaptive gap/pad — see TITLE_CROP comments.
+  const gapMin = Math.max(C.GAP_MIN_FLOOR, Math.min(C.GAP_MIN, Math.round(H * C.GAP_FRAC)));
+  const pad = Math.max(C.PAD_FLOOR, Math.min(C.PAD, Math.round(H * C.PAD_FRAC)));
+  if (H < gapMin * 3) return null;
 
   // Fraction of "ink" pixels per row.
   const frac = new Array(H);
@@ -137,19 +148,19 @@ async function detectTitleCropY(buf) {
       whiteRun = 0;
     } else {
       whiteRun++;
-      if (whiteRun >= C.GAP_MIN) { musicTop = y + C.GAP_MIN; break; }
+      if (whiteRun >= gapMin) { musicTop = y + gapMin; break; }
     }
   }
   if (musicTop <= 0) return null; // music starts at the top — nothing to crop
 
   // Require real content above the gap; otherwise it's just margin.
   let hasHeader = false;
-  for (let y = 0; y < musicTop - C.GAP_MIN; y++) {
+  for (let y = 0; y < musicTop - gapMin; y++) {
     if (frac[y] >= C.CONTENT_FRAC) { hasHeader = true; break; }
   }
   if (!hasHeader) return null;
 
-  const cropAnalysisY = Math.max(0, musicTop - C.PAD);
+  const cropAnalysisY = Math.max(0, musicTop - pad);
   if (cropAnalysisY / H > C.MAX_CROP_FRAC) return null;
 
   // Map back to the full-resolution image.
@@ -164,6 +175,13 @@ async function stripTitleHeader(buf) {
   const sharp = getSharp();
   if (!sharp) return { buffer: buf, cropped: false };
   try {
+    // Bake EXIF orientation into the pixels FIRST: detection and extract()
+    // both work on raw pixel rows, and extract() strips the EXIF tag — a
+    // phone-photographed score cropped without this would embed sideways.
+    const meta0 = await sharp(buf).metadata();
+    if (meta0.orientation && meta0.orientation !== 1) {
+      buf = await sharp(buf).rotate().toBuffer();
+    }
     const cropY = await detectTitleCropY(buf);
     if (!cropY || cropY < 4) return { buffer: buf, cropped: false };
     const meta = await sharp(buf).metadata();
