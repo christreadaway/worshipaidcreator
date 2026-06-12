@@ -211,6 +211,53 @@ describe('notation images in renderers', () => {
     }
   });
 
+  it('notation images scale to full width; tall ones are capped AND centered', async () => {
+    const sharp = require('sharp');
+    const zlib = require('zlib');
+    const tall = await sharp({ create: { width: 800, height: 2400, channels: 3, background: '#222' } }).png().toBuffer();
+    const wide = await sharp({ create: { width: 2000, height: 500, channels: 3, background: '#333' } }).png().toBuffer();
+    const out = path.join(outputDir, 'center.pdf');
+    await generatePdf(sample, out, {
+      bookletSize: 'tabloid',
+      notationImages: { kyrie: tall, lambOfGod: wide }
+    });
+    // Pull every image-draw transform (w 0 0 -h x y cm … /In Do) out of the
+    // deflated content streams.
+    const bytes = fs.readFileSync(out);
+    const draws = [];
+    const streamRe = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+    let m;
+    while ((m = streamRe.exec(bytes.toString('latin1'))) !== null) {
+      let txt;
+      try { txt = zlib.inflateSync(Buffer.from(m[1], 'latin1')).toString('latin1'); }
+      catch (e) { continue; }
+      const drawRe = /([\d.]+) 0 0 (-?[\d.]+) ([\d.]+) ([\d.]+) cm\s*\n\/I\d+ Do/g;
+      let d;
+      while ((d = drawRe.exec(txt)) !== null) {
+        draws.push({ w: parseFloat(d[1]), x: parseFloat(d[3]) });
+      }
+    }
+    assert.equal(draws.length, 2, 'both images embedded');
+    // Tabloid content area: margin 72, width 468.
+    const wideDraw = draws.find(d => d.w > 400);
+    const tallDraw = draws.find(d => d.w < 400);
+    assert.ok(wideDraw, 'wide image uses (nearly) full content width');
+    assert.ok(Math.abs(wideDraw.x - 72) < 1, 'full-width image starts at the margin');
+    assert.ok(tallDraw, 'tall image is height-capped (narrower than content)');
+    const expectedCenterX = 72 + (468 - tallDraw.w) / 2;
+    assert.ok(Math.abs(tallDraw.x - expectedCenterX) < 1,
+      `capped image must be centered (x=${tallDraw.x}, expected ~${expectedCenterX})`);
+  });
+
+  it('HTML centers capped notation images and sizes ordinary images per geometry', () => {
+    const data = { ...sample, notationImages: { kyrie: '/uploads/notation/k.png' } };
+    const half = renderBookletHtml(data, { bookletSize: 'half-letter' }).html;
+    const tab = renderBookletHtml(data, { bookletSize: 'tabloid' }).html;
+    assert.match(half, /\.notation-image\s*{[^}]*object-position:\s*center top/);
+    assert.match(half, /\.notation-image\.ordinary\s*{\s*max-height:\s*2\.4in/);
+    assert.match(tab, /\.notation-image\.ordinary\s*{\s*max-height:\s*3in/);
+  });
+
   it('PDF embeds slot image buffers and stays at exactly 8 pages', async () => {
     const out = path.join(outputDir, 'notation-embed.pdf');
     const result = await generatePdf(sample, out, {

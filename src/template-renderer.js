@@ -57,8 +57,12 @@ function renderMusicSection(data, titleField, composerField, label) {
 // half-letter: 5.5"x8.5" (booklet folded from 8.5x11 sheets)
 // tabloid:     8.5"x11"  (booklet folded from 11x17 sheets)
 const PAGE_GEOMETRY = {
-  'half-letter': { width: '5.5in', height: '8.5in', padding: '0.4in 0.4in', fontSize: '9.5pt', headerSize: '12pt', hymnSpace: '2.2in' },
-  tabloid:       { width: '8.5in', height: '11in',  padding: '0.6in 0.6in', fontSize: '12pt', headerSize: '14pt', hymnSpace: '2.9in' }
+  // ordinaryImageMax: height cap for notation images on Mass ordinary parts
+  // and sung responses — sized for real music (2-3 staves at full content
+  // width), unlike the small 0.6in paste-guide boxes. Mirrors the PDF
+  // generator's 170 base-unit cap.
+  'half-letter': { width: '5.5in', height: '8.5in', padding: '0.4in 0.4in', fontSize: '9.5pt', headerSize: '12pt', hymnSpace: '2.2in', ordinaryImageMax: '2.4in' },
+  tabloid:       { width: '8.5in', height: '11in',  padding: '0.6in 0.6in', fontSize: '12pt', headerSize: '14pt', hymnSpace: '2.9in', ordinaryImageMax: '3in' }
 };
 
 function resolvePageGeometry(bookletSize) {
@@ -316,16 +320,18 @@ function renderBookletHtml(data, options = {}) {
     font-size: 6.5pt;
     font-style: italic;
   }
-  /* Uploaded notation images — fill the reserved music area. */
+  /* Uploaded notation images — scale to the full content width keeping
+     their proportions; when the height cap forces a shrink, the image is
+     centered instead of pinned to the left margin. */
   .notation-image {
     display: block;
     width: 100%;
     object-fit: contain;
-    object-position: left top;
+    object-position: center top;
     margin: 3pt 0;
   }
   .notation-image.hymn     { max-height: ${geom.hymnSpace}; }
-  .notation-image.ordinary { max-height: 1.4in; }
+  .notation-image.ordinary { max-height: ${geom.ordinaryImageMax}; }
   /* Two-column layout for the Creed */
   .creed-text.two-column {
     columns: 2;

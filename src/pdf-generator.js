@@ -452,9 +452,11 @@ class WorshipAidPdfGenerator {
     return !!this.notationImages[slot] || this.data.reserveHymnSpace !== false;
   }
 
-  // Draw an uploaded notation image scaled to the content width, capped at
-  // maxH (base units, pre-scale) and the space left on the page. Returns
-  // true when the slot had an image (drawn or dry-run-measured).
+  // Draw an uploaded notation image scaled to the full content width keeping
+  // its proportions, capped at maxH (base units, pre-scale) and the space
+  // left on the page. When the cap forces a shrink, the image is centered
+  // horizontally instead of pinned to the left margin. Returns true when the
+  // slot had an image (drawn or dry-run-measured).
   _notationImage(slot, maxHBase, reserveBelowBase = 0) {
     const buf = this.notationImages[slot];
     if (!buf) return false;
@@ -477,8 +479,9 @@ class WorshipAidPdfGenerator {
       this.y += drawH + this.s(4);
       return true;
     }
+    const drawX = this.MARGIN_SIDE + (this.CONTENT_WIDTH - drawW) / 2;
     try {
-      this.doc.image(buf, this.MARGIN_SIDE, this.y, { width: drawW, height: drawH });
+      this.doc.image(buf, drawX, this.y, { width: drawW, height: drawH });
       this.y += drawH + this.s(4);
       this._trackY();
     } catch (e) {
@@ -565,7 +568,10 @@ class WorshipAidPdfGenerator {
   // slot carries an uploaded notation image, the image renders instead.
   ordinaryMusicSpace(slot, label) {
     if (slot && this.notationImages[slot]) {
-      if (this._notationImage(slot, 100)) return;
+      // Image cap is far more generous than the 55-unit paste guide: real
+      // ordinary-part music runs 2-3 staves at full content width. Mirrors
+      // the HTML renderer's ordinaryImageMax (2.4in / 3in).
+      if (this._notationImage(slot, 170)) return;
     }
     if (this.data.reserveHymnSpace === false) return;
     const h = this.s(55);
