@@ -14,7 +14,7 @@ const store = require('./store/file-store');
 const userStore = require('./store/user-store');
 const { fetchReadings, TRANSLATIONS } = require('./readings-fetcher');
 const { normalizeNotationImage, CONVERTIBLE_EXTS } = require('./image-utils');
-const { resolveNotationImages } = require('./notation-resolver');
+const { resolveNotationImages, findMissingNotationSlots } = require('./notation-resolver');
 const hymnLibrary = require('./store/hymn-library');
 const attachmentsStore = require('./store/attachments');
 const { getLiturgicalInfo } = require('./liturgical-calendar');
@@ -599,11 +599,23 @@ app.post('/api/validate', (req, res) => {
 app.post('/api/preview', async (req, res) => {
   const settings = await store.loadSettings();
   const bookletSize = req.body.bookletSize || req.query.bookletSize || 'tabloid';
-  const { html, warnings, pageWidth, pageHeight } = renderBookletHtml(req.body, {
+  const data = { ...req.body };
+  // A slot pointing at a deleted/never-persisted notation file would emit a
+  // dead <img> — which the sandboxed preview iframe renders as an invisible
+  // blank gap. Strip those references so the renderer falls back to the
+  // paste box, exactly like the PDF path does, and say so in the warnings.
+  const missingSlots = await findMissingNotationSlots(data);
+  if (missingSlots.length) {
+    data.notationImages = { ...data.notationImages };
+    missingSlots.forEach(slot => delete data.notationImages[slot]);
+  }
+  const { html, warnings, pageWidth, pageHeight } = renderBookletHtml(data, {
     parishSettings: settings,
     bookletSize
   });
-  const overflows = detectOverflows(req.body);
+  missingSlots.forEach(slot => warnings.push(
+    `The notation image attached to "${slot}" no longer exists on the server — showing the blank paste area instead. Re-upload and re-attach it.`));
+  const overflows = detectOverflows(data);
   res.json({ html, warnings, overflows, bookletSize, pageWidth, pageHeight });
 });
 
@@ -3221,10 +3233,14 @@ async function generatePreview() {
       iframe.style.height = (iframe.contentDocument.body.scrollHeight + 16) + 'px';
     };
 
-    // Show overflow warnings
+    // Show overflow warnings AND renderer warnings (e.g. a notation image
+    // that no longer exists on the server) — a count in the status bar is
+    // too easy to miss.
     const warnEl = document.getElementById('overflow-warnings');
     warnEl.innerHTML = (result.overflows || []).map(o =>
-      '<div class="overflow-indicator">' + o.message + '</div>'
+      '<div class="overflow-indicator">' + esc(o.message) + '</div>'
+    ).join('') + (result.warnings || []).map(w =>
+      '<div class="overflow-indicator">' + esc(w) + '</div>'
     ).join('');
 
     setStatus('Preview generated', result.warnings.length ? result.warnings.length + ' warning(s)' : '');

@@ -238,6 +238,50 @@ describe('notation images in renderers', () => {
       fs.unlinkSync(path.join(dir, fname));
     }
   });
+
+  it('preview falls back to the paste box when a notation file is gone (no dead <img>)', async () => {
+    // A slot pointing at a deleted/never-persisted file used to emit a dead
+    // <img> that rendered as an invisible blank gap in the preview — the
+    // "processional hymn has no placeholder" report.
+    const res = await fetch('/api/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...sample,
+        seasonalSettings: { ...sample.seasonalSettings, entranceType: 'processional' },
+        notationImages: { processional: '/uploads/notation/file-that-is-gone.png' }
+      })
+    });
+    assert.equal(res.status, 200);
+    const out = res.json();
+    assert.ok(!out.html.includes('file-that-is-gone.png'), 'dead img must be stripped');
+    const page2 = out.html.slice(out.html.indexOf('id="page-2"'), out.html.indexOf('id="page-3"'));
+    assert.match(page2, /hymn-music-space/, 'paste box must come back');
+    assert.ok(out.warnings.some(w => /processional/.test(w) && /no longer exists/.test(w)),
+      'warning must name the slot');
+  });
+
+  it('preview keeps the <img> when the notation file exists', async () => {
+    const dir = path.join(__dirname, '..', '..', 'data', 'uploads', 'notation');
+    fs.mkdirSync(dir, { recursive: true });
+    const fname = `test-preview-${Date.now()}.png`;
+    fs.writeFileSync(path.join(dir, fname), tinyPng());
+    try {
+      const res = await fetch('/api/preview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...sample,
+          seasonalSettings: { ...sample.seasonalSettings, entranceType: 'processional' },
+          notationImages: { processional: `/uploads/notation/${fname}` }
+        })
+      });
+      const out = res.json();
+      assert.ok(out.html.includes(fname), 'existing image renders');
+      const page2 = out.html.slice(out.html.indexOf('id="page-2"'), out.html.indexOf('id="page-3"'));
+      assert.doesNotMatch(page2, /hymn-music-space/, 'image replaces the paste box');
+    } finally {
+      fs.unlinkSync(path.join(dir, fname));
+    }
+  });
 });
 
 describe('PDF fonts ship with the repo', () => {

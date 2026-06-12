@@ -64,4 +64,33 @@ async function resolveNotationImages(data) {
   return out;
 }
 
-module.exports = { resolveNotationImages, filenameFromUrl, NOTATION_DIR, ATTACHMENTS_DIR };
+// Existence-only check (no byte loading) — which slots reference notation
+// files that no longer exist in storage. The preview route uses this to
+// fall back to the paste box exactly like the PDF does, instead of
+// emitting a dead <img> that renders as a blank gap in the booklet.
+async function findMissingNotationSlots(data) {
+  const map = (data && data.notationImages) || {};
+  const entries = Object.entries(map).filter(([, url]) => url);
+  if (!entries.length) return [];
+  const missing = [];
+  // On Netlify, list each namespace once instead of fetching every blob.
+  const netlifyKeys = {};
+  if (kv.IS_NETLIFY) {
+    for (const ns of ['uploads-notation', 'uploads-attachments']) {
+      try { netlifyKeys[ns] = new Set(await kv.listKeys(ns)); }
+      catch (e) { return []; } // storage unreachable — leave the draft alone
+    }
+  }
+  for (const [slot, url] of entries) {
+    const filename = filenameFromUrl(url);
+    if (!filename) { missing.push(slot); continue; }
+    const source = sourceForUrl(url);
+    const exists = kv.IS_NETLIFY
+      ? netlifyKeys[source.namespace].has(filename)
+      : fs.existsSync(path.join(source.dir, filename));
+    if (!exists) missing.push(slot);
+  }
+  return missing;
+}
+
+module.exports = { resolveNotationImages, findMissingNotationSlots, filenameFromUrl, NOTATION_DIR, ATTACHMENTS_DIR };
