@@ -77,6 +77,9 @@ const inputSchema = {
       type: 'object',
       properties: {
         gloria: { type: 'boolean' },
+        // Which musical setting the Gloria is sung from (e.g. "Mass of
+        // Creation") — printed under the Gloria heading.
+        gloriaSetting: { type: 'string' },
         creedType: { type: 'string', enum: ['nicene', 'apostles', 'baptismal_vows'] },
         entranceType: { type: 'string', enum: ['processional', 'antiphon'] },
         holyHolySetting: { type: 'string' },
@@ -97,6 +100,39 @@ const inputSchema = {
     musicSat5pm: musicBlockSchema,
     musicSun9am: musicBlockSchema,
     musicSun11am: musicBlockSchema,
+
+    // Anthem list (UAT June 2026): one Offertory list + one Choral list,
+    // each anthem tagged with the Masses where it is sung. This is the
+    // editing shape; at save time the titles are also denormalized into the
+    // per-Mass music blocks above so the renderers' consolidation logic
+    // keeps working unchanged.
+    anthems: {
+      type: 'object',
+      properties: {
+        offertory: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              composer: { type: 'string' },
+              masses: { type: 'array', items: { type: 'string', enum: ['sat5pm', 'sun9am', 'sun11am'] } }
+            }
+          }
+        },
+        choral: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              composer: { type: 'string' },
+              masses: { type: 'array', items: { type: 'string', enum: ['sat5pm', 'sun9am', 'sun11am'] } }
+            }
+          }
+        }
+      }
+    },
 
     // Children's Liturgy — PRD Section 4.1
     childrenLiturgyEnabled: { type: 'boolean' },
@@ -123,8 +159,21 @@ const inputSchema = {
     // hand after export. Defaults to true when absent.
     reserveHymnSpace: { type: 'boolean' },
 
+    // Service music carryover (UAT June 2026): when true, the service music
+    // (Kyrie, Gloria, Sanctus, Mystery of Faith, Lamb of God settings and
+    // their notation images) was carried over wholesale from the previous
+    // week's draft. Unchecking in the editor exposes the per-part fields.
+    serviceMusicCarryover: { type: 'boolean' },
+
     // Images
     coverImagePath: { type: 'string' },
+    // Per-slot notation images, keyed by slot name. Recognized slots:
+    //   processional, communion, thanksgiving          (hymn paste areas)
+    //   kyrie, gloria, sanctus, mysteryOfFaith, lambOfGod (ordinary parts)
+    //   psalmRefrain, gospelAcclamation                (sung responses)
+    // Values are upload URLs (/uploads/notation/... or /api/uploads/notation/...).
+    // When present the image renders inside the reserved music area in both
+    // the HTML preview and the exported PDF.
     notationImages: {
       type: 'object',
       additionalProperties: { type: 'string' }

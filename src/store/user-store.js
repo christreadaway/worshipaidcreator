@@ -30,14 +30,18 @@ function hashPassword(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
 }
 
-async function createUser({ username, displayName, role, password, googleEmail }) {
+async function createUser({ id: fixedId, username, displayName, role, password, googleEmail }) {
   if (!ROLES.includes(role)) throw new Error('Invalid role: ' + role);
   if (!username) throw new Error('Username required');
 
   const existing = await getUserByUsername(username);
   if (existing) throw new Error('Username already exists');
 
-  const id = generateId();
+  // Seed users pass a deterministic id (their username) so session tokens —
+  // which embed the user id — keep validating even if the user store is
+  // wiped and re-seeded (e.g. a serverless instance falling back to
+  // in-memory storage). Ad-hoc users still get random ids.
+  const id = (fixedId && kv.isSafeKey(fixedId)) ? fixedId : generateId();
   const user = {
     id,
     username,
@@ -255,13 +259,15 @@ function hasPermission(user, permission) {
 
 // Seed default users based on worksheet roles
 async function seedDefaultUsers() {
+  // Deterministic ids (= username): a re-seed after storage loss recreates
+  // the same ids, so outstanding session tokens for these users still work.
   const defaults = [
-    { username: 'jd', displayName: 'J.D. (Director of Liturgy)', role: 'admin', password: 'worship2026' },
-    { username: 'morris', displayName: 'Morris (Music Director)', role: 'music_director', password: 'music2026' },
-    { username: 'vincent', displayName: 'Vincent (Music Director)', role: 'music_director', password: 'music2026' },
-    { username: 'frlarry', displayName: 'Fr. Larry (Pastor)', role: 'pastor', password: 'pastor2026' },
-    { username: 'kari', displayName: 'Kari (Staff)', role: 'staff', password: 'staff2026' },
-    { username: 'donna', displayName: 'Donna (Staff)', role: 'staff', password: 'staff2026' }
+    { id: 'jd', username: 'jd', displayName: 'J.D. (Director of Liturgy)', role: 'admin', password: 'worship2026' },
+    { id: 'morris', username: 'morris', displayName: 'Morris (Music Director)', role: 'music_director', password: 'music2026' },
+    { id: 'vincent', username: 'vincent', displayName: 'Vincent (Music Director)', role: 'music_director', password: 'music2026' },
+    { id: 'frlarry', username: 'frlarry', displayName: 'Fr. Larry (Pastor)', role: 'pastor', password: 'pastor2026' },
+    { id: 'kari', username: 'kari', displayName: 'Kari (Staff)', role: 'staff', password: 'staff2026' },
+    { id: 'donna', username: 'donna', displayName: 'Donna (Staff)', role: 'staff', password: 'staff2026' }
   ];
 
   for (const u of defaults) {

@@ -16,6 +16,7 @@ const { getDefaultCopyrightFull, getDefaultCopyrightShort } = require('./assets/
 const { formatMusicSlot, renderMusicLineText } = require('./music-formatter');
 const { applySeasonDefaults } = require('./config/seasons');
 const { detectOverflows } = require('./validator');
+const { getImageDimensions } = require('./image-utils');
 
 // 72pt = 1 inch
 const PT = 72;
@@ -23,13 +24,51 @@ const PT = 72;
 // Embedded TrueType fonts — Liberation Sans covers the full Latin Unicode
 // range (curly quotes, em/en dashes, accented chars, currency symbols)
 // that Helvetica's WinAnsi encoding silently drops.
-const FONT_DIR = '/usr/share/fonts/truetype/liberation';
-const FONT_PATHS = {
-  'Sans':          `${FONT_DIR}/LiberationSans-Regular.ttf`,
-  'Sans-Bold':     `${FONT_DIR}/LiberationSans-Bold.ttf`,
-  'Sans-Italic':   `${FONT_DIR}/LiberationSans-Italic.ttf`,
-  'Sans-BoldItalic': `${FONT_DIR}/LiberationSans-BoldItalic.ttf`
+//
+// The fonts are vendored in src/assets/fonts (SIL OFL) so they ship with
+// the code everywhere — including Netlify Lambda, where neither the system
+// font directory nor pdfkit's bundled .afm metric files exist (the v1.5
+// "ENOENT .../data/Helvetica.afm" export crash). Candidate paths cover the
+// local checkout, the Lambda bundle layout (cwd = /var/task), and the
+// system install as a last resort.
+const FONT_FILES = {
+  'Sans':            'LiberationSans-Regular.ttf',
+  'Sans-Bold':       'LiberationSans-Bold.ttf',
+  'Sans-Italic':     'LiberationSans-Italic.ttf',
+  'Sans-BoldItalic': 'LiberationSans-BoldItalic.ttf'
 };
+
+function resolveFontDir() {
+  const candidates = [
+    path.join(__dirname, 'assets', 'fonts'),                    // src/ locally
+    path.join(process.cwd(), 'src', 'assets', 'fonts'),         // /var/task on Lambda
+    path.join(__dirname, '..', 'src', 'assets', 'fonts'),       // bundle one level deep
+    path.join(__dirname, '..', '..', 'src', 'assets', 'fonts'), // netlify/functions bundle
+    '/usr/share/fonts/truetype/liberation'                       // system install
+  ];
+  for (const dir of candidates) {
+    try {
+      if (fs.existsSync(path.join(dir, FONT_FILES.Sans))) return dir;
+    } catch (e) { /* keep looking */ }
+  }
+  return null;
+}
+
+let _fontDirWarned = false;
+function resolveFontPaths() {
+  const dir = resolveFontDir();
+  if (!dir) {
+    if (!_fontDirWarned) {
+      _fontDirWarned = true;
+      console.warn('[pdf] Liberation Sans fonts not found in any candidate dir — falling back to built-in Helvetica (reduced character coverage).');
+    }
+    // Built-in PDF fonts; only works where pdfkit's .afm data files exist.
+    return { 'Sans': 'Helvetica', 'Sans-Bold': 'Helvetica-Bold', 'Sans-Italic': 'Helvetica-Oblique', 'Sans-BoldItalic': 'Helvetica-BoldOblique' };
+  }
+  const out = {};
+  for (const [name, file] of Object.entries(FONT_FILES)) out[name] = path.join(dir, file);
+  return out;
+}
 
 // Layouts. All values in PDF points (72 = 1 inch).
 // Tabloid uses 1" margins (page is large enough that this still leaves a
@@ -82,6 +121,12 @@ class WorshipAidPdfGenerator {
     this.ss = this.data.seasonalSettings || {};
     this.r = this.data.readings || {};
     this.parishSettings = options.parishSettings || {};
+    // Per-slot notation images, pre-resolved to PNG/JPEG buffers by the
+    // caller (the server loads them from disk or Netlify Blobs). Keys match
+    // data.notationImages slots: processional, communion, thanksgiving,
+    // kyrie, gloria, sanctus, mysteryOfFaith, lambOfGod, psalmRefrain,
+    // gospelAcclamation.
+    this.notationImages = options.notationImages || {};
 
     // Match the HTML renderer: caller option > per-aid field > tabloid.
     this.bookletSize = options.bookletSize || data.bookletSize || 'tabloid';
@@ -118,10 +163,15 @@ class WorshipAidPdfGenerator {
 
   generate(outputPath) {
     return new Promise((resolve, reject) => {
+      const fontPaths = resolveFontPaths();
       const doc = new PDFDocument({
         size: [this.PAGE_WIDTH, this.PAGE_HEIGHT],
         margins: { top: this.MARGIN_TOP, bottom: this.MARGIN_TOP, left: this.MARGIN_SIDE, right: this.MARGIN_SIDE },
         bufferPages: true,
+        // Never load the default Helvetica at construction: its .afm metric
+        // files don't exist in serverless bundles. We register and select
+        // our embedded fonts explicitly before any text is written.
+        font: null,
         info: {
           Title: `Worship Aid — ${this.data.feastName}`,
           Author: 'Worship Aid Generator',
@@ -130,9 +180,10 @@ class WorshipAidPdfGenerator {
         }
       });
 
-      for (const [name, filePath] of Object.entries(FONT_PATHS)) {
+      for (const [name, filePath] of Object.entries(fontPaths)) {
         doc.registerFont(name, filePath);
       }
+      doc.font('Sans');
 
       const stream = fs.createWriteStream(outputPath);
       doc.pipe(stream);
@@ -395,13 +446,61 @@ class WorshipAidPdfGenerator {
     this.CONTENT_WIDTH = orig.width;
   }
 
+  // True when this slot will render music (an uploaded image or a reserved
+  // paste box) instead of spoken text. Mirrors the HTML renderer.
+  _slotHasMusic(slot) {
+    return !!this.notationImages[slot] || this.data.reserveHymnSpace !== false;
+  }
+
+  // Draw an uploaded notation image scaled to the content width, capped at
+  // maxH (base units, pre-scale) and the space left on the page. Returns
+  // true when the slot had an image (drawn or dry-run-measured).
+  _notationImage(slot, maxHBase, reserveBelowBase = 0) {
+    const buf = this.notationImages[slot];
+    if (!buf) return false;
+    const maxH = this.s(maxHBase);
+    const reserveBelow = this.s(reserveBelowBase);
+    const available = this.PAGE_HEIGHT - this.MARGIN - reserveBelow - this.y;
+    const capH = Math.min(maxH, available);
+    if (capH < this.s(20)) {
+      if (!this._dryRun) this.warnings.push(`Page is too full to place the ${slot} notation image.`);
+      return true; // the slot HAS music; we just couldn't fit it
+    }
+    const dims = getImageDimensions(buf);
+    let drawW = this.CONTENT_WIDTH;
+    let drawH = dims ? (dims.height / dims.width) * drawW : capH;
+    if (drawH > capH) {
+      drawW = drawW * (capH / drawH);
+      drawH = capH;
+    }
+    if (this._dryRun) {
+      this.y += drawH + this.s(4);
+      return true;
+    }
+    try {
+      this.doc.image(buf, this.MARGIN_SIDE, this.y, { width: drawW, height: drawH });
+      this.y += drawH + this.s(4);
+      this._trackY();
+    } catch (e) {
+      this.warnings.push(`Could not embed ${slot} notation image: ${e.message}`);
+      return false; // fall back to the paste box
+    }
+    return true;
+  }
+
   // Reserved blank area under a congregational hymn slot. OneLicense has no
   // public API, so the booklet deliberately leaves room for the parish to
   // paste licensed notation in by hand after export (Acrobat, print + paste,
   // etc.). The dashed guide and label disappear once an image is pasted over
   // them. Height is clamped to the space left on the page so the box never
   // crosses the bottom margin; below a usable minimum it is skipped entirely.
+  //
+  // When the slot has an uploaded notation image (opts.slot), the image is
+  // embedded in place of the dashed box.
   hymnMusicSpace(opts = {}) {
+    if (opts.slot && this.notationImages[opts.slot]) {
+      if (this._notationImage(opts.slot, opts.height !== undefined ? opts.height : 160, opts.reserveBelow || 0)) return;
+    }
     if (this.data.reserveHymnSpace === false) return;
     const desired = this.s(opts.height !== undefined ? opts.height : 160);
     const reserveBelow = this.s(opts.reserveBelow || 0);
@@ -458,11 +557,16 @@ class WorshipAidPdfGenerator {
     this._trackY();
   }
 
-  // Small reserved area under a Mass ordinary part (Kyrie, Holy Holy Holy,
-  // Lamb of God) so the parish can paste the week's musical setting in by
-  // hand after export — smaller than hymn spaces since ordinary settings are
-  // the same every week and already identified by name above.
-  ordinaryMusicSpace(label) {
+  // Small reserved area under a Mass ordinary part (Kyrie, Gloria, Holy Holy
+  // Holy, Mystery of Faith, Lamb of God) or sung response (psalm refrain,
+  // gospel acclamation) so the parish can paste the week's musical setting in
+  // by hand after export — smaller than hymn spaces since ordinary settings
+  // are the same every week and already identified by name above. When the
+  // slot carries an uploaded notation image, the image renders instead.
+  ordinaryMusicSpace(slot, label) {
+    if (slot && this.notationImages[slot]) {
+      if (this._notationImage(slot, 100)) return;
+    }
     if (this.data.reserveHymnSpace === false) return;
     const h = this.s(55);
     const available = this._bottom() - this.y;
@@ -676,7 +780,7 @@ class WorshipAidPdfGenerator {
     // and optional Children's Liturgy dismissal box.
     if (entranceType === 'processional') {
       const clReserve = this.data.childrenLiturgyEnabled ? 75 : 0;
-      this.hymnMusicSpace({ reserveBelow: 150 + clReserve });
+      this.hymnMusicSpace({ slot: 'processional', reserveBelow: 150 + clReserve });
     }
 
     if (this.showAdventWreath) {
@@ -696,13 +800,19 @@ class WorshipAidPdfGenerator {
 
     this.subHeading('Lord, Have Mercy');
     this.musicLine('kyrieSetting', 'kyrieComposer', 'Kyrie');
-    this.ordinaryMusicSpace('Kyrie — music notation');
+    this.ordinaryMusicSpace('kyrie', 'Kyrie — music notation');
 
     const showGloria = this.ss.gloria !== undefined ? this.ss.gloria :
       (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
     if (showGloria) {
       this.subHeading('Gloria');
-      this.bodyText('Glory to God in the highest, and on earth peace to people of good will.');
+      // Which setting the Gloria is sung from (e.g. "Mass of Creation").
+      if (this.ss.gloriaSetting) this.bodyText(this.ss.gloriaSetting, { italic: true, gap: 1 });
+      if (this._slotHasMusic('gloria')) {
+        this.ordinaryMusicSpace('gloria', 'Gloria — music notation');
+      } else {
+        this.bodyText('Glory to God in the highest, and on earth peace to people of good will.');
+      }
     }
 
     // Children's Liturgy dismissal — placed here because children are
@@ -769,7 +879,13 @@ class WorshipAidPdfGenerator {
       this.subHeading('Responsorial Psalm');
       this.citation(this.r.psalmCitation);
       this.musicLine('responsorialPsalmSetting', 'responsorialPsalmSettingComposer', 'Setting');
-      if (this.r.psalmRefrain) this.bodyText(`R. ${this.r.psalmRefrain}`, { bold: true, size: 9 });
+      // Music (uploaded refrain notation or a paste area) replaces the
+      // text refrain — the notation carries the words.
+      if (this._slotHasMusic('psalmRefrain')) {
+        this.ordinaryMusicSpace('psalmRefrain', 'Responsorial Psalm refrain — music notation');
+      } else if (this.r.psalmRefrain) {
+        this.bodyText(`R. ${this.r.psalmRefrain}`, { bold: true, size: 9 });
+      }
       if (this.r.psalmVerses) this.bodyText(this.r.psalmVerses, { size: 8.5, x: this.MARGIN_SIDE + this.s(10), width: this.CONTENT_WIDTH - this.s(10) });
 
       if (!this.r.noSecondReading && this.r.secondReadingCitation) {
@@ -787,7 +903,13 @@ class WorshipAidPdfGenerator {
       } else {
         acclamationText = GOSPEL_ACCLAMATION_STANDARD;
       }
-      this.bodyText(acclamationText, { bold: true, size: 9 });
+      // Music (uploaded notation or a paste area) replaces the sung
+      // acclamation text; the cantor's verse keeps printing below.
+      if (this._slotHasMusic('gospelAcclamation')) {
+        this.ordinaryMusicSpace('gospelAcclamation', 'Gospel Acclamation — music notation');
+      } else {
+        this.bodyText(acclamationText, { bold: true, size: 9 });
+      }
       // Order mirrors the HTML renderer: acclamation, reference, verse.
       if (this.r.gospelAcclamationReference) {
         this.citation(this.r.gospelAcclamationReference);
@@ -863,13 +985,17 @@ class WorshipAidPdfGenerator {
     const holyHolyLanguage = this.ss.holyHolyLanguage || this.parishSettings.defaultSanctusLanguage || 'english';
     this.subHeading(holyHolyLanguage === 'latin' ? 'Sanctus' : 'Holy, Holy, Holy');
     this.bodyText(this.ss.holyHolySetting || 'Mass of St. Theresa', { italic: true });
-    this.bodyText(getHolyHolyHolyText(holyHolyLanguage));
-    this.ordinaryMusicSpace('Holy, Holy, Holy — music notation');
+    if (this._slotHasMusic('sanctus')) {
+      this.ordinaryMusicSpace('sanctus', 'Holy, Holy, Holy — music notation');
+    } else {
+      this.bodyText(getHolyHolyHolyText(holyHolyLanguage));
+    }
 
     this.rubric(RUBRICS.kneel);
 
     this.subHeading('Mystery of Faith');
     this.bodyText(this.ss.mysteryOfFaithSetting || 'Mass of St. Theresa', { italic: true });
+    this.ordinaryMusicSpace('mysteryOfFaith', 'Mystery of Faith — music notation');
 
     this.subHeading('Great Amen');
 
@@ -888,13 +1014,13 @@ class WorshipAidPdfGenerator {
 
     this.subHeading('Lamb of God');
     this.bodyText(this.ss.lambOfGodSetting || 'Mass of St. Theresa', { italic: true });
-    this.ordinaryMusicSpace('Lamb of God — music notation');
+    this.ordinaryMusicSpace('lambOfGod', 'Lamb of God — music notation');
 
     this.rubric(RUBRICS.kneel);
 
     this.subHeading('Communion Hymn');
     this.musicLine('communionHymn', 'communionHymnComposer', 'Communion');
-    this.hymnMusicSpace({ reserveBelow: 50 });
+    this.hymnMusicSpace({ slot: 'communion', reserveBelow: 50 });
 
     this.subHeading('Choral Anthem');
     this.musicLine('choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem');
@@ -916,7 +1042,7 @@ class WorshipAidPdfGenerator {
       const announcementReserve = this.data.announcements
         ? Math.min(120, Math.ceil(String(this.data.announcements).length / 80) * 10 + 25)
         : 0;
-      this.hymnMusicSpace({ reserveBelow: 130 + announcementReserve });
+      this.hymnMusicSpace({ slot: 'thanksgiving', reserveBelow: 130 + announcementReserve });
 
       this.rubric(RUBRICS.stand);
 

@@ -20,6 +20,9 @@ const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 // Data persists within a single Lambda invocation but is lost on cold start
 const _memStore = {};
 let _blobsAvailable = null; // null = unknown, true/false after first attempt
+let _blobsLastFailedAt = 0; // retry window — a cold-start hiccup must not
+                            // strand the instance in memory mode forever
+const BLOBS_RETRY_MS = 30 * 1000;
 
 function memGet(namespace, key) {
   return (_memStore[namespace] && _memStore[namespace][key]) || null;
@@ -36,28 +39,66 @@ function memList(namespace) {
   return Object.values(_memStore[namespace]).map(v => JSON.parse(JSON.stringify(v)));
 }
 
-// Lazy-loaded Netlify Blobs store
+// Lazy-loaded Netlify Blobs store.
+// getStore(name) alone only works when the runtime has already injected the
+// Blobs context (NETLIFY_BLOBS_CONTEXT). Under the Lambda-compatibility
+// function signature this app uses, that context arrives on each event and
+// must be wired up via connectLambda() — see connectBlobsFromLambdaEvent
+// below, called by netlify/functions/api.js on every request. As a final
+// fallback, explicit credentials can be supplied via env vars.
 let _blobStores = {};
 function getBlobStore(namespace) {
   if (!_blobStores[namespace]) {
     const { getStore } = require('@netlify/blobs');
-    _blobStores[namespace] = getStore(namespace);
+    const siteID = process.env.NETLIFY_BLOBS_SITE_ID || process.env.NETLIFY_SITE_ID || '';
+    const token = process.env.NETLIFY_BLOBS_TOKEN || process.env.NETLIFY_API_TOKEN || '';
+    if (siteID && token) {
+      _blobStores[namespace] = getStore({ name: namespace, siteID, token });
+    } else {
+      _blobStores[namespace] = getStore(namespace);
+    }
   }
   return _blobStores[namespace];
 }
 
-// Test if blobs are actually usable (runs once)
-async function checkBlobsAvailable() {
-  if (_blobsAvailable !== null) return _blobsAvailable;
+// Wire the Netlify Blobs environment context from a Lambda-compat event.
+// Safe to call on every request; a no-op when the event carries no blobs
+// context. Resets the availability cache when a context appears so an
+// instance that started in memory-fallback mode can recover.
+function connectBlobsFromLambdaEvent(event) {
+  if (!event || !event.blobs) return false;
   try {
+    const { connectLambda } = require('@netlify/blobs');
+    connectLambda(event);
+    if (_blobsAvailable === false) {
+      _blobsAvailable = null; // force a re-check now that context exists
+      _blobStores = {};
+    }
+    return true;
+  } catch (e) {
+    console.warn('[KV] connectLambda failed:', e.message);
+    return false;
+  }
+}
+
+// Test if blobs are actually usable. A success is cached for the process
+// lifetime; a failure is retried after BLOBS_RETRY_MS so a transient
+// cold-start error doesn't permanently strand the instance on the lossy
+// in-memory fallback.
+async function checkBlobsAvailable() {
+  if (_blobsAvailable === true) return true;
+  if (_blobsAvailable === false && Date.now() - _blobsLastFailedAt < BLOBS_RETRY_MS) return false;
+  try {
+    _blobStores = {}; // re-create stores in case the context just changed
     const store = getBlobStore('_health');
     await store.setJSON('_ping', { t: Date.now() });
     _blobsAvailable = true;
     console.log('[KV] Netlify Blobs: available');
   } catch (e) {
     _blobsAvailable = false;
-    console.warn('[KV] Netlify Blobs NOT available — using in-memory fallback. Data will not persist across cold starts.');
-    console.warn('[KV] Reason:', e.message);
+    _blobsLastFailedAt = Date.now();
+    console.error('[KV] Netlify Blobs NOT available — using in-memory fallback. Data will NOT persist across requests. Sessions, settings, drafts and uploads WILL be lost.');
+    console.error('[KV] Reason:', e.message);
   }
   return _blobsAvailable;
 }
@@ -196,4 +237,4 @@ async function listKeys(namespace) {
   return fs.readdirSync(dir).filter(f => f.endsWith('.json')).map(f => f.slice(0, -5));
 }
 
-module.exports = { get, set, del, list, listKeys, isSafeKey, IS_NETLIFY, DATA_DIR };
+module.exports = { get, set, del, list, listKeys, isSafeKey, IS_NETLIFY, DATA_DIR, connectBlobsFromLambdaEvent, checkBlobsAvailable };

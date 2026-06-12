@@ -5,7 +5,10 @@
 
 [functions]
   node_bundler = "esbuild"
-  included_files = ["sample/**"]
+  # Fonts MUST ship with the function: PDF export embeds Liberation Sans
+  # (system fonts don't exist on Lambda). pdfkit's .afm metric files are
+  # included as a safety net for any built-in-font fallback path.
+  included_files = ["sample/**", "src/assets/fonts/**", "node_modules/pdfkit/js/data/*.afm"]
 
 # Redirect all API calls to the serverless function
 [[redirects]]

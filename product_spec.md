@@ -1,12 +1,12 @@
 # Worship Aid Generator — Product Specification
 
-**Version:** 1.5.0
-**Last Updated:** June 9, 2026
+**Version:** 1.6.0
+**Last Updated:** June 12, 2026
 **Status:** Active development — replacing Microsoft Publisher in fall 2026
 
-> **Pick-up note for next session:** see `session_notes.md` § "Session 8 (June 9, 2026)" for v1.5 — Unicode PDF fonts (Liberation Sans, fixing encoding bugs), single 9 pt body text, conditional hymn paste area (antiphon suppresses page 2 box), Children's Liturgy placement fix (dismissal on page 2 after Opening Prayer, return note on page 5 at Offertory), rubric alignment setting, two-column Creed layout, Kyrie/Sanctus/Agnus ordinary-music paste areas. Branch `claude/youthful-mayer-sxg6du`. 298/298 tests passing.
+> **Pick-up note for next session:** see `session_notes.md` § "Session 9 (June 12, 2026)" for v1.6 — the June 12 UAT fix pass: Netlify Blobs connection (root cause of session-expiry loops, vanishing uploads, and settings resets), vendored PDF fonts (fixes the `Helvetica.afm` export crash), TIFF upload support with PNG conversion, per-slot notation-image embedding (digital "paste"), new reserved music areas (Gloria / psalm refrain / Gospel Acclamation / Mystery of Faith), Gloria setting line, single Anthems section with per-Mass checkboxes + "Add anthem", service-music carryover from the previous week, storage-health warning banner, descriptive upload errors. 318/318 tests passing.
 
-> **Decision (June 2026): no programmatic hymn-music integration.** OneLicense has no public API, and automating it is not worth the effort. Instead the booklet **reserves a blank paste area** under each congregational hymn slot (processional, communion, thanksgiving) — a dashed guide box sized for hymn notation — and the user pastes the licensed music in by hand after export (Acrobat, or print + paste). The OneLicense *search* buttons remain as a convenience for finding the music to paste. Controlled per-aid by `reserveHymnSpace` (default on; checkbox in the Shared Music section).
+> **Decision (June 2026): no programmatic hymn-music *licensing* integration.** OneLicense has no public API. Instead each congregational hymn slot (processional, communion, thanksgiving) and each sung Mass part reserves a music area. **As of v1.6 the user can fill that area digitally**: upload the licensed notation image (TIFF straight from OneLicense works — it's converted to PNG and auto-cropped) and it prints inside the area in both the preview and the exported PDF. With no image attached, the dashed paste-guide box renders instead for hand paste-up. The OneLicense *search* buttons remain as a convenience. Controlled per-aid by `reserveHymnSpace` (default on).
 
 ---
 
@@ -190,7 +190,7 @@ exports with blank folio pages).
 - **Engine:** PDFKit (direct page construction, no headless browser).
 - **Filename convention:** `YYYY_MM_DD__Feast_Name.pdf`.
 - **Metadata:** Title, Author, Subject, CreationDate embedded in PDF info dict.
-- **Typography:** Helvetica family (PDF-native), navy/burgundy/gold color scheme.
+- **Typography:** Liberation Sans (4 weights, **vendored in `src/assets/fonts/` and embedded** — full Latin Unicode coverage; ships with the Netlify function via `included_files`, fixing the v1.5 `ENOENT Helvetica.afm` export crash on Lambda). Navy/burgundy/gold color scheme.
 - **Persistent cover branding:** Parish logo (uploaded under Settings) replaces the default cross on every cover; parish name and tagline appear above the feast name.
 
 ### 8. HTML Preview
@@ -266,10 +266,23 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 - No automated OneLicense scraping (the site is Cloudflare-protected and returns 403 to non-browser requests). Helpers keep humans in the loop.
 - **v1.4 role:** these buttons now serve the manual paste workflow — find the music on OneLicense, download/copy the notation, and paste it into the reserved hymn-space area in the exported booklet. Programmatic embedding was dropped by decision (see header note).
 
-### 15. Notation Auto-Crop
+### 15. Notation Upload Pipeline (v1.6)
 
-- Uploaded notation scans (PNG/JPG) are automatically trimmed of surrounding white space using Sharp's `.trim()` so the rendered booklet stays tight around the music.
-- SVGs and any image Sharp cannot process are passed through unchanged.
+- Accepted: PNG, JPG, **TIFF** (what OneLicense supplies), BMP, GIF, WebP, SVG.
+- Every upload is normalized at the door (`normalizeNotationImage`): EXIF rotation, white-margin trim, and conversion of non-embeddable formats to PNG — so every stored notation file displays in the browser and embeds in the PDF.
+- Rejected types and oversized files return descriptive errors (the hosted site's ~4.5 MB serverless payload cap is stated in the message; the SPA also pre-checks size client-side).
+
+#### Per-Slot Notation Images (v1.6)
+
+`data.notationImages` maps a slot name to an uploaded image URL. Slots: `processional`, `communion`, `thanksgiving` (hymn areas), `kyrie`, `gloria`, `sanctus`, `mysteryOfFaith`, `lambOfGod` (ordinary parts), `psalmRefrain`, `gospelAcclamation` (sung responses). Precedence everywhere: **uploaded image > reserved paste box > plain text**. The editor carries an *Attach notation* control on each slot (upload new, or pick an already-uploaded image); the PDF route pre-resolves the URLs to buffers (`src/notation-resolver.js`) and embeds them scaled to the content width.
+
+#### Service Music Carryover (v1.6)
+
+A new draft defaults to **carrying the service music over from the most recent draft** — settings names (Kyrie, Gloria, Holy Holy Holy, Mystery of Faith, Lamb of God), Sanctus language, penitential act, and the ordinary-part notation images. A checked "Same service music as last week" box collapses the individual fields; unchecking opens them for per-part editing. Stored per-draft as `serviceMusicCarryover`.
+
+#### Anthems (v1.6)
+
+One **Anthems** section replaces the three per-Mass dropdown blocks: an Offertory list (two rows by default) and a Choral (Communion) list, each row = title + composer + checkboxes for Sat 5 PM / Sun 9 AM / Sun 11 AM, plus an **Add anthem** button. Saved as structured `anthems.{offertory,choral}[]` AND denormalized into the per-Mass music blocks at save time so the renderers' consolidation logic (and legacy drafts) work unchanged. No library pulls — anthems, preludes, and postludes are typed in directly per the music department's request.
 
 ### 16. Creed — Three Options
 

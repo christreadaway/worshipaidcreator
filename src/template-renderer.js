@@ -109,21 +109,35 @@ function renderBookletHtml(data, options = {}) {
   // Advent Wreath: shown during Advent per worksheet
   const showAdventWreath = ss.adventWreath !== undefined ? ss.adventWreath : isAdvent;
 
-  // Processional hymn paste area — only when a processional hymn is sung,
+  // Per-slot uploaded notation images. When a slot has an image it renders
+  // INSIDE the reserved music area (no more "paste licensed notation here"
+  // with no way to do it digitally — UAT June 2026). Precedence everywhere:
+  // uploaded image > reserved paste box > plain text.
+  const ni = d.notationImages || {};
+  const notationImg = (slot, cls) => ni[slot]
+    ? `<img class="notation-image${cls ? ' ' + cls : ''}" src="${escapeHtml(ni[slot])}" alt="${escapeHtml(slot)} notation">`
+    : '';
+
+  // Hymn-sized music area for a slot: uploaded image first, then the dashed
+  // paste box when reserveHymnSpace is on.
+  const hymnSpace = (slot) => {
+    if (ni[slot]) return notationImg(slot, 'hymn');
+    return d.reserveHymnSpace !== false
+      ? '<div class="hymn-music-space">Reserved for hymn music &mdash; paste licensed notation here</div>'
+      : '';
+  };
+  // Processional hymn area — only when a processional hymn is sung,
   // not when the antiphon is chanted (antiphon has no separate music sheet).
-  const processionalHymnSpaceHtml = (d.reserveHymnSpace !== false && entranceType === 'processional')
-    ? '<div class="hymn-music-space">Reserved for hymn music &mdash; paste licensed notation here</div>'
-    : '';
-  // Communion and thanksgiving always get a paste area when reserveHymnSpace is on.
-  const hymnSpaceHtml = d.reserveHymnSpace !== false
-    ? '<div class="hymn-music-space">Reserved for hymn music &mdash; paste licensed notation here</div>'
-    : '';
-  // Small paste area for Mass ordinary music (same setting every week).
-  const ordinarySpaceHtml = d.reserveHymnSpace !== false
-    ? '<div class="ordinary-music-space">{label}</div>'
-    : '';
-  const ordSpace = (label) => d.reserveHymnSpace !== false
-    ? `<div class="ordinary-music-space">${escapeHtml(label)}</div>` : '';
+  const processionalHymnSpaceHtml = entranceType === 'processional' ? hymnSpace('processional') : '';
+
+  // Smaller music area for Mass ordinary parts / sung responses.
+  const ordSpace = (slot, label) => {
+    if (ni[slot]) return notationImg(slot, 'ordinary');
+    return d.reserveHymnSpace !== false
+      ? `<div class="ordinary-music-space">${escapeHtml(label)}</div>` : '';
+  };
+  // Does this slot show music (image or paste box) instead of spoken text?
+  const slotHasMusic = (slot) => !!ni[slot] || d.reserveHymnSpace !== false;
 
   // Overflow detection
   const overflows = detectOverflows(d);
@@ -302,6 +316,16 @@ function renderBookletHtml(data, options = {}) {
     font-size: 6.5pt;
     font-style: italic;
   }
+  /* Uploaded notation images — fill the reserved music area. */
+  .notation-image {
+    display: block;
+    width: 100%;
+    object-fit: contain;
+    object-position: left top;
+    margin: 3pt 0;
+  }
+  .notation-image.hymn     { max-height: ${geom.hymnSpace}; }
+  .notation-image.ordinary { max-height: 1.4in; }
   /* Two-column layout for the Creed */
   .creed-text.two-column {
     columns: 2;
@@ -511,11 +535,14 @@ function renderBookletHtml(data, options = {}) {
 
   <div class="sub-heading">Lord, Have Mercy</div>
   ${renderMusicSection(d, 'kyrieSetting', 'kyrieComposer', 'Kyrie')}
-  ${ordSpace('Kyrie — music notation')}
+  ${ordSpace('kyrie', 'Kyrie — music notation')}
 
   ${showGloria ? `
   <div class="sub-heading">Gloria</div>
-  <p class="prayer-text">Glory to God in the highest, and on earth peace to people of good will.</p>
+  ${ss.gloriaSetting ? `<p class="music-entry"><em>${escapeHtml(ss.gloriaSetting)}</em></p>` : ''}
+  ${slotHasMusic('gloria')
+    ? ordSpace('gloria', 'Gloria — music notation')
+    : '<p class="prayer-text">Glory to God in the highest, and on earth peace to people of good will.</p>'}
   ` : ''}
 
   ${d.childrenLiturgyEnabled ? (() => {
@@ -551,7 +578,9 @@ function renderBookletHtml(data, options = {}) {
   <div class="sub-heading">Responsorial Psalm</div>
   <p class="citation">${escapeHtml(r.psalmCitation)}</p>
   ${renderMusicSection(d, 'responsorialPsalmSetting', 'responsorialPsalmSettingComposer', 'Setting')}
-  ${r.psalmRefrain ? `<p class="psalm-refrain">R. ${escapeHtml(r.psalmRefrain)}</p>` : ''}
+  ${slotHasMusic('psalmRefrain')
+    ? ordSpace('psalmRefrain', 'Responsorial Psalm refrain — music notation')
+    : (r.psalmRefrain ? `<p class="psalm-refrain">R. ${escapeHtml(r.psalmRefrain)}</p>` : '')}
   ${r.psalmVerses ? r.psalmVerses.split('\n\n').map(v => `<p class="psalm-verse">${nl2br(v)}</p>`).join('') : ''}
 
   ${!r.noSecondReading && r.secondReadingCitation ? `
@@ -563,7 +592,9 @@ function renderBookletHtml(data, options = {}) {
   ${RP + RUBRICS.stand + "</p>"}
 
   <div class="sub-heading">Gospel Acclamation</div>
-  <p class="psalm-refrain">${escapeHtml(acclamationText)}</p>
+  ${slotHasMusic('gospelAcclamation')
+    ? ordSpace('gospelAcclamation', 'Gospel Acclamation — music notation')
+    : `<p class="psalm-refrain">${escapeHtml(acclamationText)}</p>`}
   ${r.gospelAcclamationReference ? `<p class="citation">${escapeHtml(r.gospelAcclamationReference)}</p>` : ''}
   ${r.gospelAcclamationVerse ? `<p style="font-size:9pt;font-style:italic;margin:2pt 0;">${nl2br(r.gospelAcclamationVerse)}</p>` : ''}
 
@@ -615,13 +646,15 @@ function renderBookletHtml(data, options = {}) {
 
   <div class="sub-heading">${escapeHtml(holyHolyHeading)}</div>
   <p class="music-entry"><em>${escapeHtml(ss.holyHolySetting || 'Mass of St. Theresa')}</em></p>
-  <div class="prayer-text">${nl2br(holyHolyText)}</div>
-  ${ordSpace('Holy, Holy, Holy — music notation')}
+  ${slotHasMusic('sanctus')
+    ? ordSpace('sanctus', 'Holy, Holy, Holy — music notation')
+    : `<div class="prayer-text">${nl2br(holyHolyText)}</div>`}
 
   ${RP + RUBRICS.kneel + "</p>"}
 
   <div class="sub-heading">Mystery of Faith</div>
   <p class="music-entry"><em>${escapeHtml(ss.mysteryOfFaithSetting || 'Mass of St. Theresa')}</em></p>
+  ${ordSpace('mysteryOfFaith', 'Mystery of Faith — music notation')}
 
   <div class="sub-heading">Great Amen</div>
 
@@ -640,13 +673,13 @@ function renderBookletHtml(data, options = {}) {
 
   <div class="sub-heading">Lamb of God</div>
   <p class="music-entry"><em>${escapeHtml(ss.lambOfGodSetting || 'Mass of St. Theresa')}</em></p>
-  ${ordSpace('Lamb of God — music notation')}
+  ${ordSpace('lambOfGod', 'Lamb of God — music notation')}
 
   ${RP + RUBRICS.kneel + "</p>"}
 
   <div class="sub-heading">Communion Hymn</div>
   ${renderMusicSection(d, 'communionHymn', 'communionHymnComposer', 'Communion')}
-  ${hymnSpaceHtml}
+  ${hymnSpace('communion')}
 
   <div class="sub-heading">Choral Anthem</div>
   ${renderMusicSection(d, 'choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem')}
@@ -660,7 +693,7 @@ function renderBookletHtml(data, options = {}) {
 
   <div class="sub-heading">Hymn of Thanksgiving</div>
   ${renderMusicSection(d, 'hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving')}
-  ${hymnSpaceHtml}
+  ${hymnSpace('thanksgiving')}
 
   ${RP + RUBRICS.stand + "</p>"}
 

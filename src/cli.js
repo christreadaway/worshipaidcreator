@@ -99,10 +99,17 @@ async function main() {
   const filename = buildFilename(data);
   const pdfPath = path.join(outputDir, filename);
 
-  const settings = store.loadSettings();
+  // loadSettings is async — without await the renderers would silently see
+  // a Promise and fall back to default parish settings.
+  const settings = await store.loadSettings();
 
   console.log('Generating PDF...');
-  const result = await generatePdf(data, pdfPath, { parishSettings: settings });
+  const { resolveNotationImages } = require('./notation-resolver');
+  const notation = await resolveNotationImages(data);
+  if (notation.missing.length) {
+    console.warn('Notation images missing for: ' + notation.missing.join(', '));
+  }
+  const result = await generatePdf(data, pdfPath, { parishSettings: settings, notationImages: notation.images });
   console.log(`PDF created: ${result.outputPath}`);
 
   if (generateHtml) {

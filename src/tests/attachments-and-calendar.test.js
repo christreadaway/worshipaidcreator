@@ -262,10 +262,14 @@ describe('Attachments CRUD', () => {
 });
 
 describe('Sanctus language toggle', () => {
+  // reserveHymnSpace:false so the congregational Sanctus text prints — with
+  // a reserved music area (the new default) the text is replaced by the
+  // notation box and the toggle only affects the heading.
   const baseData = {
     feastName: 'Test', liturgicalDate: '2026-04-05', liturgicalSeason: 'easter',
     seasonalSettings: { holyHolySetting: 'Mass of St. Theresa' },
-    readings: {}
+    readings: {},
+    reserveHymnSpace: false
   };
 
   it('renders English Sanctus by default', () => {
@@ -343,20 +347,49 @@ describe('Music section restructure: shared everything except anthems', () => {
     assert.ok(html.includes('Shared Music (same at every Mass)'));
   });
 
-  it('per-Mass music blocks contain ONLY offertory + choral anthems', async () => {
+  it('anthems live in a single section with per-Mass checkboxes (no per-Mass blocks)', async () => {
     const html = (await fetch('/')).text();
-    // The two slots that may differ per Mass:
-    assert.ok(/id="sat5pm_offertory"/.test(html));
-    assert.ok(/id="sat5pm_choral"/.test(html));
-    assert.ok(/id="sun9am_offertory"/.test(html));
-    assert.ok(/id="sun11am_choral"/.test(html));
-    // Everything else has been moved to Shared Music.
-    assert.ok(!/id="sat5pm_organPrelude"/.test(html), 'no per-Mass prelude');
-    assert.ok(!/id="sat5pm_kyrie"/.test(html),        'no per-Mass kyrie');
-    assert.ok(!/id="sat5pm_postlude"/.test(html),     'no per-Mass postlude');
-    assert.ok(!/id="sat5pm_processional"/.test(html), 'no per-Mass processional hymn');
-    assert.ok(!/id="sun9am_communion"/.test(html),    'no per-Mass communion hymn');
-    assert.ok(!/id="sun11am_thanksgiving"/.test(html),'no per-Mass thanksgiving hymn');
+    // One Anthems section with one Offertory list + one Choral list, each
+    // anthem tagged with Mass checkboxes (UAT June 2026).
+    assert.ok(/id="section-anthems"/.test(html));
+    assert.ok(/id="offertoryAnthemRows"/.test(html));
+    assert.ok(/id="choralAnthemRows"/.test(html));
+    assert.ok(html.includes('Add anthem'));
+    // The old three per-Mass dropdown sections are gone.
+    assert.ok(!/id="section-music-sat5pm"/.test(html), 'no per-Mass section');
+    assert.ok(!/id="sat5pm_offertory"/.test(html),     'no per-Mass offertory input');
+    assert.ok(!/id="sun11am_choral"/.test(html),       'no per-Mass choral input');
+    assert.ok(!/id="sat5pm_organPrelude"/.test(html),  'no per-Mass prelude');
+    assert.ok(!/id="sat5pm_kyrie"/.test(html),         'no per-Mass kyrie');
+  });
+
+  it('prelude/postlude/anthems are typed in directly — no library pulls', async () => {
+    const html = (await fetch('/')).text();
+    // UAT: "No need to pull from a library; easier to just type in the
+    // title, composer". Only the psalm setting keeps its library pick.
+    assert.ok(!/id="shared_organPrelude_attachmentSelect"/.test(html), 'no prelude library pull');
+    assert.ok(!/id="shared_postlude_attachmentSelect"/.test(html), 'no postlude library pull');
+    assert.ok(!/sat5pm_offertory_attachmentSelect/.test(html), 'no anthem library pull');
+    assert.ok(/id="shared_responsorialPsalm_attachmentSelect"/.test(html), 'psalm keeps its pick');
+  });
+
+  it('service music section carries the carryover toggle, Kyrie and Gloria setting', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(/id="serviceMusicCarryover"/.test(html));
+    assert.ok(/id="serviceMusicFields"/.test(html));
+    assert.ok(/id="shared_kyrie"/.test(html));
+    assert.ok(/id="gloriaSetting"/.test(html));
+    assert.ok(html.includes('Service Music'));
+  });
+
+  it('notation attach controls exist for hymns and ordinary parts', async () => {
+    const html = (await fetch('/')).text();
+    for (const slot of ['processional', 'communion', 'thanksgiving', 'psalmRefrain',
+                        'kyrie', 'gloria', 'sanctus', 'mysteryOfFaith', 'lambOfGod', 'gospelAcclamation']) {
+      assert.ok(html.includes(`id="nctl_${slot}"`), `notation control for ${slot}`);
+    }
+    // TIFFs are explicitly accepted in the pickers.
+    assert.ok(/accept="image\/\*,\.tif,\.tiff"/.test(html));
   });
 
   it('hymn-search typeahead is wired to shared hymn fields (not the organ/kyrie inputs)', async () => {

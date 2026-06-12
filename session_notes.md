@@ -1134,3 +1134,118 @@ page after every section (a "16-page" export is now 8). Layout tests assert
 - Beta passwordless login (same as before).
 - `reserveHymnSpace` checkbox in editor still controls all paste areas
   (hymn + ordinary).
+
+---
+
+## Session 9 (June 12, 2026) — v1.6: June 12 UAT Fix Pass
+
+**Branch:** `claude/jolly-newton-tzp0aj`
+**Input:** `26.6.12 WA Generator Notes.docx` (music department UAT, follow-up
+to the June 9 notes)
+**Tests:** 318/318 passing (was 298 at start; 15 new in `uat-fixes.test.js`,
+5 net new/updated elsewhere)
+
+### Root cause found: Netlify Blobs was never connected
+
+Every "other issue" in the UAT traced to one production bug: under the
+Lambda-compatibility function signature, `@netlify/blobs`' `getStore()`
+throws unless the per-request context is wired up with `connectLambda(event)`
+— which the handler never did. Every request silently fell back to
+**per-instance in-memory storage**, so:
+
+- **"Your session expired — please log in again" loops** — seed users get
+  random UUIDs per instance, and tokens embed the user id; a request routed
+  to a different Lambda instance couldn't find the token's user → 401. Worst
+  during parallel uploads (extra instances spin up).
+- **"After re-login the upload list showed only the newest file"** — each
+  instance had its own in-memory attachments list.
+- **"Saved settings never showed up in Preview / new drafts blank"** —
+  settings saved to one instance's memory, read from another's.
+- **Export PDF "Error: Not authenticated"** — same cross-instance 401.
+
+**Fixes:**
+1. `netlify/functions/api.js` calls `kv.connectBlobsFromLambdaEvent(event)`
+   on every request (new kv.js helper; resets the availability cache when a
+   context appears). Explicit `NETLIFY_BLOBS_SITE_ID` / `NETLIFY_BLOBS_TOKEN`
+   env-var config supported as a fallback.
+2. Blobs availability check now retries every 30 s after a failure instead
+   of stranding the instance in memory mode forever.
+3. **Seed users use deterministic ids (= username)** so tokens survive any
+   future re-seed.
+4. **Storage-health banner** in the SPA: after login it checks `/api/health`
+   and shows a red warning bar when persistence is `in-memory`, so silent
+   data loss can never masquerade as user error again.
+5. `SESSION_SECRET` documented in `.env.example` (set it in Netlify env).
+
+### Export PDF crash: `ENOENT .../data/Helvetica.afm`
+
+`new PDFDocument()` loads built-in Helvetica's `.afm` metrics by default, and
+the v1.5 Liberation fonts pointed at `/usr/share/fonts/...` which doesn't
+exist on Lambda. Fixed by **vendoring Liberation Sans (4 weights, SIL OFL +
+license file) into `src/assets/fonts/`**, resolving the font dir across
+local/Lambda/system layouts, passing `font: null` to the PDFDocument
+constructor (Helvetica metrics never load), and adding
+`src/assets/fonts/**` + pdfkit's `.afm` files to `included_files` in
+`netlify.toml`. `/api/sample` got the same path-candidates treatment.
+
+### UAT items shipped
+
+1. **TIFFs accepted everywhere** (notation, attachments; `accept` attrs +
+   multer filters) and **converted to PNG** at upload (sharp; EXIF rotate +
+   white-margin crop). Rejected types/oversize now return descriptive
+   errors; the SPA pre-checks the hosted ~4.5 MB serverless payload cap.
+2. **Uploaded music now actually prints.** New per-slot notation images
+   (`data.notationImages`): every hymn area and ordinary part has an
+   *Attach notation* control (upload new or pick an uploaded image). The
+   image renders inside the reserved area in the HTML preview and is
+   embedded in the PDF (`src/notation-resolver.js` + dimension-aware
+   scaling). Precedence: image > paste box > text.
+3. **Reserved spaces added** for Gloria, Responsorial Psalm refrain, Gospel
+   Acclamation, and Mystery of Faith; when a music area is shown, the sung
+   text (Gloria first line, refrain text, acclamation, Sanctus text) is
+   replaced by the music — exactly the "providing text instead of music
+   file" complaint. `reserveHymnSpace: false` restores the text behavior.
+4. **Gloria setting line** — new `seasonalSettings.gloriaSetting` prints
+   under the Gloria heading (both renderers; editor input included).
+5. **Kyrie moved into "Service Music & Seasonal Settings"** (same
+   `shared_kyrie` field, so saved drafts are unaffected).
+6. **Service-music carryover**: new drafts default to "Same service music
+   as last week" — checked = full carryover from the most recent draft
+   (settings names, Sanctus language, penitential act, ordinary-part
+   notation images) with fields collapsed; unchecked = per-part editing.
+7. **Anthems restructured**: one section, Offertory list (2 rows default) +
+   Choral (Communion) list, each anthem = title + composer + per-Mass
+   checkboxes + "Add anthem". Stored as `anthems.{offertory,choral}[]` and
+   denormalized into the per-Mass blocks for renderer/legacy compatibility.
+8. **No more library pulls** on organ prelude, postlude, or anthems — typed
+   in directly. (Psalm setting keeps its library pick + OneLicense-by-refrain
+   search.)
+9. **Settings saves surface failures** — `saveAdminSettings` (and draft
+   save, export, attachment delete) check the response, handle 401 with a
+   clear "session expired" message + login redirect, and sync
+   `_parishSettings` from the server's merged response.
+10. **Library page** copy + accept list now lead with images (PNG/JPG/TIFF).
+
+### Files added
+- `src/notation-resolver.js`, `src/assets/fonts/` (Liberation Sans + LICENSE),
+  `src/tests/uat-fixes.test.js`
+
+### Files modified
+- `netlify/functions/api.js`, `netlify.toml`, `.env.example`
+- `src/store/kv.js`, `src/store/user-store.js`
+- `src/image-utils.js` (normalizeNotationImage, getImageDimensions)
+- `src/pdf-generator.js`, `src/template-renderer.js`, `src/schema.js`
+- `src/server.js` (routes + SPA)
+- `src/tests/attachments-and-calendar.test.js`,
+  `src/tests/template-renderer.test.js` (updated to the new
+  music-replaces-text contract)
+- `product_spec.md` (v1.6)
+
+### Deploy checklist for this release
+- [ ] Set `SESSION_SECRET` in Netlify environment variables.
+- [ ] After deploy, open `/api/health` — `persistence` must be
+      `netlify-blobs`. If it says `in-memory`, set
+      `NETLIFY_BLOBS_SITE_ID` + `NETLIFY_BLOBS_TOKEN` env vars.
+- [ ] Export a PDF from the deployed site (verifies fonts shipped).
+- [ ] Upload a TIFF in the Library (verifies sharp native module bundled
+      correctly; if conversion fails the error message will say so).
