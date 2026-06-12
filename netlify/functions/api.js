@@ -5,7 +5,25 @@ const app = require('../../src/server');
 const userStore = require('../../src/store/user-store');
 const kv = require('../../src/store/kv');
 
-const handler = serverless(app);
+// Content types that MUST be base64-encoded through the Lambda response.
+// serverless-http's default binary list is EMPTY — without this, PDF
+// exports and served images were stringified as UTF-8 (every byte >= 0x80
+// became EF BF BD), which is why exported booklets opened as blank pages
+// and uploaded notation images came back broken.
+const BINARY_TYPES = [
+  'application/pdf',
+  'image/*',
+  'audio/*',
+  'video/*',
+  'font/*',
+  'application/octet-stream',
+  'application/zip',
+  'application/msword',
+  'application/rtf',
+  'application/vnd.*'
+];
+
+const handler = serverless(app, { binary: BINARY_TYPES });
 let _seededInHandler = false;
 
 // Seed users INSIDE the handler context — Netlify Blobs requires the

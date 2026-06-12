@@ -274,7 +274,9 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 
 #### Per-Slot Notation Images (v1.6)
 
-`data.notationImages` maps a slot name to an uploaded image URL. Slots: `processional`, `communion`, `thanksgiving` (hymn areas), `kyrie`, `gloria`, `sanctus`, `mysteryOfFaith`, `lambOfGod` (ordinary parts), `psalmRefrain`, `gospelAcclamation` (sung responses). Precedence everywhere: **uploaded image > reserved paste box > plain text**. The editor carries an *Attach notation* control on each slot (upload new, or pick an already-uploaded image); the PDF route pre-resolves the URLs to buffers (`src/notation-resolver.js`) and embeds them scaled to the content width.
+`data.notationImages` maps a slot name to an uploaded image URL. Slots: `processional`, `communion`, `thanksgiving` (hymn areas), `kyrie`, `gloria`, `sanctus`, `mysteryOfFaith`, `lambOfGod` (ordinary parts), `psalmRefrain`, `gospelAcclamation` (sung responses). Precedence everywhere: **uploaded image > reserved paste box > plain text**. Three ways to fill a slot (v1.6.1): the per-slot *Attach notation* control; the **Notation Images list**, where every uploaded image carries a "Print in:" dropdown (upload everything, then assign — matches the music department's batch workflow); or the per-slot picker's **Library** group (image attachments, kind-matched first). The PDF route pre-resolves the URLs — notation uploads *or* library attachments — to buffers (`src/notation-resolver.js`) and embeds them scaled to the content width.
+
+> **Serverless binary responses (v1.6.1):** `serverless-http` must be configured with an explicit `binary` content-type list (`netlify/functions/api.js`). Its default list is empty, which UTF-8-mangled every PDF and image response on Netlify — exported booklets opened as blank pages even though the PDF content was correct. Any new binary content type served by the API must be added to that list.
 
 #### Service Music Carryover (v1.6)
 
