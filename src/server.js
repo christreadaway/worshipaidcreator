@@ -1037,6 +1037,30 @@ app.post('/api/drafts/:id/request-changes', requireAuth, requirePermission('appr
   res.json(draft);
 });
 
+// Manually mark a draft as the week's FINAL (overrides which export is the
+// version of record — e.g. when the truly-printed file came from elsewhere).
+// Open to any signed-in user by design.
+app.post('/api/drafts/:id/mark-final', requireAuth, async (req, res) => {
+  const draft = await store.loadDraft(req.params.id);
+  if (!draft) return res.status(404).json({ error: 'Draft not found' });
+  if (!draft.liturgicalDate || !kv.isSafeKey(draft.liturgicalDate)) {
+    return res.status(400).json({ error: 'Draft needs a liturgical date before it can be FINAL' });
+  }
+  await kv.set('export-log', draft.liturgicalDate, {
+    liturgicalDate: draft.liturgicalDate,
+    feastName: draft.feastName || '',
+    liturgicalSeason: draft.liturgicalSeason || '',
+    exportedAt: new Date().toISOString(),
+    exportedBy: req.user.displayName,
+    manual: true,
+    draftId: draft.id,
+    musicSat5pm: draft.musicSat5pm || {},
+    musicSun9am: draft.musicSun9am || {},
+    musicSun11am: draft.musicSun11am || {}
+  });
+  res.json({ success: true, draftId: draft.id, liturgicalDate: draft.liturgicalDate });
+});
+
 // --- STATS ---
 // Hymn-usage frequency across all saved drafts. Open to all roles — no auth gate.
 const HYMN_FIELDS = [
@@ -3724,6 +3748,7 @@ async function loadHistory() {
           '</div>' +
           '<div class="actions">' +
             approvalBtns +
+            (!d.isFinal && d.liturgicalDate ? '<button class="btn btn-outline btn-sm" style="border-color:var(--gold);color:#7a5f1a;" title="Make this the week\\u2019s version of record (stats follow it)" onclick="markDraftFinal(\\'' + d.id + '\\')">Mark FINAL</button>' : '') +
             '<button class="btn btn-outline btn-sm" onclick="openDraft(\\'' + d.id + '\\')">Open</button>' +
             '<button class="btn btn-outline btn-sm" onclick="dupDraft(\\'' + d.id + '\\')">Duplicate</button>' +
             '<button class="btn btn-danger btn-sm" onclick="delDraft(\\'' + d.id + '\\')">Delete</button>' +
@@ -3779,6 +3804,18 @@ async function loadStats() {
   } catch (e) {
     list.innerHTML = '<p style="color:var(--error);">Error loading stats: ' + esc(e.message) + '</p>';
   }
+}
+
+async function markDraftFinal(id) {
+  if (!confirm('Make this the FINAL version of record for its week? The current FINAL (if any) becomes a superseded draft, and hymn stats will count this version.')) return;
+  try {
+    const res = await fetch('/api/drafts/' + id + '/mark-final', { method: 'POST', headers: { 'x-session-token': _sessionToken } });
+    if (handle401(res)) return;
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Could not mark as FINAL', 'error'); return; }
+    toast('Marked as the week\\u2019s FINAL', 'success');
+    loadHistory();
+  } catch (e) { toast('Could not mark as FINAL: ' + e.message, 'error'); }
 }
 
 async function openDraft(id) {

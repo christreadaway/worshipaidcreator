@@ -1527,3 +1527,10 @@ Landed after the documentation agent ran — all tested, 345/345 passing:
 **Handoff state: branch `claude/jolly-newton-tzp0aj`, all of the above
 committed and pushed as v1.7; 345/345 tests; merge the PR and deploy.
 No new env vars needed.**
+
+### Session 10 addendum 2: manual FINAL override
+`POST /api/drafts/:id/mark-final` (any signed-in user) writes the week's
+`export-log` record (`manual: true`, `draftId`) so the chosen History
+version becomes the FINAL of record — the previous FINAL reverts to a
+superseded draft and hymn stats follow the override. History rows show a
+gold-outlined "Mark FINAL" button on non-final entries (confirm dialog).

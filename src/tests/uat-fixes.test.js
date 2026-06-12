@@ -546,3 +546,45 @@ describe('spread bridging + final flags + library promote (v1.7)', () => {
     }
   });
 });
+
+describe('manual FINAL override (any user)', () => {
+  it('mark-final moves the FINAL flag between versions of the same week', async () => {
+    const date = '2031-04-06';
+    const mk = async (feast) => (await fetch('/api/drafts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': adminToken },
+      body: JSON.stringify({ ...sample, id: undefined, liturgicalDate: date, feastName: feast })
+    })).json();
+    const a = await mk('Week A v1');
+    const b = await mk('Week A v2');
+    try {
+      // A pastor (no special perms beyond login) can mark final.
+      const pastorLogin = await fetch('/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'frlarry' })
+      });
+      const pastorToken = pastorLogin.json().token;
+      const res = await fetch('/api/drafts/' + a.id + '/mark-final', {
+        method: 'POST', headers: { 'x-session-token': pastorToken }
+      });
+      assert.equal(res.status, 200);
+      let drafts = (await fetch('/api/drafts', { headers: { 'x-session-token': adminToken } })).json();
+      assert.ok(drafts.find(d => d.id === a.id).isFinal, 'A is FINAL');
+      assert.ok(!drafts.find(d => d.id === b.id).isFinal, 'B is not');
+      // Re-marking B steals the flag.
+      await fetch('/api/drafts/' + b.id + '/mark-final', { method: 'POST', headers: { 'x-session-token': adminToken } });
+      drafts = (await fetch('/api/drafts', { headers: { 'x-session-token': adminToken } })).json();
+      assert.ok(drafts.find(d => d.id === b.id).isFinal, 'B is FINAL after override');
+      assert.ok(!drafts.find(d => d.id === a.id).isFinal, 'A superseded');
+    } finally {
+      for (const id of [a.id, b.id]) {
+        await fetch('/api/drafts/' + id, { method: 'DELETE', headers: { 'x-session-token': adminToken } });
+      }
+    }
+  });
+
+  it('history page exposes the Mark FINAL action', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(html.includes('markDraftFinal'));
+    assert.ok(html.includes('Mark FINAL'));
+  });
+});
