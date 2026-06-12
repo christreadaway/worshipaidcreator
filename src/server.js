@@ -14,7 +14,7 @@ const store = require('./store/file-store');
 const userStore = require('./store/user-store');
 const { fetchReadings, TRANSLATIONS } = require('./readings-fetcher');
 const { normalizeNotationImage, CONVERTIBLE_EXTS } = require('./image-utils');
-const { resolveNotationImages } = require('./notation-resolver');
+const { resolveNotationImages, findMissingNotationSlots } = require('./notation-resolver');
 const hymnLibrary = require('./store/hymn-library');
 const attachmentsStore = require('./store/attachments');
 const { getLiturgicalInfo } = require('./liturgical-calendar');
@@ -599,11 +599,23 @@ app.post('/api/validate', (req, res) => {
 app.post('/api/preview', async (req, res) => {
   const settings = await store.loadSettings();
   const bookletSize = req.body.bookletSize || req.query.bookletSize || 'tabloid';
-  const { html, warnings, pageWidth, pageHeight } = renderBookletHtml(req.body, {
+  const data = { ...req.body };
+  // A slot pointing at a deleted/never-persisted notation file would emit a
+  // dead <img> — which the sandboxed preview iframe renders as an invisible
+  // blank gap. Strip those references so the renderer falls back to the
+  // paste box, exactly like the PDF path does, and say so in the warnings.
+  const missingSlots = await findMissingNotationSlots(data);
+  if (missingSlots.length) {
+    data.notationImages = { ...data.notationImages };
+    missingSlots.forEach(slot => delete data.notationImages[slot]);
+  }
+  const { html, warnings, pageWidth, pageHeight } = renderBookletHtml(data, {
     parishSettings: settings,
     bookletSize
   });
-  const overflows = detectOverflows(req.body);
+  missingSlots.forEach(slot => warnings.push(
+    `The notation image attached to "${slot}" no longer exists on the server — showing the blank paste area instead. Re-upload and re-attach it.`));
+  const overflows = detectOverflows(data);
   res.json({ html, warnings, overflows, bookletSize, pageWidth, pageHeight });
 });
 
@@ -681,7 +693,13 @@ app.post('/api/upload/notation', requireAuth, requirePermission('upload_images')
 
   let processed;
   try {
-    processed = await normalizeNotationImage(req.file.buffer, ext);
+    // stripTitle defaults ON: licensed notation usually arrives with a
+    // title/composer header the parish was cropping out by hand. The
+    // detector is conservative (clear staff + clear gap + real header
+    // content, max 50% removed) and the editor checkbox can turn it off.
+    processed = await normalizeNotationImage(req.file.buffer, ext, {
+      stripTitle: req.body.stripTitle !== '0'
+    });
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }
@@ -697,7 +715,8 @@ app.post('/api/upload/notation', requireAuth, requirePermission('upload_images')
     filename,
     url: kv.IS_NETLIFY ? `/api/uploads/notation/${filename}` : `/uploads/notation/${filename}`,
     originalName: req.file.originalname,
-    converted: processed.converted
+    converted: processed.converted,
+    titleCropped: !!processed.titleCropped
   });
 });
 
@@ -1379,6 +1398,10 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
       <div class="form-section-hdr" onclick="toggle(this)">Notation Images <button type="button" class="btn btn-outline btn-sm" style="float:right;margin-right:8px;" onclick="event.stopPropagation(); loadNotationList(); toast('Refreshing notation images…', 'success')">Refresh</button> <span>&#9660;</span></div>
       <div class="form-section-body">
         <p style="font-size:11px;color:var(--gray);margin-bottom:8px;">All uploaded notation images (PNG, JPG, TIFF — TIFFs convert to PNG automatically, white margins are trimmed). Use the <em>Print in</em> dropdown on each image below to choose where it prints in the booklet, or use the <em>Attach notation</em> buttons in Service Music and Shared Music. Note: after a page reload, uploads can take a moment to appear in this list (hit Refresh) — newly uploaded files always show immediately.</p>
+        <div class="fg-check">
+          <input type="checkbox" id="stripTitleHeaders" checked>
+          <label for="stripTitleHeaders">Remove title headers automatically — keep just the notation &amp; lyrics <span style="color:var(--gray);">(only crops when a clear title block sits above the first staff; uncheck if an upload loses too much)</span></label>
+        </div>
         <div class="upload-area" onclick="document.getElementById('notationFileInput').click()">
           <input type="file" id="notationFileInput" accept="image/*,.tif,.tiff" onchange="uploadNotation(this)">
           <p style="font-size:11px;color:var(--gray);">Click to upload a notation image (PNG, JPG, TIFF, BMP, WebP, SVG)</p>
@@ -2878,6 +2901,7 @@ async function uploadNotationForSlot(slot, input) {
   if (uploadTooLarge(file)) { input.value = ''; return; }
   const fd = new FormData();
   fd.append('image', file);
+  fd.append('stripTitle', ch('stripTitleHeaders') ? '1' : '0');
   toast('Uploading ' + file.name + '…', 'success');
   try {
     const res = await fetch('/api/upload/notation', { method: 'POST', headers: { 'x-session-token': _sessionToken }, body: fd });
@@ -2890,7 +2914,9 @@ async function uploadNotationForSlot(slot, input) {
     attachNotation(slot, data.url);
     renderNotationList();
     refreshNotationPicks();
-    toast((data.converted ? 'Converted to PNG and attached' : 'Notation attached'), 'success');
+    let msg = data.converted ? 'Converted to PNG and attached' : 'Notation attached';
+    if (data.titleCropped) msg += ' — title header removed';
+    toast(msg, 'success');
   } catch (e) {
     toast('Upload error: ' + e.message, 'error');
   } finally {
@@ -3044,6 +3070,7 @@ async function uploadNotation(input) {
   }
   const formData = new FormData();
   formData.append('image', input.files[0]);
+  formData.append('stripTitle', ch('stripTitleHeaders') ? '1' : '0');
   try {
     const res = await fetch('/api/upload/notation', {
       method: 'POST', headers: { 'x-session-token': _sessionToken }, body: formData
@@ -3057,7 +3084,7 @@ async function uploadNotation(input) {
     }
     const data = await res.json();
     if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
-    toast('Image uploaded' + (data.converted ? ' (converted to PNG)' : '') + ': ' + data.originalName, 'success');
+    toast('Image uploaded' + (data.converted ? ' (converted to PNG)' : '') + (data.titleCropped ? ' — title header removed' : '') + ': ' + data.originalName, 'success');
     // Cache the new file immediately — the server list is eventually
     // consistent and may not include it yet.
     addNotationFile(data.filename || data.originalName, data.url);
@@ -3221,10 +3248,14 @@ async function generatePreview() {
       iframe.style.height = (iframe.contentDocument.body.scrollHeight + 16) + 'px';
     };
 
-    // Show overflow warnings
+    // Show overflow warnings AND renderer warnings (e.g. a notation image
+    // that no longer exists on the server) — a count in the status bar is
+    // too easy to miss.
     const warnEl = document.getElementById('overflow-warnings');
     warnEl.innerHTML = (result.overflows || []).map(o =>
-      '<div class="overflow-indicator">' + o.message + '</div>'
+      '<div class="overflow-indicator">' + esc(o.message) + '</div>'
+    ).join('') + (result.warnings || []).map(w =>
+      '<div class="overflow-indicator">' + esc(w) + '</div>'
     ).join('');
 
     setStatus('Preview generated', result.warnings.length ? result.warnings.length + ' warning(s)' : '');
