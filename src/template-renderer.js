@@ -136,7 +136,7 @@ function renderBookletHtml(data, options = {}) {
 
   // Smaller music area for Mass ordinary parts / sung responses.
   const ordSpace = (slot, label) => {
-    if (ni[slot]) return notationImg(slot, 'ordinary');
+    if (ni[slot]) return notationImg(slot, slot === 'psalmRefrain' ? 'ordinary w5' : 'ordinary');
     return d.reserveHymnSpace !== false
       ? `<div class="ordinary-music-space">${escapeHtml(label)}</div>` : '';
   };
@@ -320,18 +320,20 @@ function renderBookletHtml(data, options = {}) {
     font-size: 6.5pt;
     font-style: italic;
   }
-  /* Uploaded notation images — scale to the full content width keeping
-     their proportions; when the height cap forces a shrink, the image is
-     centered instead of pinned to the left margin. */
+  /* Uploaded notation images — parish spec: service music prints 6in wide,
+     hymns and the responsorial psalm refrain 5in wide, all centered.
+     (Inches are exact on the 8.5in tabloid trim; smaller trims clamp to
+     the content width.) */
   .notation-image {
     display: block;
-    width: 100%;
+    max-width: 100%;
     object-fit: contain;
     object-position: center top;
-    margin: 3pt 0;
+    margin: 3pt auto;
   }
-  .notation-image.hymn     { max-height: ${geom.hymnSpace}; }
-  .notation-image.ordinary { max-height: ${geom.ordinaryImageMax}; }
+  .notation-image.hymn     { width: 5in; max-height: ${geom.hymnSpace}; }
+  .notation-image.ordinary { width: 6in; max-height: ${geom.ordinaryImageMax}; }
+  .notation-image.w5       { width: 5in; }
   /* Two-column layout for the Creed */
   .creed-text.two-column {
     columns: 2;

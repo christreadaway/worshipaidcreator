@@ -420,6 +420,49 @@ app.post('/api/attachments', requireAuth, requirePermission('manage_attachments'
   res.json(meta);
 });
 
+// Promote an uploaded notation image into the reusable Library (custom
+// music, staff/clergy compositions). Copies the stored bytes into the
+// attachments store with proper metadata; the original upload stays.
+app.post('/api/attachments/from-notation', requireAuth, requirePermission('manage_attachments'), async (req, res) => {
+  const src = String((req.body && req.body.filename) || '');
+  if (src !== path.basename(src) || !kv.isSafeKey(src)) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+  let buffer = null;
+  let mime = guessMime(src);
+  if (kv.IS_NETLIFY) {
+    const item = await kv.get('uploads-notation', src);
+    if (item && item.data) { buffer = Buffer.from(item.data, 'base64'); mime = item.mime || mime; }
+  } else {
+    const filePath = path.join(NOTATION_DIR, src);
+    if (fs.existsSync(filePath)) buffer = fs.readFileSync(filePath);
+  }
+  if (!buffer) return res.status(404).json({ error: 'Notation file not found' });
+
+  const ext = path.extname(src) || '.png';
+  const filename = `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+  if (kv.IS_NETLIFY) {
+    await kv.set(attachmentsStore.BLOB_NS, filename, { data: buffer.toString('base64'), mime });
+  } else {
+    fs.writeFileSync(path.join(ATTACHMENTS_DIR, filename), buffer);
+  }
+  const meta = await attachmentsStore.saveAttachmentMeta({
+    filename,
+    originalName: src,
+    title: String(req.body.title || '').trim() || src.replace(/\.[^.]+$/, ''),
+    composer: String(req.body.composer || '').trim(),
+    kind: String(req.body.kind || 'general'),
+    tags: [],
+    notes: 'Saved from uploaded notation',
+    mime,
+    size: buffer.length,
+    url: kv.IS_NETLIFY ? `/api/uploads/attachments/${filename}` : `/uploads/attachments/${filename}`,
+    uploadedBy: req.user.displayName,
+    uploadedAt: new Date().toISOString()
+  });
+  res.json(meta);
+});
+
 app.put('/api/attachments/:id', requireAuth, requirePermission('manage_attachments'), async (req, res) => {
   const patch = {};
   ['title', 'composer', 'kind', 'notes'].forEach(k => {
@@ -653,13 +696,44 @@ app.post('/api/generate-pdf', requireAuth, requirePermission('export_pdf'), asyn
       result.warnings.push('Notation images missing for: ' + notation.missing.join(', '));
     }
 
-    // Mark draft as exported if it has an id
+    // Every export lands in History as the week's FINAL: mark a saved
+    // draft exported, or auto-save an unsaved one so the printed version
+    // is never missing from the record.
+    let exportedDraftId = req.body.id || null;
     if (req.body.id) {
       const draft = await store.loadDraft(req.body.id);
       if (draft) {
         draft.status = 'exported';
         draft.exportedAt = new Date().toISOString();
         await store.saveDraft(draft);
+      }
+    } else {
+      try {
+        const saved = await store.saveDraft({ ...req.body, status: 'exported', exportedAt: new Date().toISOString() });
+        exportedDraftId = saved.id;
+      } catch (e) {
+        console.warn('[export] could not auto-save exported aid:', e.message);
+      }
+    }
+
+    // Export log: one record per liturgical week, keyed by the liturgical
+    // date so re-exports overwrite — hymn stats count what was actually
+    // PRINTED (the last export of each week), not every draft ever saved.
+    if (req.body.liturgicalDate && kv.isSafeKey(req.body.liturgicalDate)) {
+      try {
+        await kv.set('export-log', req.body.liturgicalDate, {
+          liturgicalDate: req.body.liturgicalDate,
+          feastName: req.body.feastName || '',
+          liturgicalSeason: req.body.liturgicalSeason || '',
+          exportedAt: new Date().toISOString(),
+          exportedBy: req.user.displayName,
+          draftId: exportedDraftId,
+          musicSat5pm: req.body.musicSat5pm || {},
+          musicSun9am: req.body.musicSun9am || {},
+          musicSun11am: req.body.musicSun11am || {}
+        });
+      } catch (e) {
+        console.warn('[export-log] could not record export:', e.message);
       }
     }
 
@@ -704,11 +778,30 @@ app.post('/api/upload/notation', requireAuth, requirePermission('upload_images')
     return res.status(400).json({ error: e.message });
   }
 
-  const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${processed.ext}`;
-  if (kv.IS_NETLIFY) {
-    await kv.set('uploads-notation', filename, { data: processed.buffer.toString('base64'), mime: processed.mime });
-  } else {
-    fs.writeFileSync(path.join(NOTATION_DIR, filename), processed.buffer);
+  // Content de-dupe: uploading the same scan twice (very common — once per
+  // slot, or retries) must NOT create another copy in the list. We index
+  // processed-content hashes; a match reuses the already-stored file.
+  const contentHash = require('crypto').createHash('sha256').update(processed.buffer).digest('hex');
+  let filename = null;
+  let deduped = false;
+  try {
+    const indexed = await kv.get('notation-hash-index', contentHash);
+    if (indexed && indexed.filename) {
+      const stillThere = kv.IS_NETLIFY
+        ? !!(await kv.get('uploads-notation', indexed.filename))
+        : fs.existsSync(path.join(NOTATION_DIR, indexed.filename));
+      if (stillThere) { filename = indexed.filename; deduped = true; }
+    }
+  } catch (e) { /* index miss/corrupt — store normally */ }
+
+  if (!filename) {
+    filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${processed.ext}`;
+    if (kv.IS_NETLIFY) {
+      await kv.set('uploads-notation', filename, { data: processed.buffer.toString('base64'), mime: processed.mime });
+    } else {
+      fs.writeFileSync(path.join(NOTATION_DIR, filename), processed.buffer);
+    }
+    try { await kv.set('notation-hash-index', contentHash, { filename }); } catch (e) { /* best effort */ }
   }
 
   res.json({
@@ -716,6 +809,7 @@ app.post('/api/upload/notation', requireAuth, requirePermission('upload_images')
     url: kv.IS_NETLIFY ? `/api/uploads/notation/${filename}` : `/uploads/notation/${filename}`,
     originalName: req.file.originalname,
     converted: processed.converted,
+    deduped,
     titleCropped: !!processed.titleCropped
   });
 });
@@ -771,6 +865,65 @@ app.get('/api/uploads/notation', async (req, res) => {
   res.json(files);
 });
 
+// Where has each notation image printed before? Walks saved drafts newest-
+// first and reports, per image URL, the most recent slot it was assigned to.
+// Drives the "last printed in …" hints and the use-it-again defaults in the
+// editor's Notation Images list.
+app.get('/api/notation-usage', requireAuth, async (req, res) => {
+  try {
+    const drafts = await kv.list('drafts');
+    drafts.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    const byUrl = {};
+    for (const d of drafts) {
+      const map = d.notationImages || {};
+      for (const [slot, url] of Object.entries(map)) {
+        if (!url || byUrl[url]) continue; // newest draft wins
+        byUrl[url] = {
+          slot,
+          liturgicalDate: d.liturgicalDate || '',
+          feastName: d.feastName || ''
+        };
+      }
+    }
+    res.json({ byUrl });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Remove an uploaded notation image. Drafts that still reference it keep
+// working — the preview/PDF fall back to the paste box with a warning.
+app.delete('/api/uploads/notation/:filename', requireAuth, requirePermission('upload_images'), async (req, res) => {
+  const filename = safeFilenameParam(req, res);
+  if (!filename) return;
+  // Clear the content-hash index entry first so a future identical upload
+  // doesn't follow a stale pointer (the dedupe re-checks existence anyway,
+  // so a failure here only costs a redundant re-store).
+  try {
+    let buf = null;
+    if (kv.IS_NETLIFY) {
+      const item = await kv.get('uploads-notation', filename);
+      if (item && item.data) buf = Buffer.from(item.data, 'base64');
+    } else {
+      const filePath = path.join(NOTATION_DIR, filename);
+      if (fs.existsSync(filePath)) buf = fs.readFileSync(filePath);
+    }
+    if (buf) {
+      const hash = require('crypto').createHash('sha256').update(buf).digest('hex');
+      await kv.del('notation-hash-index', hash);
+    }
+  } catch (e) { /* best effort */ }
+  if (kv.IS_NETLIFY) {
+    await kv.del('uploads-notation', filename);
+  } else {
+    const filePath = path.join(NOTATION_DIR, filename);
+    try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) {
+      return res.status(500).json({ error: 'Could not delete: ' + e.message });
+    }
+  }
+  res.json({ success: true });
+});
+
 // Serve uploaded images from Blobs on Netlify
 app.get('/api/uploads/notation/:filename', async (req, res) => {
   const filename = safeFilenameParam(req, res);
@@ -817,7 +970,20 @@ app.post('/api/drafts', requireAuth, async (req, res) => {
 });
 
 app.get('/api/drafts', requireAuth, async (req, res) => {
-  res.json(await store.listDrafts());
+  const drafts = await store.listDrafts();
+  // FINAL = the draft whose export is the one recorded for its week
+  // (export-log keeps only the last export per liturgical date).
+  try {
+    const log = await kv.list('export-log');
+    const finalByDate = {};
+    log.forEach(r => { if (r.liturgicalDate) finalByDate[r.liturgicalDate] = r; });
+    drafts.forEach(d => {
+      const rec = finalByDate[d.liturgicalDate];
+      d.isFinal = !!(rec && rec.draftId && rec.draftId === d.id);
+      if (rec && rec.draftId === d.id) d.finalExportedAt = rec.exportedAt;
+    });
+  } catch (e) { /* history still works without final flags */ }
+  res.json(drafts);
 });
 
 app.get('/api/drafts/:id', requireAuth, async (req, res) => {
@@ -871,6 +1037,30 @@ app.post('/api/drafts/:id/request-changes', requireAuth, requirePermission('appr
   res.json(draft);
 });
 
+// Manually mark a draft as the week's FINAL (overrides which export is the
+// version of record — e.g. when the truly-printed file came from elsewhere).
+// Open to any signed-in user by design.
+app.post('/api/drafts/:id/mark-final', requireAuth, async (req, res) => {
+  const draft = await store.loadDraft(req.params.id);
+  if (!draft) return res.status(404).json({ error: 'Draft not found' });
+  if (!draft.liturgicalDate || !kv.isSafeKey(draft.liturgicalDate)) {
+    return res.status(400).json({ error: 'Draft needs a liturgical date before it can be FINAL' });
+  }
+  await kv.set('export-log', draft.liturgicalDate, {
+    liturgicalDate: draft.liturgicalDate,
+    feastName: draft.feastName || '',
+    liturgicalSeason: draft.liturgicalSeason || '',
+    exportedAt: new Date().toISOString(),
+    exportedBy: req.user.displayName,
+    manual: true,
+    draftId: draft.id,
+    musicSat5pm: draft.musicSat5pm || {},
+    musicSun9am: draft.musicSun9am || {},
+    musicSun11am: draft.musicSun11am || {}
+  });
+  res.json({ success: true, draftId: draft.id, liturgicalDate: draft.liturgicalDate });
+});
+
 // --- STATS ---
 // Hymn-usage frequency across all saved drafts. Open to all roles — no auth gate.
 const HYMN_FIELDS = [
@@ -885,7 +1075,10 @@ function _normalizeTitle(s) {
 
 app.get('/api/stats/hymns', async (req, res) => {
   try {
-    const drafts = await kv.list('drafts');
+    // Stats reflect what was actually PRINTED: one export-log record per
+    // liturgical week (last export of that week wins), not every saved
+    // draft revision.
+    const drafts = await kv.list('export-log');
     const stats = {};
     for (const d of drafts) {
       const date = d.liturgicalDate || '';
@@ -908,7 +1101,7 @@ app.get('/api/stats/hymns', async (req, res) => {
       });
     }
     const list = Object.values(stats).sort((a, b) => b.total - a.total || a.title.localeCompare(b.title));
-    res.json({ totalDrafts: drafts.length, hymns: list });
+    res.json({ totalDrafts: drafts.length, totalWeeks: drafts.length, hymns: list });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1113,6 +1306,9 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
 .status-badge.review { background: #cce5ff; color: #004085; }
 .status-badge.approved { background: #d1ecf1; color: #0c5460; }
 .status-badge.exported { background: #d4edda; color: #155724; }
+.status-badge.final { background: var(--gold); color: #fff; letter-spacing: 0.5px; }
+.notation-lib-pill { display: inline-block; background: #e8d5f5; color: var(--purple); font-size: 9px; font-weight: 600; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
+.attachment-card img.att-thumb { max-height: 56px; max-width: 110px; border: 1px solid var(--border); border-radius: 3px; background: #fff; cursor: zoom-in; }
 
 /* Admin page */
 .admin-view { max-width: 600px; margin: 30px auto; padding: 0 20px; }
@@ -1160,7 +1356,14 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
 .attachment-kind-pill { display: inline-block; background: #eef0e6; color: #5a5a3a; font-size: 9px; font-weight: 600; padding: 1px 6px; border-radius: 8px; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 4px; }
 .attachment-list-empty { color: var(--gray); font-style: italic; font-size: 11px; padding: 8px; }
 .notation-row { background: white; border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.notation-row img { max-height: 48px; max-width: 90px; border: 1px solid var(--border); border-radius: 3px; background: #fff; flex-shrink: 0; }
+.notation-row img { max-height: 72px; max-width: 150px; border: 1px solid var(--border); border-radius: 3px; background: #fff; flex-shrink: 0; cursor: zoom-in; }
+.notation-last { font-size: 9px; color: var(--gray); white-space: nowrap; }
+.notation-last button { font-size: 9px; padding: 1px 6px; margin-left: 3px; border: 1px solid var(--gold); border-radius: 8px; background: #fdf8ec; color: #7a5f1a; cursor: pointer; }
+.notation-last button:hover { background: var(--gold); color: #fff; }
+/* Floating zoom preview — notation thumbnails are unreadable at list size,
+   so hovering any of them shows the image near full size. */
+#notation-zoom { position: fixed; z-index: 600; pointer-events: none; background: #fff; border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 8px 28px rgba(0,0,0,0.3); padding: 6px; display: none; }
+#notation-zoom img { display: block; max-width: min(620px, 62vw); max-height: 72vh; }
 .notation-row .fn { font-size: 10px; color: var(--gray); flex: 1; min-width: 80px; word-break: break-all; }
 .notation-row select { font-size: 11px; padding: 3px 4px; max-width: 200px; }
 .notation-use-pill { display: inline-block; background: #eef0e6; color: #5a5a3a; font-size: 9px; font-weight: 600; padding: 1px 6px; border-radius: 8px; margin: 1px 2px 1px 0; white-space: nowrap; }
@@ -1184,7 +1387,7 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
 .notation-ctl .btn { padding: 3px 8px; font-size: 10px; }
 .notation-ctl select { font-size: 10px; padding: 3px 5px; max-width: 150px; }
 .notation-thumb { display: inline-flex; align-items: center; gap: 4px; }
-.notation-thumb img { height: 28px; border: 1px solid var(--border); border-radius: 2px; background: #fff; }
+.notation-thumb img { height: 40px; border: 1px solid var(--border); border-radius: 2px; background: #fff; cursor: zoom-in; }
 .notation-thumb button { background: none; border: none; color: var(--error); cursor: pointer; font-size: 12px; padding: 0 2px; }
 
 /* Storage health warning — shown when the server is running on the lossy
@@ -1228,6 +1431,7 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
   <a href="/users" class="nav-link" data-page="users" id="nav-users" style="display:none;">Users</a>
   <span class="spacer"></span>
   <span class="user-info" id="user-display"></span>
+  <button class="btn btn-outline btn-sm" id="btn-restore" style="display:none;" onclick="restoreSnapshot()" title="Bring back what you were working on before the page reloaded">&#10226; Restore last session</button>
   <button class="btn btn-outline btn-sm" onclick="loadSample()">Load Sample</button>
   <button class="btn btn-outline btn-sm" onclick="saveDraft()">Save Draft</button>
   <select id="bookletSize" class="btn-sm" style="margin-right:6px;padding:4px 6px;font-size:11px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:3px;" title="Booklet trim size — saved per user" onchange="saveUserPrefs({ bookletSize: this.value })">
@@ -1252,7 +1456,7 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
     <div class="form-section">
       <div class="form-section-hdr" onclick="toggle(this)">Liturgical Date &amp; Season <span>&#9660;</span></div>
       <div class="form-section-body">
-        <div class="fg"><label>Feast / Sunday Name <span style="font-weight:400;text-transform:none;color:var(--gray);">(auto-fills from date when empty)</span></label><input type="text" id="feastName" placeholder="e.g., Second Sunday of Lent"></div>
+        <div class="fg"><label>Feast / Sunday Name <span style="font-weight:400;text-transform:none;color:var(--gray);">(tracks the date — type your own name to override)</span></label><input type="text" id="feastName" placeholder="e.g., Second Sunday of Lent" oninput="this.dataset.userSet = this.value.trim() ? '1' : ''"></div>
         <div class="fg-row">
           <div class="fg"><label>Date <span style="font-weight:400;text-transform:none;color:var(--gray);">(defaults to next Sunday)</span></label><input type="date" id="liturgicalDate" onchange="onLiturgicalDateChange()"></div>
           <div class="fg"><label>Liturgical Season</label>
@@ -1514,6 +1718,7 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
 <div id="page-history" style="display:none;">
   <div class="history-view">
     <h2>Worship Aid History</h2>
+    <p style="font-size:12px;color:var(--gray);margin-bottom:12px;"><span class="status-badge final">FINAL</span> marks the version actually printed — the last PDF export for that week. Everything else is a working draft.</p>
     <div id="history-list"></div>
   </div>
 </div>
@@ -1601,7 +1806,7 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
 <div id="page-stats" style="display:none;">
   <div class="history-view">
     <h2>Hymn Usage Stats</h2>
-    <p style="font-size:12px;color:var(--gray);margin-bottom:12px;">How often each hymn appears across saved drafts. Counted once per draft regardless of how many mass times use it.</p>
+    <p style="font-size:12px;color:var(--gray);margin-bottom:12px;">How often each hymn was actually printed. Counted from PDF exports — one per liturgical week, using the last export of that week (drafts and re-exports do not double-count).</p>
     <div id="stats-summary" style="font-size:12px;color:var(--gray);margin-bottom:8px;"></div>
     <div id="stats-list"></div>
   </div>
@@ -1802,7 +2007,11 @@ async function showApp() {
   applyRolePermissions();
   showPage('editor');
   checkStorageHealth();
-  applyServiceMusicCarryover({ silent: true });
+  // Restore in-progress work first (a reload must not blow it away); only a
+  // genuinely fresh session gets the carry-over-from-last-week defaults.
+  const restored = offerSnapshotRestore();
+  if (!restored) applyServiceMusicCarryover({ silent: true });
+  loadNotationUsage();
 }
 
 // Surface the lossy in-memory fallback loudly — this is the failure mode
@@ -1961,6 +2170,9 @@ function toggle(hdr) {
 }
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+// For values embedded inside inline onclick JS string literals — esc() is
+// HTML-escaping only and would let a quote terminate the JS string.
+function jsq(s) { return String(s || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'"); }
 function v(id) { const el = document.getElementById(id); return el ? el.value.trim() : ''; }
 function ch(id) { const el = document.getElementById(id); return el ? el.checked : false; }
 function sv(id, val) { const el = document.getElementById(id); if (el) el.value = val || ''; }
@@ -2177,6 +2389,11 @@ function buildData() {
 function populateForm(data) {
   window._currentDraftId = data.id || undefined;
   sv('feastName', data.feastName);
+  // A draft-loaded name is NOT a manual override: the load-time reconcile
+  // below keeps it (fill-if-empty), but a subsequent date change should
+  // replace it with the new weekend's name.
+  const _feastEl = document.getElementById('feastName');
+  if (_feastEl) _feastEl.dataset.userSet = '';
   sv('liturgicalDate', data.liturgicalDate);
   sv('liturgicalSeason', data.liturgicalSeason);
   const ss = data.seasonalSettings || {};
@@ -2539,11 +2756,13 @@ async function onLiturgicalDateChange() {
       applyChildrenLiturgyAutoDefault();
     }
   }
-  // Fill the feast/Sunday name only when the field is empty.  This way a
-  // manually-typed override is preserved, but starting fresh (or clearing the
-  // field) always gets the right Sunday/feast for the chosen date.
+  // The feast/Sunday name TRACKS the date. The old fill-only-when-empty rule
+  // meant the name never updated once anything had filled it (startup
+  // auto-fill, a loaded draft) — picking a new weekend kept last week's
+  // name. A name the user actually typed (dataset.userSet, set by the
+  // field's oninput) is preserved until they clear the field.
   const feastEl = document.getElementById('feastName');
-  if (info && info.feastName && feastEl && !feastEl.value.trim()) {
+  if (info && info.feastName && feastEl && feastEl.dataset.userSet !== '1') {
     feastEl.value = info.feastName;
   }
   autoFetchReadingsIfEmpty();
@@ -2807,12 +3026,15 @@ async function loadAttachmentList() {
     const items = (data && data.attachments) || [];
     if (!items.length) { list.innerHTML = '<p class="attachment-list-empty">No files yet. Upload one above.</p>'; return; }
     list.innerHTML = items.map(a => {
+      const isImage = a.mime && a.mime.indexOf('image/') === 0;
       return '<div class="attachment-card">' +
+        (isImage ? '<span class="notation-thumb"><img class="att-thumb" src="' + esc(a.url) + '" alt="music" title="Hover to zoom"></span>' : '') +
         '<div class="info">' +
           '<div class="t"><span class="attachment-kind-pill">' + esc(ATTACHMENT_KIND_LABELS[a.kind] || a.kind) + '</span>' + esc(a.title || a.originalName) + '</div>' +
           '<div class="m">' + (a.composer ? esc(a.composer) + ' · ' : '') + esc(a.originalName) + ' · ' + Math.round((a.size || 0) / 1024) + ' KB</div>' +
         '</div>' +
         '<div class="actions">' +
+          '<button class="btn btn-outline btn-sm" onclick="editAttachmentMeta(\\'' + a.id + '\\')">Edit</button>' +
           '<a href="' + esc(a.url) + '" target="_blank" rel="noopener" class="btn btn-outline btn-sm">Open</a>' +
           '<button class="btn btn-danger btn-sm" onclick="deleteAttachment(\\'' + a.id + '\\')">Delete</button>' +
         '</div>' +
@@ -2821,6 +3043,29 @@ async function loadAttachmentList() {
   } catch (e) {
     list.innerHTML = '<p class="attachment-list-empty">Could not load library.</p>';
   }
+}
+
+async function editAttachmentMeta(id) {
+  const lib = await getAttachmentCache();
+  const a = lib.find(x => x.id === id);
+  if (!a) return;
+  const title = prompt('Title:', a.title || '');
+  if (title === null) return;
+  const composer = prompt('Composer:', a.composer || '');
+  if (composer === null) return;
+  try {
+    const res = await fetch('/api/attachments/' + id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken },
+      body: JSON.stringify({ title: title.trim(), composer: composer.trim() })
+    });
+    if (handle401(res)) return;
+    if (!res.ok) { const d = await res.json().catch(() => ({})); toast(d.error || 'Update failed', 'error'); return; }
+    await getAttachmentCache(true);
+    await loadAttachmentList();
+    await loadNotationList();
+    toast('Library entry updated', 'success');
+  } catch (e) { toast('Update failed: ' + e.message, 'error'); }
 }
 
 async function deleteAttachment(id) {
@@ -2916,6 +3161,7 @@ async function uploadNotationForSlot(slot, input) {
     refreshNotationPicks();
     let msg = data.converted ? 'Converted to PNG and attached' : 'Notation attached';
     if (data.titleCropped) msg += ' — title header removed';
+    if (data.deduped) msg = 'Already uploaded — reusing the existing image';
     toast(msg, 'success');
   } catch (e) {
     toast('Upload error: ' + e.message, 'error');
@@ -2942,16 +3188,66 @@ function attachNotationFromPick(slot, sel) {
   sel.value = '';
 }
 
-// "Print in:" dropdown on a Notation Images list row — assigns the
-// image at cache index idx to the chosen booklet spot.
+// "Print in:" dropdown on a Notation Images list row. The select is STICKY —
+// it shows the image's current spot. Picking a different spot MOVES the
+// single assignment; picking the blank option removes it. (Images printing
+// in several spots keep the pills with their × buttons.)
 function assignNotationFromList(idx, sel) {
-  const slot = sel.value;
-  sel.value = '';
-  if (!slot) return;
   const f = (window._notationFiles || [])[idx];
   if (!f) return;
+  const slot = sel.value;
+  const current = Object.keys(NOTATION_SLOT_LABELS).filter(s => (window._notationImages || {})[s] === f.url);
+  if (!slot) {
+    current.forEach(s => delete window._notationImages[s]);
+    renderNotationThumbs();
+    renderNotationList();
+    toast('Removed from the booklet', 'success');
+    return;
+  }
+  // Move semantics when the image had exactly one spot.
+  if (current.length === 1 && current[0] !== slot) delete window._notationImages[current[0]];
   attachNotation(slot, f.url);
   toast('Will print in: ' + (NOTATION_SLOT_LABELS[slot] || slot), 'success');
+}
+
+// Where was this image used in a previous week? { url: {slot, liturgicalDate, feastName} }
+window._notationUsage = window._notationUsage || {};
+async function loadNotationUsage() {
+  if (!_sessionToken) return;
+  try {
+    const res = await fetch('/api/notation-usage', { headers: { 'x-session-token': _sessionToken } });
+    if (res.ok) {
+      const data = await res.json();
+      window._notationUsage = (data && data.byUrl) || {};
+      renderNotationList();
+    }
+  } catch (e) { /* hints are best-effort */ }
+}
+
+async function deleteNotationFile(idx) {
+  const f = (window._notationFiles || [])[idx];
+  if (!f) return;
+  if (!confirm('Delete "' + f.filename + '" from uploaded notation? Booklets that still reference it will show the blank paste area instead.')) return;
+  try {
+    const res = await fetch('/api/uploads/notation/' + encodeURIComponent(f.filename), {
+      method: 'DELETE', headers: { 'x-session-token': _sessionToken }
+    });
+    if (handle401(res)) return;
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      toast('Delete failed: ' + (data.error || res.status), 'error');
+      return;
+    }
+  } catch (e) { toast('Delete failed: ' + e.message, 'error'); return; }
+  // Detach it anywhere it was printing and drop it from the cache.
+  Object.keys(NOTATION_SLOT_LABELS).forEach(s => {
+    if ((window._notationImages || {})[s] === f.url) delete window._notationImages[s];
+  });
+  window._notationFiles.splice(idx, 1);
+  renderNotationThumbs();
+  renderNotationList();
+  refreshNotationPicks();
+  toast('Image deleted', 'success');
 }
 
 // Fill every per-slot "uploaded images" picker from the client cache plus
@@ -3034,13 +3330,10 @@ async function applyServiceMusicCarryover(opts) {
     const kyrieBlock = blocks.find(b => b.kyrieSetting) || {};
     sv('shared_kyrie', kyrieBlock.kyrieSetting);
     sv('shared_kyrieComposer', kyrieBlock.kyrieComposer);
-    // Carry the ordinary-part notation images too (the whole point of the
-    // carryover: the same sung settings print again this week).
-    const prevNi = d.notationImages || {};
-    ['kyrie', 'gloria', 'sanctus', 'mysteryOfFaith', 'lambOfGod', 'gospelAcclamation'].forEach(slot => {
-      if (prevNi[slot]) window._notationImages[slot] = prevNi[slot];
-      else delete window._notationImages[slot];
-    });
+    // Carry over ALL notation-image placements from last week — every image
+    // defaults to the spot it printed in last time. Swapping a hymn is one
+    // pick in the "Print in" dropdown (which replaces the assignment).
+    window._notationImages = { ...(d.notationImages || {}) };
     renderNotationThumbs();
     renderNotationList();
     const note = document.getElementById('carryoverNote');
@@ -3084,7 +3377,7 @@ async function uploadNotation(input) {
     }
     const data = await res.json();
     if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
-    toast('Image uploaded' + (data.converted ? ' (converted to PNG)' : '') + (data.titleCropped ? ' — title header removed' : '') + ': ' + data.originalName, 'success');
+    toast((data.deduped ? 'Already uploaded — reusing the existing image' : 'Image uploaded' + (data.converted ? ' (converted to PNG)' : '') + (data.titleCropped ? ' — title header removed' : '')) + ': ' + data.originalName, 'success');
     // Cache the new file immediately — the server list is eventually
     // consistent and may not include it yet.
     addNotationFile(data.filename || data.originalName, data.url);
@@ -3103,17 +3396,64 @@ async function loadNotationList() {
     const files = await res.json();
     (Array.isArray(files) ? files : []).forEach(f => addNotationFile(f.filename, f.url));
   } catch(e) {}
+  // Library images appear in the same list (marked) so reusable music —
+  // custom settings, staff/clergy compositions — is one dropdown away.
+  try {
+    const lib = (await getAttachmentCache()).filter(a => a.url && a.mime && a.mime.indexOf('image/') === 0);
+    lib.forEach(a => {
+      const existing = (window._notationFiles || []).find(f => f.url === a.url);
+      if (existing) { existing.library = true; existing.filename = a.title || existing.filename; }
+      else { window._notationFiles.push({ filename: a.title || a.originalName, url: a.url, library: true }); }
+    });
+  } catch (e) { /* library hints are best-effort */ }
   renderNotationList();
   refreshNotationPicks();
 }
 
-// Render the Notation Images list from the client cache. Each row shows a
-// thumbnail, the filename, a "Print in:" dropdown of booklet spots, and
-// pills for the spots that currently print this image.
+// Promote an uploaded notation image into the Library so it's reusable
+// week after week (custom music, staff/clergy compositions).
+async function saveNotationToLibrary(idx) {
+  const f = (window._notationFiles || [])[idx];
+  if (!f || f.library) return;
+  const title = prompt('Library title for this music:', f.filename.replace(/\.[^.]+$/, ''));
+  if (title === null) return;
+  const composer = prompt('Composer (optional):', '') || '';
+  try {
+    const res = await fetch('/api/attachments/from-notation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken },
+      body: JSON.stringify({ filename: f.url.split('/').pop(), title: title.trim() || f.filename, composer: composer.trim(), kind: 'general' })
+    });
+    if (handle401(res)) return;
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Could not save to Library', 'error'); return; }
+    await getAttachmentCache(true);
+    await loadNotationList();
+    await refreshAttachmentPicker();
+    toast('Saved to the Library: ' + (data.title || ''), 'success');
+  } catch (e) { toast('Could not save to Library: ' + e.message, 'error'); }
+}
+
+// Render the Notation Images list from the client cache (deduped by URL).
+// Each row: a hover-zoomable thumbnail, the filename, a STICKY "Print in:"
+// dropdown showing the image's current spot, pills for multi-spot images,
+// a "last printed in …" history hint with a one-click re-use button, and a
+// delete button.
 function renderNotationList() {
   const target = document.getElementById('notation-list');
   if (!target) return;
-  const files = window._notationFiles || [];
+  // Re-rendering swaps the <img> under the cursor, so its mouseout never
+  // fires — hide the zoom panel or it sticks open.
+  const _z = document.getElementById('notation-zoom');
+  if (_z) _z.style.display = 'none';
+  // Defensive de-dupe by URL — duplicate rows confused testers.
+  const seen = new Set();
+  window._notationFiles = (window._notationFiles || []).filter(f => {
+    if (!f || !f.url || seen.has(f.url)) return false;
+    seen.add(f.url);
+    return true;
+  });
+  const files = window._notationFiles;
   if (!files.length) {
     target.innerHTML = '<p class="attachment-list-empty">No notation images uploaded yet.</p>';
     return;
@@ -3121,22 +3461,82 @@ function renderNotationList() {
   const ni = window._notationImages || {};
   target.innerHTML = files.map((f, idx) => {
     const usedIn = Object.keys(NOTATION_SLOT_LABELS).filter(slot => ni[slot] === f.url);
-    const pills = usedIn.map(slot =>
+    const pills = usedIn.length > 1 ? usedIn.map(slot =>
       '<span class="notation-use-pill">' + esc(NOTATION_SLOT_LABELS[slot]) +
       ' <button type="button" title="Don\\'t print in ' + esc(NOTATION_SLOT_LABELS[slot]) + '" onclick="detachNotation(\\'' + slot + '\\')">&times;</button></span>'
-    ).join('');
-    const options = '<option value="">Print in: choose a spot…</option>' +
+    ).join('') : '';
+    // Sticky select: shows the current single assignment right in the box.
+    const selectedSlot = usedIn.length === 1 ? usedIn[0] : '';
+    const placeholder = usedIn.length === 0 ? 'Print in: choose a spot…'
+      : (usedIn.length === 1 ? 'Don\\u2019t print this image' : 'Printing in ' + usedIn.length + ' spots — add another…');
+    const options = '<option value="">' + placeholder + '</option>' +
       Object.keys(NOTATION_SLOT_LABELS).map(slot =>
-        '<option value="' + slot + '">' + esc(NOTATION_SLOT_LABELS[slot]) + '</option>'
+        '<option value="' + slot + '"' + (slot === selectedSlot ? ' selected' : '') + '>' + esc(NOTATION_SLOT_LABELS[slot]) + '</option>'
       ).join('');
-    return '<div class="notation-row">' +
-      '<img src="' + esc(f.url) + '" alt="notation">' +
-      '<span class="fn">' + esc(f.filename) + '</span>' +
+    // History: where this image printed in a previous week, with one-click
+    // re-use (skip when it's already placed there).
+    const last = (window._notationUsage || {})[f.url];
+    let lastHtml = '';
+    if (last && last.slot && NOTATION_SLOT_LABELS[last.slot] && !usedIn.includes(last.slot)) {
+      lastHtml = '<span class="notation-last">last printed in ' + esc(NOTATION_SLOT_LABELS[last.slot]) +
+        (last.liturgicalDate ? ' (' + esc(last.liturgicalDate) + ')' : '') +
+        '<button type="button" onclick="attachNotation(\\'' + last.slot + '\\', \\'' + esc(jsq(f.url)) + '\\')">Use again</button></span>';
+    }
+    return '<div class="notation-row"' + (usedIn.length ? ' style="border-color:var(--gold);"' : '') + '>' +
+      '<img src="' + esc(f.url) + '" alt="notation" title="Hover to zoom — click to open full size" onclick="window.open(\\'' + esc(jsq(f.url)) + '\\', \\'_blank\\')">' +
+      '<span class="fn">' + (f.library ? '<span class="notation-lib-pill" title="Reusable Library music — manage it on the Library page">Library</span> ' : '') + esc(f.filename) + '</span>' +
       '<select onchange="assignNotationFromList(' + idx + ', this)" title="Choose where this image prints in the booklet">' + options + '</select>' +
       (pills ? '<span>' + pills + '</span>' : '') +
+      lastHtml +
+      (f.library ? '' :
+        '<button type="button" class="btn btn-outline btn-sm" style="font-size:9px;padding:2px 6px;" title="Save to the Library as reusable music" onclick="saveNotationToLibrary(' + idx + ')">+ Library</button>' +
+        '<button type="button" class="anthem-remove" title="Delete this uploaded image" onclick="deleteNotationFile(' + idx + ')">&times;</button>') +
     '</div>';
   }).join('');
 }
+
+// --- Hover zoom for notation thumbnails ---
+// List thumbnails are too small to tell scans apart; hovering any notation
+// image shows it near full size in a floating panel.
+function _notationZoomEl() {
+  let z = document.getElementById('notation-zoom');
+  if (!z) {
+    z = document.createElement('div');
+    z.id = 'notation-zoom';
+    z.innerHTML = '<img alt="zoomed notation">';
+    document.body.appendChild(z);
+  }
+  return z;
+}
+function _positionZoom(z, e) {
+  const pad = 16;
+  const rect = z.getBoundingClientRect();
+  let x = e.clientX + pad;
+  if (x + rect.width > window.innerWidth - 8) x = Math.max(8, e.clientX - rect.width - pad);
+  let y = Math.min(e.clientY - 40, window.innerHeight - rect.height - 8);
+  if (y < 8) y = 8;
+  z.style.left = x + 'px';
+  z.style.top = y + 'px';
+}
+function _isNotationThumb(t) {
+  return t && t.tagName === 'IMG' && (t.closest('.notation-row') || t.closest('.notation-thumb'));
+}
+document.addEventListener('mouseover', e => {
+  if (!_isNotationThumb(e.target)) return;
+  const z = _notationZoomEl();
+  z.querySelector('img').src = e.target.src;
+  z.style.display = 'block';
+  _positionZoom(z, e);
+});
+document.addEventListener('mousemove', e => {
+  const z = document.getElementById('notation-zoom');
+  if (z && z.style.display === 'block' && _isNotationThumb(e.target)) _positionZoom(z, e);
+});
+document.addEventListener('mouseout', e => {
+  if (!_isNotationThumb(e.target)) return;
+  const z = document.getElementById('notation-zoom');
+  if (z) z.style.display = 'none';
+});
 
 async function uploadLogo(input) {
   if (!input.files || !input.files[0]) return;
@@ -3246,6 +3646,21 @@ async function generatePreview() {
       // Body scrollHeight gives the rendered total; pad slightly so the
       // last page's content isn't clipped by the iframe.
       iframe.style.height = (iframe.contentDocument.body.scrollHeight + 16) + 'px';
+      // The HTML preview clips overfull pages (fixed page boxes) — never
+      // silently. Flag them so nobody discovers a cut-off Gloria in print:
+      // the exported PDF flows music onto the facing page (even→odd) or
+      // shrinks it to fit, losing nothing.
+      try {
+        const clipped = [];
+        iframe.contentDocument.querySelectorAll('.page').forEach((p, i) => {
+          if (p.scrollHeight > p.clientHeight + 4) clipped.push(i + 1);
+        });
+        if (clipped.length) {
+          const warnEl = document.getElementById('overflow-warnings');
+          warnEl.innerHTML += '<div class="overflow-indicator">Preview page' + (clipped.length > 1 ? 's' : '') + ' ' +
+            clipped.join(', ') + ' hold more than fits the page box — the preview clips it, but the EXPORTED PDF flows music onto the facing page (even&rarr;odd spread) or shrinks it to fit. Nothing is lost in print; Export to see the real layout.</div>';
+        }
+      } catch (e) { /* same-origin only; never block the preview */ }
     };
 
     // Show overflow warnings AND renderer warnings (e.g. a notation image
@@ -3324,11 +3739,16 @@ async function loadHistory() {
         const approvalInfo = d.approvedBy ? ' &bull; Approved by ' + esc(d.approvedBy) : '';
         return '<div class="draft-card">' +
           '<div class="info">' +
-            '<h3>' + esc(d.feastName || 'Untitled') + ' <span class="status-badge ' + status + '">' + status + '</span></h3>' +
+            '<h3>' + esc(d.feastName || 'Untitled') + ' ' +
+              (d.isFinal
+                ? '<span class="status-badge final" title="The last PDF exported for this week — what was printed">FINAL</span>'
+                : '<span class="status-badge ' + status + '">' + (status === 'exported' ? 'exported (superseded)' : status) + '</span>') +
+            '</h3>' +
             '<p>' + esc(d.liturgicalDate || '') + ' &bull; ' + esc(d.liturgicalSeason || '') + ' &bull; Updated ' + new Date(d.updatedAt).toLocaleDateString() + (d.lastEditedBy ? ' by ' + esc(d.lastEditedBy) : '') + approvalInfo + '</p>' +
           '</div>' +
           '<div class="actions">' +
             approvalBtns +
+            (!d.isFinal && d.liturgicalDate ? '<button class="btn btn-outline btn-sm" style="border-color:var(--gold);color:#7a5f1a;" title="Make this the week\\u2019s version of record (stats follow it)" onclick="markDraftFinal(\\'' + d.id + '\\')">Mark FINAL</button>' : '') +
             '<button class="btn btn-outline btn-sm" onclick="openDraft(\\'' + d.id + '\\')">Open</button>' +
             '<button class="btn btn-outline btn-sm" onclick="dupDraft(\\'' + d.id + '\\')">Duplicate</button>' +
             '<button class="btn btn-danger btn-sm" onclick="delDraft(\\'' + d.id + '\\')">Delete</button>' +
@@ -3350,7 +3770,7 @@ async function loadStats() {
       return;
     }
     const data = await res.json();
-    summary.textContent = data.totalDrafts + ' draft' + (data.totalDrafts === 1 ? '' : 's') + ' analyzed · ' + data.hymns.length + ' distinct hymn' + (data.hymns.length === 1 ? '' : 's') + ' used.';
+    summary.textContent = data.totalDrafts + ' exported week' + (data.totalDrafts === 1 ? '' : 's') + ' analyzed · ' + data.hymns.length + ' distinct hymn' + (data.hymns.length === 1 ? '' : 's') + ' used.';
     if (!data.hymns.length) {
       list.innerHTML = '<p style="color:var(--gray);font-style:italic;">No hymn usage yet — save a draft with music titles and refresh.</p>';
       return;
@@ -3384,6 +3804,18 @@ async function loadStats() {
   } catch (e) {
     list.innerHTML = '<p style="color:var(--error);">Error loading stats: ' + esc(e.message) + '</p>';
   }
+}
+
+async function markDraftFinal(id) {
+  if (!confirm('Make this the FINAL version of record for its week? The current FINAL (if any) becomes a superseded draft, and hymn stats will count this version.')) return;
+  try {
+    const res = await fetch('/api/drafts/' + id + '/mark-final', { method: 'POST', headers: { 'x-session-token': _sessionToken } });
+    if (handle401(res)) return;
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || 'Could not mark as FINAL', 'error'); return; }
+    toast('Marked as the week\\u2019s FINAL', 'success');
+    loadHistory();
+  } catch (e) { toast('Could not mark as FINAL: ' + e.message, 'error'); }
 }
 
 async function openDraft(id) {
@@ -3834,6 +4266,69 @@ document.getElementById('editor').addEventListener('input', () => {
     if (v('feastName') || v('liturgicalDate')) saveDraft();
   }, 30000);
 });
+
+// --- Session snapshot: a reload must not blow away in-progress work ---
+// Every edit (debounced) snapshots the full form to localStorage. On the
+// next load, recent work (< 24h) restores automatically; older work (up to
+// 7 days) is offered via a Restore button so a new week can start fresh.
+const SNAPSHOT_KEY = 'wa_editor_snapshot';
+let _snapshotTimer;
+function snapshotEditor() {
+  clearTimeout(_snapshotTimer);
+  _snapshotTimer = setTimeout(() => {
+    try {
+      const data = buildData();
+      if (!data.feastName && !data.liturgicalDate) return;
+      localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ savedAt: Date.now(), data }));
+    } catch (e) { /* quota/serialization — snapshot is best-effort */ }
+  }, 1500);
+}
+document.getElementById('editor').addEventListener('input', snapshotEditor);
+document.getElementById('editor').addEventListener('change', snapshotEditor);
+window.addEventListener('beforeunload', () => {
+  clearTimeout(_snapshotTimer);
+  try {
+    const data = buildData();
+    if (data.feastName || data.liturgicalDate) {
+      localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ savedAt: Date.now(), data }));
+    }
+  } catch (e) { /* best-effort */ }
+});
+
+function readSnapshot() {
+  try {
+    const raw = localStorage.getItem(SNAPSHOT_KEY);
+    if (!raw) return null;
+    const snap = JSON.parse(raw);
+    if (!snap || !snap.data || !snap.savedAt) return null;
+    if (Date.now() - snap.savedAt > 7 * 24 * 60 * 60 * 1000) return null; // stale
+    return snap;
+  } catch (e) { return null; }
+}
+
+function restoreSnapshot() {
+  const snap = readSnapshot();
+  if (!snap) { toast('Nothing to restore', 'error'); return; }
+  populateForm(snap.data);
+  const btn = document.getElementById('btn-restore');
+  if (btn) btn.style.display = 'none';
+  toast('Restored your last session (' + new Date(snap.savedAt).toLocaleString() + ') — Save Draft to keep it', 'success');
+}
+
+// Called once after login: fresh work resumes automatically; older work
+// gets a Restore button in the nav.
+function offerSnapshotRestore() {
+  const snap = readSnapshot();
+  if (!snap) return false;
+  const ageHours = (Date.now() - snap.savedAt) / 3600000;
+  if (ageHours < 24) {
+    restoreSnapshot();
+    return true;
+  }
+  const btn = document.getElementById('btn-restore');
+  if (btn) btn.style.display = '';
+  return false;
+}
 
 // --- Utils ---
 function setStatus(text, extra) {

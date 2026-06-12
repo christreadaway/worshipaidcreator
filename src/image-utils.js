@@ -60,7 +60,12 @@ const TITLE_CROP = {
   ANALYSIS_WIDTH: 360,  // downscale width for the row-darkness profile
   DARK: 160,            // gray value below this counts as "ink"
   CONTENT_FRAC: 0.01,   // row is "content" when >=1% of pixels are ink
-  STAFF_FRAC: 0.35,     // row is a staff line when >=35% of pixels are ink
+  STAFF_FRAC: 0.35,     // row is a staff-line candidate when >=35% is ink
+  LINE_MAX_ROWS: 3,     // a staff LINE is thin — at most this many rows;
+                        // a thicker dark band (bold display title, banner)
+                        // is not a staff line
+  LINE_GAP_MAX: 12,     // staff lines sit within this many rows of each other
+  LINES_REQUIRED: 3,    // need a group of thin lines to call it a staff
   GAP_MIN: 12,          // analysis rows of white that separate header from music
   PAD: 10,              // analysis rows of breathing room kept above the music
                         // (generous: downscale antialiasing makes faint ink
@@ -92,10 +97,33 @@ async function detectTitleCropY(buf) {
     frac[y] = dark / W;
   }
 
-  // First staff line — a row that is mostly ink across the width.
+  // First staff SYSTEM. A staff is a group of thin near-full-width dark
+  // lines with small gaps — a single wide dark band (a bold display title,
+  // a banner) must NOT qualify, so candidates are grouped into runs and
+  // only thin runs count as lines.
+  const runs = [];
+  let runStart = null;
+  for (let y = 0; y <= H; y++) {
+    const isCandidate = y < H && frac[y] >= C.STAFF_FRAC;
+    if (isCandidate && runStart === null) runStart = y;
+    else if (!isCandidate && runStart !== null) {
+      runs.push({ start: runStart, len: y - runStart });
+      runStart = null;
+    }
+  }
   let firstStaffRow = -1;
-  for (let y = 0; y < H; y++) {
-    if (frac[y] >= C.STAFF_FRAC) { firstStaffRow = y; break; }
+  for (let i = 0; i < runs.length && firstStaffRow < 0; i++) {
+    if (runs[i].len > C.LINE_MAX_ROWS) continue;
+    let count = 1;
+    let prevEnd = runs[i].start + runs[i].len;
+    for (let j = i + 1; j < runs.length && count < C.LINES_REQUIRED; j++) {
+      if (runs[j].len > C.LINE_MAX_ROWS) break;
+      const gap = runs[j].start - prevEnd;
+      if (gap < 1 || gap > C.LINE_GAP_MAX) break;
+      count++;
+      prevEnd = runs[j].start + runs[j].len;
+    }
+    if (count >= C.LINES_REQUIRED) firstStaffRow = runs[i].start;
   }
   if (firstStaffRow <= 0) return null;
 

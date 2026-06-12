@@ -1291,3 +1291,246 @@ real draft via the API, dissected the bytes):
 PDF-engine question (raised by the user): evaluated and **no engine change
 needed** — PDFKit's output was byte-perfect locally and on Lambda; the
 corruption was purely in the HTTP transport layer (fix #1 above).
+
+---
+
+## Session 10 (June 12, 2026) — v1.6.2–v1.7
+
+**Branch:** `claude/jolly-newton-tzp0aj` (same branch; v1.6/v1.6.1 merged
+earlier via PR #21, then the branch continued)
+**Pushed this session:** `70798a8` (v1.6.2), `74df1d6` (v1.6.3),
+`8a4f14d` (v1.6.4)
+**Uncommitted at handoff:** the v1.7 batch — see "State at handoff" below.
+
+### v1.6.2 (pushed `70798a8`): preview falls back to paste box when a notation file is missing
+
+**Root cause of "the processional hymn has no placeholder":** the draft
+referenced a notation file that no longer existed in storage. The PDF route
+pre-resolves URLs to buffers, so it correctly fell back to the dashed paste
+box — but the preview just emitted the `<img>`, and a dead `<img>` inside
+the sandboxed preview iframe renders as an **invisible blank** (no broken-
+image icon, no border). Preview and PDF disagreed and the slot looked
+silently empty.
+
+**Fix:** `/api/preview` now runs the same existence check the PDF does —
+`findMissingNotationSlots` (`src/notation-resolver.js`) verifies every
+`notationImages` reference against storage; missing references are stripped
+(on a copy of the data) so the preview falls back to the dashed paste box
+exactly like the PDF, and a named warning is emitted: `The notation image
+attached to "<slot>" no longer exists on the server — showing the blank
+paste area instead. Re-upload and re-attach it.` Editor side: preview
+`warnings` now render as **visible banners above the preview** (same
+treatment as overflow warnings) — a count in the status bar was too easy
+to miss.
+
+### v1.6.3 (pushed `74df1d6`): full-width notation images; capped images centered
+
+- Notation images now scale to the **full proportional content width**.
+- An image that hits its height cap is **CENTERED** horizontally — was
+  left-pinned. HTML: `object-position: center top`; PDF: centered `drawX`
+  in `_notationImage`.
+- Ordinary-part image caps raised from 1.4 in / 100 pt to **2.4 in
+  (half-letter) / 3 in (tabloid)** — `PAGE_GEOMETRY.ordinaryImageMax` in
+  `src/template-renderer.js` — and **170 base units** in the PDF (scaled
+  per trim).
+- Verified by decompressing the exported PDF's content streams and checking
+  the image transform matrices (position + scale), not just eyeballing.
+
+### v1.6.4 (pushed `8a4f14d`): automatic title-header removal on notation uploads
+
+**Why:** licensed notation (OneLicense downloads, hymnal scans) arrives with
+a big title block — title, composer, tune name — above the first staff. The
+booklet already prints the title line, so the header just eats music space.
+
+**How** (`src/image-utils.js`: `detectTitleCropY` + `stripTitleHeader` +
+the `TITLE_CROP` constants):
+- Build a row-darkness profile at a **360 px analysis width**; a row with
+  **≥35% of pixels inked** is a staff line.
+- Find the first staff system, **walk up past anything hugging the staff**
+  (tempo markings, composer line sitting right on the music), and crop at
+  the first **white gap of ≥12 analysis rows**.
+- Crop happens ONLY when real header content exists above the gap and the
+  crop removes **≤50% of the image** — no confident header, no crop.
+- **PAD = 10 analysis rows** of breathing room kept above the music
+  (downscale antialiasing makes faint ink register a few rows late).
+- **Idempotent** — re-running on an already-cropped image finds no header.
+  Lyrics between staves and the bottom copyright line always survive (they
+  hug their staves / sit below the last system).
+
+**Wiring:** editor checkbox `id=stripTitleHeaders` (**default ON**, with
+opt-out copy) sends `stripTitle=0/1` on both upload paths; the
+`/api/upload/notation` route passes `{stripTitle}` to
+`normalizeNotationImage`; the response carries `titleCropped`; toasts
+announce "— title header removed".
+
+### v1.7 (UNCOMMITTED at handoff) — workflow batch
+
+1. **Feast / Sunday name now TRACKS date changes.** Root cause: Session 5's
+   "fill only when empty" rule never fired again once the startup auto-fill
+   (or a loaded draft) had filled the field — change the date and last
+   week's feast name stayed. Now the field tracks the date. Manual typing
+   sets `dataset.userSet` via `oninput` and is preserved until the field is
+   cleared (clearing re-enables tracking); `populateForm` clears the flag so
+   loaded drafts update on the next date change.
+
+2. **Notation Images list overhaul.** Hover-zoom floating preview
+   (`#notation-zoom` — works on list thumbnails and per-slot thumbs; click
+   opens full size), bigger thumbnails (72 px list / 40 px slot), rows
+   de-duped by URL defensively, **per-row Delete** (new
+   `DELETE /api/uploads/notation/:filename`, auth + `upload_images`;
+   drafts still referencing the file keep the reference and fall back to
+   the paste box per v1.6.2), **STICKY "Print in" select** that shows the
+   image's current spot — picking another spot MOVES the single
+   assignment, blank removes it, multi-spot images keep their pills — and
+   a gold border on assigned rows.
+
+3. **Content-hash de-dupe on notation upload.** sha256 of the processed
+   buffer, indexed in the new **`notation-hash-index`** KV namespace;
+   re-uploading identical content reuses the stored file (response
+   `deduped: true`, toast "Already uploaded — reusing the existing image").
+
+4. **"Last printed in" history.** New `GET /api/notation-usage` (auth)
+   walks drafts newest-first →
+   `{byUrl: {url: {slot, liturgicalDate, feastName}}}`; list rows show
+   "last printed in \<spot\> (\<date\>)" with a one-click **Use again**
+   button when the image isn't currently assigned there.
+
+5. **Carryover copies the ENTIRE `notationImages` map** from the latest
+   draft — every image defaults to the spot it printed in last week;
+   swapping a hymn is one "Print in" dropdown pick.
+
+6. **Session snapshot/restore.** Every edit (debounced 1.5 s) +
+   `beforeunload` writes `buildData()` to
+   `localStorage('wa_editor_snapshot')`. On login: snapshots <24 h
+   auto-restore (toast); 24 h–7 d show a "⟲ Restore last session" nav
+   button (`id=btn-restore`); >7 d ignored. Restoring suppresses the
+   carryover defaults (`offerSnapshotRestore()` returning true skips
+   `applyServiceMusicCarryover`).
+
+7. **Hymn stats now measure what was PRINTED.** `/api/generate-pdf` writes
+   a per-`liturgicalDate` record to the new **`export-log`** KV namespace
+   (feast, season, the three music blocks, who/when). The last export of a
+   week overwrites — re-exports don't double-count. `/api/stats/hymns`
+   aggregates `export-log` instead of all drafts (which over-counted
+   revisions and never-shipped drafts); Stats page copy updated
+   ("exported weeks analyzed").
+
+8. **IN PROGRESS at handoff — PDF "spread bridging" for music images**
+   (main thread was implementing while this note was written). A music
+   image that doesn't fit its page may continue onto the FACING page when
+   flowing even→odd (2→3, 6→7 — one open spread, never a page turn
+   mid-piece). Lossless clipped two-part drawing in `pdf-generator.js`:
+   `_notationImage` `bridge` option, `_carryNotation`,
+   `_drawCarriedNotation` at the top of pages 3/7, `_fitPageText` respects
+   a carried-content start Y. Odd-page images shrink losslessly instead.
+   Hard rule: **music must NEVER be cut off or partially lost.** Plus a
+   preview-side overflow detector warning that the PDF will flow/shrink.
+
+### Files added / modified
+
+- **v1.6.2:** `src/notation-resolver.js` (`findMissingNotationSlots`),
+  `src/server.js` (preview strip + named warning + banner rendering),
+  `src/tests/uat-fixes.test.js`
+- **v1.6.3:** `src/pdf-generator.js`, `src/template-renderer.js`,
+  `src/tests/uat-fixes.test.js`
+- **v1.6.4:** `src/image-utils.js` (+140 lines), `src/server.js`,
+  `src/tests/uat-fixes.test.js`
+- **v1.7 (uncommitted):** `src/server.js` (routes + SPA: items 1–7);
+  `src/pdf-generator.js`, `src/template-renderer.js`, and
+  `src/tests/uat-fixes.test.js` (item 8 — bridging + preview detector,
+  in flight). No new source files; the two new KV namespaces
+  (`notation-hash-index`, `export-log`) are created on first write.
+- Docs: `product_spec.md` bumped to v1.7.0; this file.
+
+### Deploy checklist (v1.7)
+
+**Nothing new required** beyond the standing v1.6 items:
+- [ ] `SESSION_SECRET` set in Netlify env.
+- [ ] `/api/health` reports `persistence: netlify-blobs` after deploy.
+- The new KV namespaces (`notation-hash-index`, `export-log`) are plain
+  Blobs stores that **appear automatically on first write** — no
+  provisioning, no env vars.
+- Optional post-deploy sanity: upload the same image twice → "Already
+  uploaded — reusing the existing image" toast; export a PDF → the week
+  shows up in Stats.
+
+### State at handoff (read this first next session)
+
+- **Branch:** `claude/jolly-newton-tzp0aj`, tracking origin.
+  **HEAD = `8a4f14d` (v1.6.4)** — `70798a8`/`74df1d6`/`8a4f14d` are pushed
+  and documented above.
+- **Working tree is DIRTY (intentionally):** the v1.7 batch is uncommitted —
+  `src/server.js` (~330+ lines: items 1–7 above) plus the spread-bridging
+  work (item 8) landing in `src/pdf-generator.js`,
+  `src/template-renderer.js` (preview-side flow/shrink detector), and
+  `src/tests/uat-fixes.test.js`, which was still being implemented at the
+  time of writing. Do NOT discard; review `git diff --stat` before
+  anything else.
+- **Tests:** 318/318 at v1.6; the v1.6.2–v1.6.4 commits and the v1.7 batch
+  add cases — **expect ~340+ passing** once the bridging tests land. Run
+  `npm test` first thing.
+- **Next steps, in order:**
+  1. Finish the spread-bridging implementation + tests if not already done
+     (check `_carryNotation` / `_drawCarriedNotation` / `bridge` in
+     `pdf-generator.js`; carried draw at the top of pages 3/7;
+     `_fitPageText` start-Y; odd-page lossless shrink; the preview-side
+     flow/shrink warning) — music must never be lost.
+  2. Run the full suite (~340+ expected), commit the v1.7 batch, push.
+  3. Merge the PR for `claude/jolly-newton-tzp0aj`.
+  4. Deploy checks per the v1.7 checklist above (nothing new beyond
+     `SESSION_SECRET` + Blobs; new KV namespaces appear automatically).
+
+### Session 10 addendum (same session, after the docs pass)
+
+Landed after the documentation agent ran — all tested, 345/345 passing:
+
+1. **Spread bridging SHIPPED** (was "in progress"): `_notationImage` bridge
+   option + `_carryNotation`/`_drawCarriedNotation` (pages 3/7 tops),
+   `_fitPageText` starts below carried content. Music images on even pages
+   (2/6) that don't fit flow lossless onto the facing odd page as two
+   clipped, pixel-aligned draws (+ "(continued)" marker); odd pages shrink
+   losslessly; never across a page turn. Verified: gloria 2→3 and
+   communion 6→7 bridge with warnings, sanctus (page 5) never bridges,
+   always exactly 8 pages.
+2. **Music image width spec** (user): service music prints 6in wide,
+   hymns + responsorial psalm refrain 5in, all centered. PDF:
+   `NOTATION_WIDTHS_IN` + `_notationTargetWidth` (inches exact on tabloid,
+   proportional on other trims, clamped to content width). HTML:
+   `.notation-image.ordinary { width: 6in }`, `.hymn`/`.w5 { width: 5in }`,
+   `margin: 3pt auto`.
+3. **Title-strip detector hardened**: a staff is now a GROUP of >=3 thin
+   (<=3-row) near-full-width lines with small gaps (`LINE_MAX_ROWS`,
+   `LINE_GAP_MAX`, `LINES_REQUIRED` in `TITLE_CROP`) — a bold display
+   title/banner can no longer spoof the staff test. Deterministic test
+   fixture (mulberry32; solid-density ink).
+4. **Library integration**: `POST /api/attachments/from-notation` promotes
+   an uploaded notation image into the Library ("+ Library" button on
+   notation rows; prompts for title/composer). Library image attachments
+   merge into the editor's Notation Images list with a purple "Library"
+   pill (same Print-in dropdown; delete/promote hidden — managed on the
+   Library page). Library page rows now show image thumbnails (hover-zoom
+   works there too) and an Edit button (title/composer via PUT).
+5. **History FINAL vs draft**: every export lands in History (unsaved
+   exports auto-save with status `exported`); `export-log` records carry
+   `draftId`; `GET /api/drafts` flags `isFinal` (the draft whose export is
+   the week's last). History shows a gold FINAL badge; superseded exports
+   read "exported (superseded)"; page copy explains it.
+6. **Preview overflow detector**: after each preview render the editor
+   measures every `.page` in the iframe and warns which pages clip,
+   explaining that the exported PDF flows music onto the facing page or
+   shrinks it — nothing is lost in print.
+7. **Bug-hunt agent findings fixed**: zoom panel hidden on list re-render
+   (was sticking open), duplicate render call removed, `jsq()` JS-string
+   escaping for inline onclick URL embeds, stale `notation-hash-index`
+   entry cleared on notation delete.
+
+**Handoff state: branch `claude/jolly-newton-tzp0aj`, all of the above
+committed and pushed as v1.7; 345/345 tests; merge the PR and deploy.
+No new env vars needed.**
+
+### Session 10 addendum 2: manual FINAL override
+`POST /api/drafts/:id/mark-final` (any signed-in user) writes the week's
+`export-log` record (`manual: true`, `draftId`) so the chosen History
+version becomes the FINAL of record — the previous FINAL reverts to a
+superseded draft and hymn stats follow the override. History rows show a
+gold-outlined "Mark FINAL" button on non-final entries (confirm dialog).

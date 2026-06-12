@@ -149,25 +149,34 @@ describe('title-header removal (keep just notation + lyrics)', () => {
   function buildScore({ withTitle }) {
     const W = 1500, H = 2000;
     const img = Buffer.alloc(W * H, 255);
+    // Deterministic PRNG (mulberry32) — Math.random() made ink density vary
+    // between runs, occasionally producing borderline detector flakes.
+    let seed = 0x5eed;
+    const rand = () => {
+      seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
     const blob = (x0, x1, y0, y1, density) => {
       for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++)
-        if (Math.random() < density) img[y * W + x] = 20;
+        if (rand() < density) img[y * W + x] = 20;
     };
     const staff = (top) => {
       for (const sy of [top, top + 20, top + 40, top + 60, top + 80])
         for (let yy = sy; yy < sy + 4; yy++) for (let x = 80; x < 1420; x++) img[yy * W + x] = 10;
     };
     if (withTitle) {
-      blob(400, 1100, 90, 150, 0.25);  // title line
-      blob(950, 1350, 190, 220, 0.2);  // composer credit
+      blob(400, 1100, 90, 150, 0.6);   // title line
+      blob(950, 1350, 190, 220, 0.6);  // composer credit
     }
-    blob(120, 260, 560, 590, 0.25);    // tempo mark close above the staff
+    blob(120, 260, 560, 590, 0.6);     // tempo mark close above the staff
     staff(620);
-    blob(100, 1400, 600, 720, 0.06);   // notes around staff 1
-    blob(100, 1400, 760, 800, 0.18);   // lyrics line 1
+    blob(100, 1400, 600, 720, 0.1);    // notes around staff 1
+    blob(100, 1400, 760, 800, 0.5);    // lyrics line 1
     staff(1100);
-    blob(100, 1400, 1240, 1280, 0.18); // lyrics line 2
-    blob(300, 1200, 1920, 1940, 0.15); // copyright (license requires keeping it)
+    blob(100, 1400, 1240, 1280, 0.5);  // lyrics line 2
+    blob(300, 1200, 1920, 1940, 0.5);  // copyright (license requires keeping it)
     return sharp(img, { raw: { width: W, height: H, channels: 1 } }).png().toBuffer();
   }
 
@@ -283,7 +292,7 @@ describe('notation images in renderers', () => {
     }
   });
 
-  it('notation images scale to full width; tall ones are capped AND centered', async () => {
+  it('notation images print at spec width (6in service / centered) and tall ones cap + center', async () => {
     const sharp = require('sharp');
     const zlib = require('zlib');
     const tall = await sharp({ create: { width: 800, height: 2400, channels: 3, background: '#222' } }).png().toBuffer();
@@ -310,12 +319,14 @@ describe('notation images in renderers', () => {
       }
     }
     assert.equal(draws.length, 2, 'both images embedded');
-    // Tabloid content area: margin 72, width 468.
+    // Tabloid content area: margin 72, width 468. Service music spec
+    // width is 6in = 432pt, centered at x = 72 + (468-432)/2 = 90.
     const wideDraw = draws.find(d => d.w > 400);
     const tallDraw = draws.find(d => d.w < 400);
-    assert.ok(wideDraw, 'wide image uses (nearly) full content width');
-    assert.ok(Math.abs(wideDraw.x - 72) < 1, 'full-width image starts at the margin');
-    assert.ok(tallDraw, 'tall image is height-capped (narrower than content)');
+    assert.ok(wideDraw, 'wide image prints at the 6in spec width');
+    assert.ok(Math.abs(wideDraw.w - 432) < 1, `6in spec width (got ${wideDraw.w})`);
+    assert.ok(Math.abs(wideDraw.x - 90) < 1, `centered at x=90 (got ${wideDraw.x})`);
+    assert.ok(tallDraw, 'tall image is height-capped (narrower than spec)');
     const expectedCenterX = 72 + (468 - tallDraw.w) / 2;
     assert.ok(Math.abs(tallDraw.x - expectedCenterX) < 1,
       `capped image must be centered (x=${tallDraw.x}, expected ~${expectedCenterX})`);
@@ -326,8 +337,9 @@ describe('notation images in renderers', () => {
     const half = renderBookletHtml(data, { bookletSize: 'half-letter' }).html;
     const tab = renderBookletHtml(data, { bookletSize: 'tabloid' }).html;
     assert.match(half, /\.notation-image\s*{[^}]*object-position:\s*center top/);
-    assert.match(half, /\.notation-image\.ordinary\s*{\s*max-height:\s*2\.4in/);
-    assert.match(tab, /\.notation-image\.ordinary\s*{\s*max-height:\s*3in/);
+    assert.match(half, /\.notation-image\s*{[^}]*margin:\s*3pt auto/);
+    assert.match(tab, /\.notation-image\.ordinary\s*{\s*width:\s*6in;\s*max-height:\s*3in/);
+    assert.match(tab, /\.notation-image\.hymn\s*{\s*width:\s*5in/);
   });
 
   it('PDF embeds slot image buffers and stays at exactly 8 pages', async () => {
@@ -459,5 +471,120 @@ describe('stable seed-user ids', () => {
     } finally {
       await userStore.deleteUser(u.id);
     }
+  });
+});
+
+describe('spread bridging + final flags + library promote (v1.7)', () => {
+  const sharp = require('sharp');
+
+  it('a too-tall Gloria bridges from page 2 onto facing page 3 (even→odd only)', async () => {
+    const tall = await sharp({ create: { width: 1200, height: 5200, channels: 3, background: '#444' } }).png().toBuffer();
+    const data = { ...sample, liturgicalSeason: 'ordinary', seasonalSettings: { ...sample.seasonalSettings, gloria: true } };
+    const out = path.join(outputDir, 'bridge-gloria.pdf');
+    const r = await generatePdf(data, out, { bookletSize: 'tabloid', notationImages: { gloria: tall } });
+    assert.equal(r.pageCount, 8);
+    assert.ok(r.warnings.some(w => w.includes('gloria') && w.includes('facing page (pages 2–3)')),
+      'bridge warning expected: ' + JSON.stringify(r.warnings));
+  });
+
+  it('a too-tall image on an ODD page never bridges — it shrinks instead', async () => {
+    const tall = await sharp({ create: { width: 1200, height: 5200, channels: 3, background: '#444' } }).png().toBuffer();
+    const out = path.join(outputDir, 'bridge-odd.pdf');
+    const r = await generatePdf(sample, out, { bookletSize: 'tabloid', notationImages: { sanctus: tall } });
+    assert.equal(r.pageCount, 8);
+    assert.ok(!r.warnings.some(w => w.includes('facing page')), 'no bridge from an odd page');
+  });
+
+  it('saves an unsaved export to History and flags it FINAL for its week', async () => {
+    const date = '2031-03-09'; // unlikely to collide with other suites
+    const body = { ...sample, id: undefined, liturgicalDate: date, feastName: 'Bridging Test Sunday' };
+    const res = await fetch('/api/generate-pdf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': adminToken },
+      body: JSON.stringify(body)
+    });
+    assert.equal(res.status, 200);
+    const list = await fetch('/api/drafts', { headers: { 'x-session-token': adminToken } });
+    const drafts = list.json();
+    const mine = drafts.filter(d => d.liturgicalDate === date);
+    assert.ok(mine.length >= 1, 'export auto-saved into history');
+    assert.ok(mine.some(d => d.isFinal), 'the exported version is flagged FINAL');
+    for (const d of mine) {
+      await fetch('/api/drafts/' + d.id, { method: 'DELETE', headers: { 'x-session-token': adminToken } });
+    }
+  });
+
+  it('promotes an uploaded notation image into the Library', async () => {
+    const dir = path.join(__dirname, '..', '..', 'data', 'uploads', 'notation');
+    fs.mkdirSync(dir, { recursive: true });
+    const fname = `test-promote-${Date.now()}.png`;
+    fs.writeFileSync(path.join(dir, fname), tinyPng());
+    try {
+      const res = await fetch('/api/attachments/from-notation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-session-token': adminToken },
+        body: JSON.stringify({ filename: fname, title: 'Promoted Kyrie', composer: 'Fr. Larry', kind: 'kyrie' })
+      });
+      assert.equal(res.status, 200);
+      const meta = res.json();
+      assert.equal(meta.title, 'Promoted Kyrie');
+      assert.equal(meta.kind, 'kyrie');
+      const served = await fetch(meta.url);
+      assert.equal(served.status, 200);
+      await fetch('/api/attachments/' + meta.id, { method: 'DELETE', headers: { 'x-session-token': adminToken } });
+    } finally {
+      fs.unlinkSync(path.join(dir, fname));
+    }
+  });
+
+  it('SPA carries the new v1.7 surfaces', async () => {
+    const html = (await fetch('/')).text();
+    for (const marker of ['saveNotationToLibrary', 'editAttachmentMeta', 'status-badge final',
+                          'notation-zoom', 'loadNotationUsage', 'restoreSnapshot', 'wa_editor_snapshot',
+                          'deleteNotationFile', 'btn-restore']) {
+      assert.ok(html.includes(marker), marker + ' missing');
+    }
+  });
+});
+
+describe('manual FINAL override (any user)', () => {
+  it('mark-final moves the FINAL flag between versions of the same week', async () => {
+    const date = '2031-04-06';
+    const mk = async (feast) => (await fetch('/api/drafts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': adminToken },
+      body: JSON.stringify({ ...sample, id: undefined, liturgicalDate: date, feastName: feast })
+    })).json();
+    const a = await mk('Week A v1');
+    const b = await mk('Week A v2');
+    try {
+      // A pastor (no special perms beyond login) can mark final.
+      const pastorLogin = await fetch('/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'frlarry' })
+      });
+      const pastorToken = pastorLogin.json().token;
+      const res = await fetch('/api/drafts/' + a.id + '/mark-final', {
+        method: 'POST', headers: { 'x-session-token': pastorToken }
+      });
+      assert.equal(res.status, 200);
+      let drafts = (await fetch('/api/drafts', { headers: { 'x-session-token': adminToken } })).json();
+      assert.ok(drafts.find(d => d.id === a.id).isFinal, 'A is FINAL');
+      assert.ok(!drafts.find(d => d.id === b.id).isFinal, 'B is not');
+      // Re-marking B steals the flag.
+      await fetch('/api/drafts/' + b.id + '/mark-final', { method: 'POST', headers: { 'x-session-token': adminToken } });
+      drafts = (await fetch('/api/drafts', { headers: { 'x-session-token': adminToken } })).json();
+      assert.ok(drafts.find(d => d.id === b.id).isFinal, 'B is FINAL after override');
+      assert.ok(!drafts.find(d => d.id === a.id).isFinal, 'A superseded');
+    } finally {
+      for (const id of [a.id, b.id]) {
+        await fetch('/api/drafts/' + id, { method: 'DELETE', headers: { 'x-session-token': adminToken } });
+      }
+    }
+  });
+
+  it('history page exposes the Mark FINAL action', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(html.includes('markDraftFinal'));
+    assert.ok(html.includes('Mark FINAL'));
   });
 });
