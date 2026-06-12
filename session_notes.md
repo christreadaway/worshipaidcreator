@@ -1249,3 +1249,45 @@ constructor (Helvetica metrics never load), and adding
 - [ ] Export a PDF from the deployed site (verifies fonts shipped).
 - [ ] Upload a TIFF in the Library (verifies sharp native module bundled
       correctly; if conversion fails the error message will say so).
+
+### Session 9 addendum (June 12, 2026, evening) — live-site verification round
+
+Morris's follow-up test on the deployed v1.6 surfaced two issues. Both were
+diagnosed **against the live site** (logged in as `kari`/staff, exported the
+real draft via the API, dissected the bytes):
+
+1. **Exported PDF opened as blank pages.** The PDF was structurally valid —
+   8 pages, Liberation Sans subsets embedded, all text present — but every
+   flate stream was corrupt (`Bad FCHECK`). Served images had the same
+   signature: bytes ≥ 0x80 replaced by `EF BF BD` (UTF-8 replacement char).
+   Root cause: `serverless-http`'s default binary content-type list is
+   EMPTY, so binary responses (PDF, images, audio) were stringified as
+   UTF-8 on the way out of the Lambda. v1.5 never hit this because export
+   crashed on fonts before ever returning a PDF. **Fix:** pass
+   `{ binary: [...] }` to `serverless()` in `netlify/functions/api.js`
+   (PDF, image/*, audio/*, video/*, font/*, octet-stream, zip, msword,
+   rtf, vnd.*). Verified against serverless-http's `is-binary` logic.
+   NOTE: stored uploads were never corrupted (request bodies arrive
+   base64) — nothing needs re-uploading.
+
+2. **Uploaded JPGs not printing in the booklet.** The live draft's
+   `notationImages` was `{}` — the tester uploads everything through the
+   generic Notation Images box / Library and never uses the per-slot
+   Attach buttons. Bridged his workflow instead of retraining him:
+   - The **Notation Images list is now actionable**: every uploaded image
+     row carries a "Print in:" dropdown (Processional, Communion,
+     Thanksgiving, Kyrie, Gloria, Sanctus, Mystery of Faith, Lamb of God,
+     Psalm Refrain, Gospel Acclamation) plus pills showing where it
+     already prints. Upload everything, then assign from the list.
+   - Per-slot pickers also list **Library image attachments**
+     (kind-matched first), and `notation-resolver` now resolves
+     attachment URLs (`uploads-attachments` namespace / local dir) so
+     those choices embed in the PDF too.
+   - **Upload-list lag** ("I'd upload one but not see all of them"):
+     Netlify Blobs `list()` is eventually consistent. The SPA now keeps a
+     client-side file cache — new uploads appear in the list instantly —
+     plus a Refresh button.
+
+PDF-engine question (raised by the user): evaluated and **no engine change
+needed** — PDFKit's output was byte-perfect locally and on Lambda; the
+corruption was purely in the HTTP transport layer (fix #1 above).

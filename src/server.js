@@ -1140,6 +1140,12 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
 .attachment-card .actions { display: flex; gap: 4px; flex-shrink: 0; }
 .attachment-kind-pill { display: inline-block; background: #eef0e6; color: #5a5a3a; font-size: 9px; font-weight: 600; padding: 1px 6px; border-radius: 8px; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 4px; }
 .attachment-list-empty { color: var(--gray); font-style: italic; font-size: 11px; padding: 8px; }
+.notation-row { background: white; border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.notation-row img { max-height: 48px; max-width: 90px; border: 1px solid var(--border); border-radius: 3px; background: #fff; flex-shrink: 0; }
+.notation-row .fn { font-size: 10px; color: var(--gray); flex: 1; min-width: 80px; word-break: break-all; }
+.notation-row select { font-size: 11px; padding: 3px 4px; max-width: 200px; }
+.notation-use-pill { display: inline-block; background: #eef0e6; color: #5a5a3a; font-size: 9px; font-weight: 600; padding: 1px 6px; border-radius: 8px; margin: 1px 2px 1px 0; white-space: nowrap; }
+.notation-use-pill button { background: none; border: none; cursor: pointer; color: #5a5a3a; font-size: 11px; padding: 0 0 0 2px; line-height: 1; }
 .attachment-pick-row { display: grid; grid-template-columns: 1fr auto; gap: 4px; align-items: center; margin-top: 2px; }
 .attachment-pick-row select { font-size: 11px; padding: 4px 6px; min-width: 0; }
 .attachment-pick-row a { font-size: 10px; color: var(--gold); text-decoration: none; white-space: nowrap; }
@@ -1370,9 +1376,9 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
 
     <!-- NOTATION IMAGES -->
     <div class="form-section" id="section-notation">
-      <div class="form-section-hdr" onclick="toggle(this)">Notation Images <span>&#9660;</span></div>
+      <div class="form-section-hdr" onclick="toggle(this)">Notation Images <button type="button" class="btn btn-outline btn-sm" style="float:right;margin-right:8px;" onclick="event.stopPropagation(); loadNotationList(); toast('Refreshing notation images…', 'success')">Refresh</button> <span>&#9660;</span></div>
       <div class="form-section-body">
-        <p style="font-size:11px;color:var(--gray);margin-bottom:8px;">All uploaded notation images (PNG, JPG, TIFF — TIFFs convert to PNG automatically, white margins are trimmed). Attach an image to a specific spot in the booklet with the <em>Attach notation</em> buttons in Service Music and Shared Music.</p>
+        <p style="font-size:11px;color:var(--gray);margin-bottom:8px;">All uploaded notation images (PNG, JPG, TIFF — TIFFs convert to PNG automatically, white margins are trimmed). Use the <em>Print in</em> dropdown on each image below to choose where it prints in the booklet, or use the <em>Attach notation</em> buttons in Service Music and Shared Music. Note: after a page reload, uploads can take a moment to appear in this list (hit Refresh) — newly uploaded files always show immediately.</p>
         <div class="upload-area" onclick="document.getElementById('notationFileInput').click()">
           <input type="file" id="notationFileInput" accept="image/*,.tif,.tiff" onchange="uploadNotation(this)">
           <p style="font-size:11px;color:var(--gray);">Click to upload a notation image (PNG, JPG, TIFF, BMP, WebP, SVG)</p>
@@ -2193,6 +2199,8 @@ function populateForm(data) {
   // Per-slot notation images (uploaded music that prints in the booklet).
   window._notationImages = (data.notationImages && typeof data.notationImages === 'object') ? { ...data.notationImages } : {};
   renderNotationThumbs();
+  renderNotationList();
+  refreshNotationPicks();
   // Saved drafts show their actual values — reflect the stored carryover
   // flag but never re-copy from a previous week on load.
   sc('serviceMusicCarryover', !!data.serviceMusicCarryover);
@@ -2815,6 +2823,51 @@ async function deleteAttachment(id) {
 // booklet. window._notationImages maps slot -> upload URL.
 window._notationImages = window._notationImages || {};
 
+// Client-side cache of uploaded notation files: [{filename, url}].
+// Netlify Blobs list() is eventually consistent, so a fresh GET right
+// after an upload may not include the new file yet. We merge server
+// results into this cache (never replace it) and push uploads into it
+// immediately, so newly uploaded files always show right away.
+window._notationFiles = window._notationFiles || [];
+
+// Booklet spots a notation image can print in (slot -> human label).
+const NOTATION_SLOT_LABELS = {
+  processional: 'Processional Hymn',
+  communion: 'Communion Hymn',
+  thanksgiving: 'Hymn of Thanksgiving',
+  kyrie: 'Kyrie',
+  gloria: 'Gloria',
+  sanctus: 'Holy, Holy, Holy (Sanctus)',
+  mysteryOfFaith: 'Mystery of Faith',
+  lambOfGod: 'Lamb of God',
+  psalmRefrain: 'Psalm Refrain',
+  gospelAcclamation: 'Gospel Acclamation'
+};
+
+// Library attachment kind -> notation slot (for ordering library files
+// in the per-slot pick dropdowns).
+const ATTACHMENT_KIND_TO_SLOT = {
+  kyrie: 'kyrie',
+  gloria: 'gloria',
+  sanctus: 'sanctus',
+  mystery_of_faith: 'mysteryOfFaith',
+  agnus_dei: 'lambOfGod',
+  psalm: 'psalmRefrain',
+  gospel_acclamation: 'gospelAcclamation',
+  processional: 'processional',
+  communion: 'communion',
+  thanksgiving: 'thanksgiving'
+};
+
+// Add an uploaded file to the cache (dedupe by url).
+function addNotationFile(filename, url) {
+  if (!url) return;
+  if (!Array.isArray(window._notationFiles)) window._notationFiles = [];
+  if (!window._notationFiles.some(f => f.url === url)) {
+    window._notationFiles.push({ filename: filename || url.split('/').pop(), url });
+  }
+}
+
 async function uploadNotationForSlot(slot, input) {
   if (!input.files || !input.files[0]) return;
   const file = input.files[0];
@@ -2831,8 +2884,11 @@ async function uploadNotationForSlot(slot, input) {
     if (handle401(res)) return;
     const data = await res.json();
     if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
+    // Cache the new file immediately — the server list is eventually
+    // consistent and may not include it yet.
+    addNotationFile(data.filename || data.originalName, data.url);
     attachNotation(slot, data.url);
-    loadNotationList();
+    renderNotationList();
     refreshNotationPicks();
     toast((data.converted ? 'Converted to PNG and attached' : 'Notation attached'), 'success');
   } catch (e) {
@@ -2846,11 +2902,13 @@ function attachNotation(slot, url) {
   if (!url) return;
   window._notationImages[slot] = url;
   renderNotationThumbs();
+  renderNotationList();
 }
 
 function detachNotation(slot) {
   delete window._notationImages[slot];
   renderNotationThumbs();
+  renderNotationList();
 }
 
 function attachNotationFromPick(slot, sel) {
@@ -2858,17 +2916,43 @@ function attachNotationFromPick(slot, sel) {
   sel.value = '';
 }
 
-// Fill every per-slot "uploaded images" picker with the notation files
-// already on the server, so one upload can be reused across slots/weeks.
+// "Print in:" dropdown on a Notation Images list row — assigns the
+// image at cache index idx to the chosen booklet spot.
+function assignNotationFromList(idx, sel) {
+  const slot = sel.value;
+  sel.value = '';
+  if (!slot) return;
+  const f = (window._notationFiles || [])[idx];
+  if (!f) return;
+  attachNotation(slot, f.url);
+  toast('Will print in: ' + (NOTATION_SLOT_LABELS[slot] || slot), 'success');
+}
+
+// Fill every per-slot "uploaded images" picker from the client cache plus
+// image attachments in the Library (attachments whose kind matches the
+// slot come first), so one upload can be reused across slots/weeks.
 async function refreshNotationPicks() {
-  let files = [];
+  const files = window._notationFiles || [];
+  let lib = [];
   try {
-    const res = await fetch('/api/uploads/notation');
-    files = await res.json();
-  } catch (e) { files = []; }
+    lib = (await getAttachmentCache()).filter(a => a.url && a.mime && a.mime.indexOf('image/') === 0);
+  } catch (e) { lib = []; }
   document.querySelectorAll('select[data-notation-pick]').forEach(sel => {
-    sel.innerHTML = '<option value="">' + (files.length ? '— or pick an uploaded image —' : '— no uploaded images yet —') + '</option>' +
-      files.map(f => '<option value="' + esc(f.url) + '">' + esc(f.filename) + '</option>').join('');
+    const slot = (sel.id || '').replace(/^npick_/, '');
+    const matching = lib.filter(a => ATTACHMENT_KIND_TO_SLOT[a.kind] === slot);
+    const ordered = matching.concat(lib.filter(a => ATTACHMENT_KIND_TO_SLOT[a.kind] !== slot));
+    let html = '<option value="">' + ((files.length || ordered.length) ? '— or pick an uploaded image —' : '— no uploaded images yet —') + '</option>';
+    if (files.length) {
+      html += '<optgroup label="Uploaded images">' +
+        files.map(f => '<option value="' + esc(f.url) + '">' + esc(f.filename) + '</option>').join('') +
+        '</optgroup>';
+    }
+    if (ordered.length) {
+      html += '<optgroup label="Library files">' +
+        ordered.map(a => '<option value="' + esc(a.url) + '">' + esc(a.title || a.originalName || a.url) + (a.composer ? ' (' + esc(a.composer) + ')' : '') + '</option>').join('') +
+        '</optgroup>';
+    }
+    sel.innerHTML = html;
   });
 }
 
@@ -2932,6 +3016,7 @@ async function applyServiceMusicCarryover(opts) {
       else delete window._notationImages[slot];
     });
     renderNotationThumbs();
+    renderNotationList();
     const note = document.getElementById('carryoverNote');
     if (note) note.textContent = 'Carried over from ' + (d.feastName || 'previous draft') + (d.liturgicalDate ? ' (' + d.liturgicalDate + ')' : '') + '.';
     if (!opts.silent) toast('Service music carried over from last week', 'success');
@@ -2973,20 +3058,57 @@ async function uploadNotation(input) {
     const data = await res.json();
     if (!res.ok) { toast(data.error || 'Upload failed', 'error'); return; }
     toast('Image uploaded' + (data.converted ? ' (converted to PNG)' : '') + ': ' + data.originalName, 'success');
-    loadNotationList();
+    // Cache the new file immediately — the server list is eventually
+    // consistent and may not include it yet.
+    addNotationFile(data.filename || data.originalName, data.url);
+    renderNotationList();
     refreshNotationPicks();
   } catch(e) { toast('Upload error', 'error'); }
   input.value = '';
 }
 
+// Fetch the server's notation upload list and MERGE it into the client
+// cache (dedupe by url) — never replace the cache, so files uploaded this
+// session stay visible even while the server list lags behind.
 async function loadNotationList() {
   try {
     const res = await fetch('/api/uploads/notation');
     const files = await res.json();
-    document.getElementById('notation-list').innerHTML = files.map(f =>
-      '<div style="margin-bottom:4px;"><img src="' + f.url + '" class="image-preview" alt="notation"> <span style="font-size:10px;color:var(--gray);">' + esc(f.filename) + '</span></div>'
-    ).join('');
+    (Array.isArray(files) ? files : []).forEach(f => addNotationFile(f.filename, f.url));
   } catch(e) {}
+  renderNotationList();
+  refreshNotationPicks();
+}
+
+// Render the Notation Images list from the client cache. Each row shows a
+// thumbnail, the filename, a "Print in:" dropdown of booklet spots, and
+// pills for the spots that currently print this image.
+function renderNotationList() {
+  const target = document.getElementById('notation-list');
+  if (!target) return;
+  const files = window._notationFiles || [];
+  if (!files.length) {
+    target.innerHTML = '<p class="attachment-list-empty">No notation images uploaded yet.</p>';
+    return;
+  }
+  const ni = window._notationImages || {};
+  target.innerHTML = files.map((f, idx) => {
+    const usedIn = Object.keys(NOTATION_SLOT_LABELS).filter(slot => ni[slot] === f.url);
+    const pills = usedIn.map(slot =>
+      '<span class="notation-use-pill">' + esc(NOTATION_SLOT_LABELS[slot]) +
+      ' <button type="button" title="Don\\'t print in ' + esc(NOTATION_SLOT_LABELS[slot]) + '" onclick="detachNotation(\\'' + slot + '\\')">&times;</button></span>'
+    ).join('');
+    const options = '<option value="">Print in: choose a spot…</option>' +
+      Object.keys(NOTATION_SLOT_LABELS).map(slot =>
+        '<option value="' + slot + '">' + esc(NOTATION_SLOT_LABELS[slot]) + '</option>'
+      ).join('');
+    return '<div class="notation-row">' +
+      '<img src="' + esc(f.url) + '" alt="notation">' +
+      '<span class="fn">' + esc(f.filename) + '</span>' +
+      '<select onchange="assignNotationFromList(' + idx + ', this)" title="Choose where this image prints in the booklet">' + options + '</select>' +
+      (pills ? '<span>' + pills + '</span>' : '') +
+    '</div>';
+  }).join('');
 }
 
 async function uploadLogo(input) {
@@ -3668,8 +3790,9 @@ renderAttachmentRefList();
 // Anthem rows: two offertory slots + one choral slot by default (UAT).
 renderAnthemRows('offertory', [], 2);
 renderAnthemRows('choral', [], 1);
-// Notation pickers + carryover field visibility.
-refreshNotationPicks();
+// Notation list + pickers (renders from the client cache after merging the
+// server's eventually-consistent list) + carryover field visibility.
+loadNotationList();
 updateServiceMusicVisibility();
 
 // --- Auto-save ---
