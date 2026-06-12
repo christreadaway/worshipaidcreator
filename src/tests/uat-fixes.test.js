@@ -139,6 +139,78 @@ describe('image utils', () => {
   });
 });
 
+describe('title-header removal (keep just notation + lyrics)', () => {
+  const sharp = require('sharp');
+  const { stripTitleHeader } = require('../image-utils');
+
+  // Synthetic sheet music, 1500x2000: title + composer header, a big white
+  // gap, then a tempo mark hugging the first 5-line staff, notes, lyrics,
+  // a second system, and a copyright line at the very bottom.
+  function buildScore({ withTitle }) {
+    const W = 1500, H = 2000;
+    const img = Buffer.alloc(W * H, 255);
+    const blob = (x0, x1, y0, y1, density) => {
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++)
+        if (Math.random() < density) img[y * W + x] = 20;
+    };
+    const staff = (top) => {
+      for (const sy of [top, top + 20, top + 40, top + 60, top + 80])
+        for (let yy = sy; yy < sy + 4; yy++) for (let x = 80; x < 1420; x++) img[yy * W + x] = 10;
+    };
+    if (withTitle) {
+      blob(400, 1100, 90, 150, 0.25);  // title line
+      blob(950, 1350, 190, 220, 0.2);  // composer credit
+    }
+    blob(120, 260, 560, 590, 0.25);    // tempo mark close above the staff
+    staff(620);
+    blob(100, 1400, 600, 720, 0.06);   // notes around staff 1
+    blob(100, 1400, 760, 800, 0.18);   // lyrics line 1
+    staff(1100);
+    blob(100, 1400, 1240, 1280, 0.18); // lyrics line 2
+    blob(300, 1200, 1920, 1940, 0.15); // copyright (license requires keeping it)
+    return sharp(img, { raw: { width: W, height: H, channels: 1 } }).png().toBuffer();
+  }
+
+  it('crops the title block but keeps tempo mark, music, lyrics, copyright', async () => {
+    const png = await buildScore({ withTitle: true });
+    const out = await stripTitleHeader(png);
+    assert.equal(out.cropped, true);
+    // Crop lands in the white gap: below the composer line (220), above the
+    // tempo mark (560).
+    assert.ok(out.removedPx > 230 && out.removedPx < 560,
+      `crop at ${out.removedPx}, expected inside the 230-560 white gap`);
+    const meta = await sharp(out.buffer).metadata();
+    assert.equal(meta.height, 2000 - out.removedPx, 'only the top is removed');
+  });
+
+  it('leaves an image without a title header untouched', async () => {
+    const png = await buildScore({ withTitle: false });
+    const out = await stripTitleHeader(png);
+    assert.equal(out.cropped, false);
+  });
+
+  it('is idempotent — re-running on a cropped image does nothing', async () => {
+    const png = await buildScore({ withTitle: true });
+    const once = await stripTitleHeader(png);
+    const twice = await stripTitleHeader(once.buffer);
+    assert.equal(twice.cropped, false);
+  });
+
+  it('normalizeNotationImage honors the stripTitle option both ways', async () => {
+    const png = await buildScore({ withTitle: true });
+    const on = await normalizeNotationImage(png, '.png', { stripTitle: true });
+    assert.equal(on.titleCropped, true);
+    const off = await normalizeNotationImage(png, '.png', { stripTitle: false });
+    assert.equal(off.titleCropped, false);
+  });
+
+  it('editor exposes the strip-title checkbox and sends the flag', async () => {
+    const html = (await fetch('/')).text();
+    assert.ok(/id="stripTitleHeaders"[^>]*checked/.test(html));
+    assert.ok(html.includes("fd.append('stripTitle'"));
+  });
+});
+
 describe('uploads: TIFF accepted + converted, errors are descriptive', () => {
   it('notation upload converts a TIFF to PNG', async () => {
     const sharp = require('sharp');
