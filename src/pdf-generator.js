@@ -11,8 +11,8 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 const { APOSTLES_CREED, NICENE_CREED, RENEWAL_OF_BAPTISMAL_VOWS } = require('./assets/text/creeds');
-const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER, getHolyHolyHolyText } = require('./assets/text/mass-texts');
-const { getDefaultCopyrightFull, getDefaultCopyrightShort } = require('./assets/text/copyright');
+const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, getHolyHolyHolyText } = require('./assets/text/mass-texts');
+const { getDefaultCopyrightFull } = require('./assets/text/copyright');
 const { formatMusicSlot, renderMusicLineText } = require('./music-formatter');
 const { applySeasonDefaults } = require('./config/seasons');
 const { detectOverflows } = require('./validator');
@@ -21,14 +21,18 @@ const { getImageDimensions } = require('./image-utils');
 // 72pt = 1 inch
 const PT = 72;
 
-// Default printed widths for uploaded music images, in inches on the
-// 8.5in-wide (tabloid) page — the parish's spec: service music 6in,
-// hymns + responsorial psalm refrain 5in, all centered. Other trims scale
-// proportionally to their page width.
+// Default printed width for uploaded music images, in inches on the
+// 8.5in-wide (tabloid) page. The director of liturgy's spec: ALL music
+// notation prints 5"–5.5" wide, centered (service music was previously 6"
+// — "rendered too large"). Other trims scale proportionally to their page
+// width and clamp to the content area.
+const NOTATION_WIDTH_IN = 5.5;
 const NOTATION_WIDTHS_IN = {
-  processional: 5, communion: 5, thanksgiving: 5, psalmRefrain: 5,
-  kyrie: 6, gloria: 6, sanctus: 6, mysteryOfFaith: 6, lambOfGod: 6,
-  gospelAcclamation: 6
+  processional: NOTATION_WIDTH_IN, communion: NOTATION_WIDTH_IN,
+  thanksgiving: NOTATION_WIDTH_IN, psalmRefrain: NOTATION_WIDTH_IN,
+  kyrie: NOTATION_WIDTH_IN, gloria: NOTATION_WIDTH_IN, sanctus: NOTATION_WIDTH_IN,
+  mysteryOfFaith: NOTATION_WIDTH_IN, lambOfGod: NOTATION_WIDTH_IN,
+  gospelAcclamation: NOTATION_WIDTH_IN
 };
 
 // Embedded TrueType fonts — Liberation Sans covers the full Latin Unicode
@@ -330,11 +334,89 @@ class WorshipAidPdfGenerator {
     this.doc.font('Sans');
   }
 
-  subHeading(text) {
-    this.doc.fontSize(this.s(8)).fillColor(COLORS.burgundy).font('Sans-Bold');
-    this._textBlock(text.toUpperCase(), this.MARGIN_SIDE,
-      { width: this.CONTENT_WIDTH, characterSpacing: 0.8 }, this.s(2));
+  // A sub-heading line. Per the director of liturgy, a piece's title/composer
+  // and a reading's scripture citation belong ON the heading line (not on a
+  // separate line below), and a posture direction ("Please stand") sits
+  // right-justified on that same line. opts:
+  //   inline      — text placed immediately after the heading (music
+  //                 title/composer, or a scripture citation)
+  //   inlineFont  — font for the inline text (default 'Sans-Italic' for
+  //                 music; pass 'Sans-Bold' for citations)
+  //   inlineColor — color for the inline text
+  //   right       — posture direction, right-justified on the heading line
+  // All parts share the heading's font size so their baselines align.
+  subHeading(text, opts = {}) {
+    const SIZE = this.s(8);
+    const cap = String(text).toUpperCase();
+    const startY = this.y;
+
+    // Measure each part up front (same font size → shared baseline).
+    this.doc.fontSize(SIZE).font('Sans-Bold');
+    const headingW = this.doc.widthOfString(cap, { characterSpacing: 0.8 });
+    let rightW = 0;
+    if (opts.right) {
+      this.doc.fontSize(SIZE).font('Sans-Italic');
+      rightW = this.doc.widthOfString(opts.right);
+    }
+    const gap = this.s(6);
+    const inlineX = this.MARGIN_SIDE + headingW + gap;
+    // Inline text may wrap; it gets the room between the heading and the
+    // right-justified posture direction (or the right margin).
+    const rightEdge = this.PAGE_WIDTH - this.MARGIN_SIDE - (rightW ? rightW + gap : 0);
+    const inlineW = Math.max(this.s(40), rightEdge - inlineX);
+
+    // Height of the line = tallest part (inline text can wrap to 2+ lines).
+    let blockH = this.doc.fontSize(SIZE).font('Sans-Bold').currentLineHeight(true);
+    if (opts.inline) {
+      this.doc.fontSize(SIZE).font(opts.inlineFont || 'Sans-Italic');
+      blockH = Math.max(blockH, this.doc.heightOfString(String(opts.inline), { width: inlineW }));
+    }
+
+    if (this._dryRun) {
+      this.y = startY + blockH + this.s(2);
+      this.doc.font('Sans');
+      return;
+    }
+    if (this._bottom() - startY < this.doc.fontSize(SIZE).font('Sans-Bold').currentLineHeight(true)) {
+      this._warnClipped();
+      this.doc.font('Sans');
+      return;
+    }
+
+    // Heading.
+    this.doc.fontSize(SIZE).fillColor(COLORS.burgundy).font('Sans-Bold')
+      .text(cap, this.MARGIN_SIDE, startY, { characterSpacing: 0.8, lineBreak: false });
+    // Right-justified posture direction.
+    if (opts.right) {
+      this.doc.fontSize(SIZE).fillColor('#8B0000').font('Sans-Italic')
+        .text(opts.right, rightEdge, startY, { width: rightW, align: 'right', lineBreak: false });
+    }
+    // Inline title/composer or scripture citation.
+    if (opts.inline) {
+      this.doc.fontSize(SIZE).fillColor(opts.inlineColor || COLORS.text).font(opts.inlineFont || 'Sans-Italic')
+        .text(String(opts.inline), inlineX, startY, { width: inlineW });
+    }
+
+    this.y = startY + blockH + this.s(2);
     this.doc.font('Sans');
+    this._trackY();
+  }
+
+  // Sub-heading for a music slot: the piece's title + composer go inline on
+  // the heading line with the redundant slot label dropped (director: "don't
+  // restate what it is; only provide the title and composer"). When a slot
+  // carries different pieces per Mass time, the heading stands alone and each
+  // piece is listed on its own line below (still label-free).
+  musicHeading(heading, titleField, composerField, opts = {}) {
+    const items = formatMusicSlot(this.data, titleField, composerField);
+    if (items.length <= 1) {
+      this.subHeading(heading, { inline: items[0] ? renderMusicLineText(items[0]) : undefined, right: opts.right });
+    } else {
+      this.subHeading(heading, { right: opts.right });
+      for (const item of items) {
+        this.bodyText(renderMusicLineText(item), { italic: true, size: 8.5, gap: 1 });
+      }
+    }
   }
 
   rubric(text, align) {
@@ -360,21 +442,6 @@ class WorshipAidPdfGenerator {
       align: opts.align || 'left',
       lineGap: this.s(1) * this.textScale
     }, this.s(opts.gap !== undefined ? opts.gap : 3));
-    this.doc.font('Sans');
-  }
-
-  citation(text) {
-    this.bodyText(text, { bold: true, size: 8.5, color: '#333333', gap: 1 });
-  }
-
-  musicLine(titleField, composerField, label) {
-    const items = formatMusicSlot(this.data, titleField, composerField);
-    if (items.length === 0) return;
-    for (const item of items) {
-      const text = `${label} — ${renderMusicLineText(item)}`;
-      this.doc.fontSize(this.s(9) * this.textScale).fillColor(COLORS.text).font('Sans-Italic');
-      this._textBlock(text, this.MARGIN_SIDE, { width: this.CONTENT_WIDTH }, this.s(2));
-    }
     this.doc.font('Sans');
   }
 
@@ -419,22 +486,12 @@ class WorshipAidPdfGenerator {
     return pages;
   }
 
-  // Folio + (when the page carries licensed notation) the short license
-  // line, then reset the per-page notation flag.
+  // Folio only. The OneLicense permission line is NOT repeated on every page
+  // that carries notation — per the director of liturgy it appears once, in
+  // the full copyright block at the end of the document. The per-page flag
+  // is still cleared so it can't leak across pages.
   _finishContentPage(pageNo) {
-    if (this._pageHasNotation) {
-      let line = String(this.parishSettings.copyrightShort ||
-        getDefaultCopyrightShort(this.parishSettings.onelicenseNumber)).replace(/\s+/g, ' ').trim();
-      this.doc.font('Sans').fontSize(this.s(7));
-      if (this.doc.widthOfString(line) > this.CONTENT_WIDTH) {
-        while (line.length > 1 && this.doc.widthOfString(line + '…') > this.CONTENT_WIDTH) {
-          line = line.slice(0, -1);
-        }
-        line = line.trimEnd() + '…';
-      }
-      this._footerText(line, this.PAGE_HEIGHT - this.MARGIN * 0.85, { lineBreak: false });
-      this._pageHasNotation = false;
-    }
+    this._pageHasNotation = false;
     this.pageNumber(pageNo);
   }
 
@@ -494,7 +551,7 @@ class WorshipAidPdfGenerator {
   // Spec width for a slot's music image: inches on the tabloid page,
   // proportional on other trims, never wider than the content area.
   _notationTargetWidth(slot) {
-    const inches = NOTATION_WIDTHS_IN[slot] || 6;
+    const inches = NOTATION_WIDTHS_IN[slot] || NOTATION_WIDTH_IN;
     return Math.min(inches * PT * (this.PAGE_WIDTH / (8.5 * PT)), this.CONTENT_WIDTH);
   }
 
@@ -504,26 +561,39 @@ class WorshipAidPdfGenerator {
     const available = this._bottom() - this.y;
     const dims = getImageDimensions(buf);
 
-    // Natural size at the slot's spec width (6in service music / 5in hymns
-    // and psalm refrain on tabloid). textScale: when the flow engine
-    // shrinks the booklet to fit 8 pages, images shrink with the text so
-    // the layout compresses evenly instead of starving the last slot.
+    // The director of liturgy's spec: all music notation prints 5"–5.5"
+    // wide. Width is fixed at the slot's spec; height follows the image's
+    // natural aspect ratio. textScale: when the flow engine shrinks the
+    // booklet to fit 8 pages, images shrink with the text so the layout
+    // compresses evenly instead of starving the last slot.
     let drawW = this._notationTargetWidth(slot) * this.textScale;
     let drawH = dims ? (dims.height / dims.width) * drawW : this.s(maxHBase);
 
-    // Hymn slots are uncapped (a full-page hymn owns its page); ordinary
-    // parts keep a height cap. Shrink keeps the image complete.
-    const maxH = opts.uncapped ? Infinity : this.s(maxHBase) * this.textScale;
-    const capH = Math.min(maxH, available);
-    if (capH < this.s(20)) {
-      // NEVER silent: the flow paginator should have prevented this; if a
-      // page still can't take the image, say so.
-      if (!this._dryRun) this.warnings.push(`Page is too full to place the ${slot} notation image.`);
-      return true; // the slot HAS music; we just couldn't fit it
+    // Height is capped ONLY at a full content page — never at the scrap left
+    // below the current block. A notation image that doesn't fit the room
+    // remaining is pushed whole to the next page by the flow paginator (the
+    // Gloria that was shrunk too small should instead have bumped the
+    // Liturgy of the Word to the following page). We do NOT reduce the width
+    // to squeeze the image into leftover space, which is what made notation
+    // render below the 5" minimum.
+    const fullPageH = this._bottom() - this.MARGIN_TOP;
+    if (drawH > fullPageH) {
+      // Taller than a whole page even at spec width: shrink proportionally
+      // so the image stays complete (rare — a very tall single score).
+      drawW = drawW * (fullPageH / drawH);
+      drawH = fullPageH;
     }
-    if (drawH > capH) {
-      drawW = drawW * (capH / drawH);
-      drawH = capH;
+    if (!this._dryRun && drawH > available + 1) {
+      // The paginator should have started a fresh page for this block; if a
+      // late slot still overruns, clamp to the page and warn rather than
+      // silently run past the bottom margin.
+      if (available < this.s(20)) {
+        this.warnings.push(`Page is too full to place the ${slot} notation image.`);
+        return true; // the slot HAS music; we just couldn't fit it
+      }
+      this.warnings.push(`Page was too full to print the ${slot} notation at full size — it was reduced to fit.`);
+      drawW = drawW * (available / drawH);
+      drawH = available;
     }
     if (this._dryRun) {
       this.y += drawH + this.s(4);
@@ -835,13 +905,13 @@ class WorshipAidPdfGenerator {
     const blocks = [];
     const b = (fn) => blocks.push({ render: fn });
 
-    // Heading + citation + first paragraph stay together; the remaining
-    // paragraphs flow as their own blocks.
+    // Heading (with the scripture citation inline on the same line) + first
+    // paragraph stay together; the remaining paragraphs flow as their own
+    // blocks. opts.right places a posture direction on the heading line.
     const reading = (heading, citation, text, opts = {}) => {
       const paras = String(text || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
       b(() => {
-        this.subHeading(heading);
-        if (citation) this.citation(citation);
+        this.subHeading(heading, { inline: citation || undefined, inlineFont: 'Sans-Bold', inlineColor: '#333333', right: opts.right });
         if (paras[0]) this.bodyText(paras[0], opts);
       });
       for (const p of paras.slice(1)) b(() => this.bodyText(p, opts));
@@ -850,16 +920,17 @@ class WorshipAidPdfGenerator {
     // --- The Introductory Rites ---
     b(() => {
       this.sectionHeader('The Introductory Rites');
-      this.subHeading('Organ Prelude');
-      this.musicLine('organPrelude', 'organPreludeComposer', 'Prelude');
-      this.rubric(RUBRICS.stand);
+      this.musicHeading('Organ Prelude', 'organPrelude', 'organPreludeComposer');
     });
 
     const entranceType = this.ss.entranceType || 'processional';
     b(() => {
-      this.subHeading(entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon');
-      this.musicLine('processionalOrEntrance', 'processionalOrEntranceComposer',
-        entranceType === 'processional' ? 'Processional' : 'Antiphon');
+      // "Please stand" rides on the entrance heading line, right-justified
+      // (director: same line as the heading and the hymn title).
+      this.musicHeading(
+        entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon',
+        'processionalOrEntrance', 'processionalOrEntranceComposer',
+        { right: RUBRICS.stand });
       if (entranceType === 'processional') {
         this.hymnMusicSpace({ slot: 'processional' });
       }
@@ -890,8 +961,7 @@ class WorshipAidPdfGenerator {
     }
 
     b(() => {
-      this.subHeading('Lord, Have Mercy');
-      this.musicLine('kyrieSetting', 'kyrieComposer', 'Kyrie');
+      this.musicHeading('Lord, Have Mercy', 'kyrieSetting', 'kyrieComposer');
       this.ordinaryMusicSpace('kyrie', 'Kyrie — music notation');
     });
 
@@ -899,8 +969,7 @@ class WorshipAidPdfGenerator {
       (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
     if (showGloria) {
       b(() => {
-        this.subHeading('Gloria');
-        if (this.ss.gloriaSetting) this.bodyText(this.ss.gloriaSetting, { italic: true, gap: 1 });
+        this.subHeading('Gloria', { inline: this.ss.gloriaSetting || undefined });
         if (this._slotHasMusic('gloria')) {
           this.ordinaryMusicSpace('gloria', 'Gloria — music notation');
         } else {
@@ -908,6 +977,12 @@ class WorshipAidPdfGenerator {
         }
       });
     }
+
+    // The Collect (opening prayer) closes the Introductory Rites — its
+    // heading follows the Gloria. The "Please be seated" direction for the
+    // readings then sits between this heading and "The Liturgy of the Word"
+    // (handled in the Liturgy of the Word block below).
+    b(() => this.subHeading('Collect'));
 
     // Children's Liturgy dismissal — children leave after the Opening
     // Prayer (end of Introductory Rites) and return at the Offertory.
@@ -919,19 +994,21 @@ class WorshipAidPdfGenerator {
     {
       const paras = String(this.r.firstReadingText || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
       b(() => {
-        this.sectionHeader('The Liturgy of the Word');
+        // "Please be seated" sits after the Collect heading and before this
+        // section title (director).
         this.rubric(RUBRICS.sit);
-        this.subHeading('First Reading');
-        if (this.r.firstReadingCitation) this.citation(this.r.firstReadingCitation);
+        this.sectionHeader('The Liturgy of the Word');
+        this.subHeading('First Reading', { inline: this.r.firstReadingCitation || undefined, inlineFont: 'Sans-Bold', inlineColor: '#333333' });
         if (paras[0]) this.bodyText(paras[0], { size: 9 });
       });
       for (const p of paras.slice(1)) b(() => this.bodyText(p, { size: 9 }));
     }
 
     b(() => {
-      this.subHeading('Responsorial Psalm');
-      if (this.r.psalmCitation) this.citation(this.r.psalmCitation);
-      this.musicLine('responsorialPsalmSetting', 'responsorialPsalmSettingComposer', 'Setting');
+      // Responsorial Psalm has no piece "title" — only the scripture
+      // reference goes on the heading line (director). The setting/composer
+      // line is dropped; the notation itself carries the music.
+      this.subHeading('Responsorial Psalm', { inline: this.r.psalmCitation || undefined, inlineFont: 'Sans-Bold', inlineColor: '#333333' });
       // Music (uploaded refrain notation or a paste area) replaces the
       // text refrain — the notation carries the words.
       if (this._slotHasMusic('psalmRefrain')) {
@@ -941,8 +1018,12 @@ class WorshipAidPdfGenerator {
       }
     });
     if (this.r.psalmVerses) {
+      // Each verse ends with "R." to cue the people back to the response,
+      // and a blank space separates the verses (director). The trailing "R."
+      // is only added when the verse doesn't already carry one.
       for (const v of String(this.r.psalmVerses).split(/\n\s*\n/).map(p => p.trim()).filter(Boolean)) {
-        b(() => this.bodyText(v, { size: 8.5, x: this.MARGIN_SIDE + this.s(10), width: this.CONTENT_WIDTH - this.s(10) }));
+        const verse = /(?:^|\s)R\.?\s*$/.test(v) ? v : `${v} R.`;
+        b(() => this.bodyText(verse, { size: 8.5, x: this.MARGIN_SIDE + this.s(10), width: this.CONTENT_WIDTH - this.s(10), gap: 7 }));
       }
     }
 
@@ -951,8 +1032,9 @@ class WorshipAidPdfGenerator {
     }
 
     b(() => {
-      this.rubric(RUBRICS.stand);
-      this.subHeading('Gospel Acclamation');
+      // Stand for the Gospel Acclamation — direction right-justified on the
+      // heading line, with the acclamation's reference inline (director).
+      this.subHeading('Gospel Acclamation', { inline: this.r.gospelAcclamationReference || undefined, inlineFont: 'Sans-Bold', inlineColor: '#333333', right: RUBRICS.stand });
       const isLenten = this.data.liturgicalSeason === 'lent';
       let acclamationText;
       if (isLenten) {
@@ -967,19 +1049,15 @@ class WorshipAidPdfGenerator {
       } else {
         this.bodyText(acclamationText, { bold: true, size: 9 });
       }
-      if (this.r.gospelAcclamationReference) this.citation(this.r.gospelAcclamationReference);
       if (this.r.gospelAcclamationVerse) this.bodyText(this.r.gospelAcclamationVerse, { italic: true, size: 8.5 });
     });
 
-    // --- Gospel, Homily, Creed ---
+    // --- Gospel, Homily, Creed --- (already standing for the Gospel)
     reading('Gospel', this.r.gospelCitation, this.r.gospelText, { size: 9.5 });
 
-    b(() => {
-      this.subHeading('Homily');
-      this.rubric(RUBRICS.sit);
-      this.y += this.s(4);
-      this.rubric(RUBRICS.stand);
-    });
+    // Homily: "Please be seated" right-justified on the heading line. The
+    // congregation then stands for the Creed (direction on the Creed line).
+    b(() => this.subHeading('Homily', { right: RUBRICS.sit }));
 
     {
       const creedType = this.ss.creedType || 'nicene';
@@ -994,7 +1072,7 @@ class WorshipAidPdfGenerator {
         nicene:         NICENE_CREED
       }[creedType] || NICENE_CREED;
       b(() => {
-        this.subHeading(creedHeading);
+        this.subHeading(creedHeading, { right: RUBRICS.stand });
         if (this.ss.twoColumnCreed && creedType !== 'baptismal_vows') {
           this._renderCreedTwoColumn(creedText);
         } else {
@@ -1003,37 +1081,38 @@ class WorshipAidPdfGenerator {
       });
     }
 
-    b(() => {
-      this.subHeading('Prayer of the Faithful');
-      this.bodyText('The intentions are read; the assembly responds.', { italic: true, size: 8 });
-    });
+    // Prayer of the Faithful — heading only (the "The intentions are read…"
+    // line was dropped as unnecessary per the director).
+    b(() => this.subHeading('Prayer of the Faithful'));
 
     // --- The Liturgy of the Eucharist ---
     b(() => {
-      this.sectionHeader('The Liturgy of the Eucharist');
+      // "Please be seated" sits before this section title (director).
       this.rubric(RUBRICS.sit);
-      this.subHeading('Offertory');
-      this.musicLine('offertoryAnthem', 'offertoryAnthemComposer', 'Offertory Anthem');
+      this.sectionHeader('The Liturgy of the Eucharist');
+      this.musicHeading('Offertory', 'offertoryAnthem', 'offertoryAnthemComposer');
       if (this.data.childrenLiturgyEnabled) {
         const _clTimes = (Array.isArray(this.data.childrenLiturgyMassTimes) && this.data.childrenLiturgyMassTimes.length)
           ? this.data.childrenLiturgyMassTimes
           : (this.data.childrenLiturgyMassTime ? [this.data.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
-        this.rubric(`† Children return from Children's Liturgy of the Word (${_clTimes.join(' & ')}).`);
+        this.rubric(`Children return from Children's Liturgy of the Word (${_clTimes.join(' & ')})`);
       }
     });
 
     b(() => {
-      this.rubric(RUBRICS.stand);
-      this.subHeading('Invitation to Prayer');
+      // Stand for the Invitation to Prayer — direction right-justified on the
+      // heading line (director).
+      this.subHeading('Invitation to Prayer', { right: RUBRICS.stand });
       this.bodyText(`Priest: ${INVITATION_TO_PRAYER.priest}`);
       this.bodyText(`All: ${INVITATION_TO_PRAYER.all}`, { bold: true });
     });
 
     b(() => {
-      // Sanctus language: per-aid override > parish default > English
+      // Sanctus language: per-aid override > parish default > English. The
+      // setting name rides inline on the heading.
       const holyHolyLanguage = this.ss.holyHolyLanguage || this.parishSettings.defaultSanctusLanguage || 'english';
-      this.subHeading(holyHolyLanguage === 'latin' ? 'Sanctus' : 'Holy, Holy, Holy');
-      this.bodyText(this.ss.holyHolySetting || 'Mass of St. Theresa', { italic: true });
+      this.subHeading(holyHolyLanguage === 'latin' ? 'Sanctus' : 'Holy, Holy, Holy',
+        { inline: this.ss.holyHolySetting || 'Mass of St. Theresa' });
       if (this._slotHasMusic('sanctus')) {
         this.ordinaryMusicSpace('sanctus', 'Holy, Holy, Holy — music notation');
       } else {
@@ -1043,61 +1122,56 @@ class WorshipAidPdfGenerator {
 
     b(() => {
       this.rubric(RUBRICS.kneel);
-      this.subHeading('Mystery of Faith');
-      this.bodyText(this.ss.mysteryOfFaithSetting || 'Mass of St. Theresa', { italic: true });
+      this.subHeading('Mystery of Faith', { inline: this.ss.mysteryOfFaithSetting || 'Mass of St. Theresa' });
       this.ordinaryMusicSpace('mysteryOfFaith', 'Mystery of Faith — music notation');
     });
 
+    // Great Amen, then "Please stand" between it and the Communion Rite title.
     b(() => this.subHeading('Great Amen'));
 
     // --- The Communion Rite ---
     b(() => {
+      // "Please stand" appears below "Great Amen" and above this section
+      // title (director). The Lord's Prayer text is dropped (unnecessary).
+      this.rubric(RUBRICS.stand);
       this.sectionHeader('The Communion Rite');
       this.subHeading("The Lord's Prayer");
-      this.rubric(RUBRICS.stand);
-      this.bodyText(LORDS_PRAYER);
     });
 
     b(() => this.subHeading('Sign of Peace'));
 
     b(() => {
-      this.subHeading('Lamb of God');
-      this.bodyText(this.ss.lambOfGodSetting || 'Mass of St. Theresa', { italic: true });
+      this.subHeading('Lamb of God', { inline: this.ss.lambOfGodSetting || 'Mass of St. Theresa' });
       this.ordinaryMusicSpace('lambOfGod', 'Lamb of God — music notation');
     });
 
     b(() => {
       this.rubric(RUBRICS.kneel);
-      this.subHeading('Communion Hymn');
-      this.musicLine('communionHymn', 'communionHymnComposer', 'Communion');
+      this.musicHeading('Communion Hymn', 'communionHymn', 'communionHymnComposer');
       this.hymnMusicSpace({ slot: 'communion' });
     });
 
     b(() => {
-      this.subHeading('Choral Anthem');
-      this.musicLine('choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem');
+      this.musicHeading('Choral Anthem', 'choralAnthemConcluding', 'choralAnthemConcludingComposer');
     });
 
     // --- The Concluding Rites ---
     b(() => {
       this.sectionHeader('The Concluding Rites');
-      this.subHeading('Hymn of Thanksgiving');
-      this.musicLine('hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving');
+      this.musicHeading('Hymn of Thanksgiving', 'hymnOfThanksgiving', 'hymnOfThanksgivingComposer');
       this.hymnMusicSpace({ slot: 'thanksgiving' });
     });
 
+    // Blessing & Dismissal — heading only (the Priest/Deacon dialogue was
+    // dropped as unnecessary per the director).
     b(() => {
       this.rubric(RUBRICS.stand);
       this.subHeading('Blessing & Dismissal');
-      this.bodyText('Priest: The Lord be with you. All: And with your spirit.', { size: 8 });
-      this.bodyText('Priest: May almighty God bless you, the Father, and the Son, ✠ and the Holy Spirit. All: Amen.', { size: 8 });
-      this.bodyText('Deacon: Go forth, the Mass is ended. All: Thanks be to God.', { size: 8 });
     });
 
     if (this.includePostlude) {
       b(() => {
-        this.subHeading('Organ Postlude');
-        this.musicLine('organPostlude', 'organPostludeComposer', 'Postlude');
+        this.musicHeading('Organ Postlude', 'organPostlude', 'organPostludeComposer');
       });
     }
 

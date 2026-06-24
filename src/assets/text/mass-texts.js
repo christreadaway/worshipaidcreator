@@ -63,10 +63,12 @@ const GOSPEL_ACCLAMATION_LENTEN = 'Praise to you, Lord Jesus Christ, King of end
 const GOSPEL_ACCLAMATION_LENTEN_ALT = 'Glory and praise to you, Lord Jesus Christ!';
 const GOSPEL_ACCLAMATION_STANDARD = 'Alleluia, alleluia!';
 
+// Posture directions. Per the director of liturgy: no leading cross/symbol
+// and no trailing punctuation — just the bare direction.
 const RUBRICS = {
-  stand: '☩ Please stand.',
-  sit: '☩ Please be seated.',
-  kneel: '☩ Please kneel.'
+  stand: 'Please stand',
+  sit: 'Please be seated',
+  kneel: 'Please kneel'
 };
 
 module.exports = {

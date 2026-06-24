@@ -166,7 +166,10 @@ describe('Responsorial Psalm music slot', () => {
     assert.match(html, /data\.psalmRefrain/);
   });
 
-  it('renderBookletHtml shows the psalm setting on the readings page', () => {
+  it('renderBookletHtml puts the psalm scripture reference on the heading line, with no setting/composer line', () => {
+    // Director of liturgy: the Responsorial Psalm has no piece "title" — only
+    // the scripture reference goes on the heading line; the setting/composer
+    // line is dropped (the notation itself carries the music).
     const data = {
       feastName: 'Test', liturgicalDate: '2026-04-05', liturgicalSeason: 'easter',
       seasonalSettings: {},
@@ -176,8 +179,10 @@ describe('Responsorial Psalm music slot', () => {
       musicSun11am: { responsorialPsalmSetting: 'Psalm 27 (Joncas)', responsorialPsalmSettingComposer: 'Joncas' }
     };
     const { html } = renderBookletHtml(data);
-    assert.match(html, /Psalm 27 \(Joncas\)/);
-    assert.match(html, /Joncas/);
+    // Scripture reference rides on the Responsorial Psalm heading line.
+    assert.match(html, /Responsorial Psalm<\/span><span class="sub-inline cite">Ps 27/);
+    // The setting/composer is no longer printed.
+    assert.doesNotMatch(html, /Psalm 27 \(Joncas\)/);
   });
 });
 
