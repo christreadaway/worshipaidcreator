@@ -554,6 +554,30 @@ describe('spread bridging + final flags + library promote (v1.7)', () => {
       assert.ok(html.includes(marker), marker + ' missing');
     }
   });
+
+  // v1.9.1 — the session snapshot must not auto-restore, leak across users,
+  // or survive logout (the "it keeps bringing back my last session, even as a
+  // different user, even after logout" bug). These assert the SPA source
+  // carries the safeguards. (The snapshot logic itself is browser-only —
+  // localStorage + DOM — and is not exercised by the Node suite; that gap is
+  // why the bug shipped. See the recommendation to add a Playwright E2E pass.)
+  it('session snapshot is keyed per user, never auto-restores, and clears on logout', async () => {
+    const html = (await fetch('/')).text();
+    // Per-user key derived from the signed-in user id (not a global key).
+    assert.ok(html.includes('function snapshotKey()'), 'snapshotKey() helper missing');
+    assert.ok(/_currentUser && _currentUser\.id/.test(html), 'snapshot key not derived from the user id');
+    // Legacy global key is purged on load.
+    assert.ok(html.includes('removeItem(SNAPSHOT_PREFIX)'), 'legacy global snapshot key not cleared');
+    // No silent auto-restore: the old "< 24h ⇒ restoreSnapshot()" branch is gone.
+    assert.ok(!/ageHours\s*<\s*24/.test(html), 'auto-restore-within-24h branch still present');
+    // Explicit discard path + control exist.
+    assert.ok(html.includes('function dismissSnapshot()'), 'dismissSnapshot() missing');
+    assert.ok(html.includes('id="btn-restore-dismiss"'), 'Discard control missing');
+    // Logout clears the per-user snapshot.
+    assert.ok(html.includes('removeItem(snapshotKey())'), 'logout does not clear the snapshot');
+    // Load Sample confirms before clobbering the form.
+    assert.ok(/loadSample[\s\S]{0,120}confirm\(/.test(html), 'Load Sample no longer confirms');
+  });
 });
 
 describe('manual FINAL override (any user)', () => {

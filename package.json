@@ -10,6 +10,7 @@
     "start": "node src/server.js",
     "generate": "node src/cli.js",
     "test": "node --test --test-concurrency=1 src/tests/*.test.js",
+    "test:e2e": "playwright test",
     "build": "node scripts/extract-html.js",
     "dev": "node src/server.js",
     "fetch-hymns": "node scripts/fetch-hymns.js"
@@ -31,5 +32,8 @@
     "puppeteer-core": "^24.37.5",
     "serverless-http": "^4.0.0",
     "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
   }
 }

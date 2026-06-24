@@ -1667,3 +1667,55 @@ page to the marked-up proof.
   (psalm shows reference, not setting line), `uat-fixes.test.js` (5.5in spec
   width, scale-tolerant; HTML notation CSS widths).
 - Full suite green: **364 tests, 0 failures.**
+
+## Session 13 — v1.9.1: Stuck session-restore fix + first Playwright E2E layer
+
+Director of liturgy reported the editor kept restoring the previous session
+("mistakes and all"), couldn't get a fresh load, and that logging out, logging
+in as a different user, and restarting the browser didn't help — then loading
+the (outdated) sample made it worse. Branch `claude/youthful-goldberg-0kvf8t`.
+
+### Root cause (browser-only state — not exercised by the Node suite)
+The editor session snapshot in `src/server.js` (the embedded SPA):
+1. **Auto-restored** on every load when < 24h old → a deliberate reload could
+   never start clean.
+2. Used **one global localStorage key** (`wa_editor_snapshot`) → a *different
+   user* on the same browser inherited the previous user's work.
+3. **Was never cleared on logout**, and `beforeunload` re-saved whatever was on
+   the form → loading the old sample got snapshotted too.
+
+### Fix
+- **Per-user key** `wa_editor_snapshot:<userId>`; the legacy global key is
+  purged on load.
+- **No silent auto-restore** — recoverable work is offered via an explicit
+  **Restore last session** button plus a new **Discard** button.
+- **Cleared on logout** (before `_currentUser` is dropped).
+- **Dirty flag** (`_editorDirty`): only snapshot once the user has actually
+  edited, detected via `event.isTrusted` (real keystrokes/changes) so the
+  app's own programmatic value-sets and `dispatchEvent` autofills don't count.
+  This stops a pristine auto-derived form (feast name from date, next-Sunday
+  default) from being re-snapshotted on every navigation — which is what made
+  Discard fail to stick and gave every returning user a spurious Restore offer.
+  Reset on load (`populateForm`), Discard, logout, and Save Draft.
+- **Load Sample now confirms** before replacing the form.
+
+### First browser E2E layer (Playwright)
+The honest answer to "how did comprehensive testing miss this": the 365-test
+Node suite covers the server (PDF/HTML render, validation, calendar, stores,
+API) but has **no browser**, so the entire snapshot/restore feature
+(localStorage + DOM + multi-user) was untested. Added:
+- `@playwright/test` (devDependency), `playwright.config.js`, `npm run test:e2e`.
+- `e2e/session-restore.spec.js` — 5 tests reproducing the exact bug paths:
+  no auto-restore on reload; Restore brings work back; Discard wipes it for
+  good; logout clears it and the next login is clean; a different user never
+  inherits the previous user's session; the legacy global key is purged.
+- Config resolves Chromium from `PLAYWRIGHT_BROWSERS_PATH` (this env ships one
+  under `/opt/pw-browsers`) via `launchOptions.executablePath`, and blocks
+  external requests (Google Sign-In / Fonts) in the spec so navigations don't
+  stall on the `load` event. Falls back to Playwright's own browser on a
+  normal dev box (`npx playwright install chromium`).
+
+### Tests
+- Node suite: **365 passing** (added a string-level guard in `uat-fixes.test.js`
+  asserting the SPA carries the four safeguards).
+- E2E: **5 passing** (`npm run test:e2e`, ~12s).

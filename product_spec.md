@@ -1,7 +1,9 @@
 # Worship Aid Generator — Product Specification
 
-**Version:** 1.9.0
+**Version:** 1.9.1
 **Last Updated:** June 24, 2026
+
+> **v1.9.1 — session-restore fix + first browser E2E layer.** The editor kept restoring the last session (mistakes and all), even as a different user and after logout, because the snapshot used one global localStorage key, auto-restored on every load, was never cleared on logout, and re-saved the pristine auto-derived form on every navigation. Fixes: per-user key (`wa_editor_snapshot:<userId>`, legacy global key purged on load), no silent auto-restore (explicit **Restore**/**Discard** buttons), cleared on logout, a dirty-flag (real `event.isTrusted` edits only) so a fresh form is never snapshotted, and a confirm on **Load Sample**. Added Playwright E2E (`npm run test:e2e`, `e2e/session-restore.spec.js`, 5 tests) — the browser-only path the Node suite can't reach, which is how this shipped green. Suites: 365 unit + 5 E2E, all passing.
 **Status:** Active development — replacing Microsoft Publisher in fall 2026
 
 > **Pick-up note for next session:** v1.9 is the **director-of-liturgy proof pass** (13th Sunday in Ordinary Time proof, June 2026). **Pushed** on `claude/youthful-goldberg-0kvf8t`. Every layout/wording correction from the marked-up proof was applied to BOTH renderers (PDF `pdf-generator.js` and HTML preview `template-renderer.js`): posture directions lose the cross symbol + period and ride right-justified on the heading they govern; music pieces drop the restating label and put title+composer on the sub-heading line; scripture citations move onto the reading heading line; a Collect heading follows the Gloria; "Please be seated"/"Please stand" sit before their section titles; the intentions line, Lord's Prayer body, and Blessing & Dismissal dialogue are removed; psalm verses end with "R."; the OneLicense permission prints once at the end (not per page); all notation prints 5–5.5in wide and is pushed to the next page rather than shrunk. Full suite green (364 tests; new `src/tests/proof-fixes.test.js`). **Still open:** the auto title-crop heuristic left titles/residual marks on a few uploaded scans — stripping happens at upload, so those images need re-uploading (or share samples to tune `TITLE_CROP`).
@@ -540,12 +542,24 @@ If persistence reports `in-memory` on Netlify, sessions/settings/uploads will no
 
 ## Test Coverage
 
-**~340 tests across 15 test files** (318/318 at v1.6; the v1.6.1–v1.7 work
-adds `uat-fixes2.test.js`, `notation-resolver.test.js`, and new cases in
-`uat-fixes.test.js` — run `npm test` for the exact count). Test files run
-serialized (`--test-concurrency=1`) and the suites that share the on-disk
-`data/` store take a cross-process lock
-(`src/tests/_shared-state-lock.js`), so runs are deterministic.
+**365 unit/integration tests across 17 files** (run `npm test` for the exact
+count). Test files run serialized (`--test-concurrency=1`) and the suites that
+share the on-disk `data/` store take a cross-process lock
+(`src/tests/_shared-state-lock.js`), so runs are deterministic. v1.9 adds
+`proof-fixes.test.js` (director-of-liturgy layout rules).
+
+> **Browser end-to-end (v1.9.1, Playwright):** `npm run test:e2e` boots the
+> real app and drives Chromium against it. This layer exists because the Node
+> suite **cannot reach the browser-only code** — `localStorage`, multi-user
+> state, the page-load lifecycle — which is exactly where the session-restore
+> bug lived (it kept restoring the last session, even as a different user,
+> even after logout, with a fully green unit suite). `e2e/session-restore.spec.js`
+> reproduces that bug's paths and pins the fix: no silent auto-restore,
+> per-user keying, cleared on logout, explicit Restore/Discard, and a
+> dirty-flag so a pristine auto-derived form is never snapshotted. The config
+> resolves a Chromium binary from `PLAYWRIGHT_BROWSERS_PATH` (or
+> `npx playwright install chromium` on a normal dev box) and starts the server
+> via Playwright's `webServer`.
 
 | Suite | What It Covers |
 |---|---|
