@@ -1586,3 +1586,84 @@ branch `claude/dazzling-turing-xapgwf`:
    opposite (no bridge, block stays whole); fixed-page-position tests
    re-aimed at flow invariants (total ink, in-bounds, exactly 8 pages,
    scale-vs-truncate warnings). Full suite 348/348.
+
+## Session 12 — v1.9: Director-of-liturgy proof pass (13th Sunday in OT, June 2026)
+
+The parish's **director of liturgy** marked up a real export (13th Sunday in
+Ordinary Time, June 28 2026) with ~30 distinct corrections (PDF annotations).
+Branch `claude/youthful-goldberg-0kvf8t`. Every item was applied to BOTH
+renderers — the canonical PDF (`pdf-generator.js`) and the HTML preview
+(`template-renderer.js`) — so the editor preview matches the print output.
+Verified by rendering a representative aid (with notation) and comparing each
+page to the marked-up proof.
+
+### Corrections (each maps to an annotation)
+
+1. **Posture wording.** `RUBRICS` in `assets/text/mass-texts.js` → "Please
+   stand" / "Please be seated" / "Please kneel" — dropped the ☩ cross symbol
+   and the trailing period.
+2. **Posture placement — inline, right-justified on the action heading.** New
+   `subHeading(text, { inline, inlineFont, inlineColor, right })` in the PDF
+   generator and `subHeadingHtml(...)` / `musicSubHeadingHtml(...)` in the HTML
+   renderer render a heading with optional inline content (left) and a
+   right-justified posture direction. Applied to: Processional Hymn (stand),
+   Gospel Acclamation (stand), Homily (be seated), Creed (stand), Invitation
+   to Prayer (stand).
+3. **Posture placement — section transitions before the title.** "Please be
+   seated" before *The Liturgy of the Word* (after the new Collect heading)
+   and before *The Liturgy of the Eucharist*; "Please stand" between *Great
+   Amen* and *The Communion Rite*. The two kneels (before Mystery of Faith,
+   before Communion Hymn) and the dismissal "Please stand" stay on their own
+   lines, cleaned of symbol/period (director only flagged their wording).
+4. **Music labels dropped; title + composer inline.** Removed the restating
+   slot label ("Prelude —", "Processional —", "Kyrie —", "Communion —",
+   "Anthem —", "Thanksgiving —", "Postlude —", "Offertory Anthem —"). New
+   `musicHeading(...)` puts title+composer on the heading line; multi-Mass
+   selections fall back to a bare heading with each piece listed below
+   (label-free). Mass-ordinary setting names (Gloria, Holy Holy Holy, Mystery
+   of Faith, Lamb of God) are inline on their headings too. The old
+   `musicLine`/`citation` PDF helpers and the HTML `renderMusicSection` helper
+   were removed.
+5. **Scripture citations inline.** First Reading, Second Reading, Gospel, and
+   Gospel Acclamation render the citation on the heading line (bold). The
+   `reading()` block helper now passes the citation as the heading's `inline`.
+6. **Responsorial Psalm.** Removed the "Setting — composer" line entirely;
+   only the scripture reference rides on the heading line ("there is no title
+   for the Responsorial Psalm").
+7. **Collect heading added** after the Gloria (closes the Introductory Rites).
+8. **Removed unnecessary texts:** the Prayer of the Faithful "intentions are
+   read; the assembly responds." line, the Lord's Prayer body (Our Father…),
+   and the Blessing & Dismissal Priest/Deacon dialogue. Headings kept.
+9. **Psalm verses** each end with "R." (cue back to the response) and are
+   separated by a blank space (PDF gap bumped to 7; HTML `.psalm-verse`
+   margin-bottom 7pt). Idempotent — no double "R." if one is already present.
+10. **License once, at the end.** `_finishContentPage` no longer prints the
+    per-page short OneLicense footer; the full copyright block (which already
+    contains the OneLicense line) is the only place the permission appears.
+    The HTML page-8 `copyright-short` element and its CSS were removed; the
+    unused `getDefaultCopyrightShort` import was dropped from both renderers.
+11. **Notation 5–5.5in wide, push don't shrink.** `NOTATION_WIDTH_IN = 5.5`
+    for every slot (service music was 6in — "too large"). `_notationImage`
+    keeps the spec width and natural height, caps height only at a full
+    content page, and lets the flow paginator push a too-tall block to the
+    next page instead of squeezing its width to fit leftover space (the
+    Gloria that rendered "too small"). HTML CSS `.notation-image.{hymn,
+    ordinary,w5}` all set to 5.5in.
+
+### Still open
+
+- **Title-strip on a few scans.** The director found titles/residual marks
+  ("2 dots") surviving on a couple of uploaded notation images. Stripping runs
+  at **upload**, so already-stored images keep their baked-in result — they
+  need re-uploading to re-run the cropper. Tuning `TITLE_CROP` further requires
+  the actual problem scans; the heuristic is intentionally conservative
+  (over-cropping removes real notation). Flagged to the user.
+
+### Tests
+
+- New `src/tests/proof-fixes.test.js` (16 assertions) locks in each correction.
+- Updated existing suites for the new behavior: `template-renderer.test.js`
+  (Lord's Prayer/Blessing now heading-only; license-once), `feedback-fixes.test.js`
+  (psalm shows reference, not setting line), `uat-fixes.test.js` (5.5in spec
+  width, scale-tolerant; HTML notation CSS widths).
+- Full suite green: **364 tests, 0 failures.**

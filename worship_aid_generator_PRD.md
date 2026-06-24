@@ -7,6 +7,8 @@
 
 > See `product_spec.md` for the implementation-level reference and the **Future Build Requirements** section for the prioritized backlog (wedding/funeral variants, true imposition, proofing workflow, etc.).
 
+> **v1.9 (June 24, 2026)** — **director-of-liturgy proof pass.** Applied every correction from the director's marked-up 13th-Sunday export, to both the PDF and the HTML preview: posture directions ("Please stand/seated/kneel") lose the cross symbol + period and ride right-justified on the heading they govern (Processional Hymn, Gospel Acclamation, Homily, Creed, Invitation to Prayer); section-transition directions sit before their title (sit before the Liturgy of the Word/Eucharist, stand before the Communion Rite). Music pieces drop the restating label and put title+composer on the sub-heading line; scripture citations move onto the reading heading line. Added a **Collect** heading after the Gloria. Removed the "intentions are read" line, the Lord's Prayer body, and the Blessing & Dismissal dialogue. Psalm verses end with "R." with a blank space between them. The OneLicense permission prints once, at the end (not per page). All music notation prints **5–5.5in wide** and is pushed to the next page rather than shrunk. 364 tests passing. Open: a few uploaded scans still show a title/residual marks (title-strip runs at upload — re-upload to re-run).
+
 > **v1.4 (June 9, 2026)** — **decision: no programmatic hymn-music integration.** OneLicense has no public API and automating it isn't worth pursuing. The app builds the entire booklet *except* the hymn notation; each congregational hymn slot (processional, communion, thanksgiving) reserves a blank paste area of reasonable size so the user copies the licensed music in by hand after export. Also in v1.4: a **hard 8-page guarantee** (margins relax to 0.5" — sides and bottom first, top last — before body type shrinks, never below 75% so it stays legible; remaining overflow is truncated with an explicit warning), a full-product code review with security hardening (auth gates on drafts/settings/export, path-traversal fixes, pastor-approval bypass closed), HTML-preview/PDF parity fixes (Sanctus language, mass times, clergy, closing message, third creed), and US liturgical-calendar corrections (Holy Family, Epiphany/Baptism transfers, Immaculate Conception transfer, Ascension Sunday default). 290 tests passing.
 
 > **v1.3 (April 30, 2026)** addresses post-pilot feedback: readings reflow lectionary sense-lines into normal paragraphs, hymn library carries hymnal+number with OneLicense search helpers, new Responsorial Psalm setting slot prefilled from the refrain, preview matches the selected booklet trim, stateless HMAC sessions fix the "Not authenticated" upload bug, per-user preferences persist across drafts.
@@ -55,7 +57,7 @@ A structured form with clearly labeled sections for all variable content. Organi
   - Organ Prelude (title, composer)
   - Processional / Entrance Hymn (title + composer + **hymnal + number** + OneLicense search) — hymn-library typeahead
   - Lord Have Mercy / Kyrie setting (text + composer)
-  - **Responsorial Psalm Setting (v1.3)** — title + composer + OneLicense-by-refrain button. Auto-prefilled with today's refrain text when readings are fetched. Renders on Page 3 between citation and refrain.
+  - **Responsorial Psalm Setting (v1.3)** — title + composer + OneLicense-by-refrain button. Auto-prefilled with today's refrain text when readings are fetched. **v1.9:** the booklet no longer prints a setting/composer line for the psalm — only its scripture reference rides on the heading line; the refrain notation (or paste box) carries the music.
   - Communion Hymn (title + composer + **hymnal + number** + OneLicense search) — hymn-library typeahead
   - Hymn of Thanksgiving (title + composer + **hymnal + number** + OneLicense search) — hymn-library typeahead
   - Organ Postlude (title + composer)
@@ -147,9 +149,10 @@ Based on analysis of existing worship aids (952×1260px JPEG renders = 5.5"×8.5
 - **Alternate export:** Sequential 8-page PDF (pages in reading order 1–8) for digital review
 
 ### 5.4 Music Display Logic
-- If all three Mass times have the SAME music selection for a given slot, display once with no time qualifier (e.g., "Offertory Anthem — O Sun of Justice, [composer]")
-- If Mass times differ, display each with its qualifier (e.g., "Offertory Anthem — Title A, composer (Sat, 5 PM & Sun, 11 AM) / Title B, composer (Sun, 9 AM)")
-- Formatting matches current pattern exactly: Title first (italics), then composer, then Mass times in parentheses
+- **v1.9 (director request):** the title + composer print on the **same line as the sub-heading**, and the redundant slot label is dropped — the heading already names the piece. So the Offertory line reads "OFFERTORY  *O Sun of Justice*, [composer]", not "Offertory Anthem — …". Mass-ordinary setting names (Gloria, Holy Holy Holy, Mystery of Faith, Lamb of God) are inline on their headings too. The Responsorial Psalm shows only its scripture reference on the heading line (no setting/composer line).
+- If all three Mass times have the SAME music selection for a given slot, display once on the heading line with no time qualifier.
+- If Mass times differ, the heading stands alone and each unique selection lists on its own line below with the Mass-time qualifier (e.g. "*Title A*, composer (Sat, 5 PM & Sun, 11 AM) / *Title B*, composer (Sun, 9 AM)").
+- Formatting: Title first (italics), then composer, then Mass times in parentheses.
 - **Hymnal citation (v1.3):** if a hymn entry carries a hymnal name + number (e.g. "Worship IV" + "612"), the rendered line shows `Title [Hymnal #N], Composer`.  This is what the assembly looks up in the pew rack.
 - **Hymn-music paste areas (v1.4):** under each congregational hymn slot (processional, communion, thanksgiving) the booklet reserves a dashed blank area (~2.2" half-letter / ~2.9" tabloid) where the user pastes the licensed notation by hand after export. Per-aid toggle `reserveHymnSpace`, default on. The app deliberately does NOT fetch or embed hymn music programmatically (no OneLicense API exists).
 
