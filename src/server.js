@@ -2102,6 +2102,7 @@ async function doLogout() {
   // Clear this user's recovery snapshot BEFORE dropping _currentUser (the
   // snapshot key is derived from it) so logging out is a genuine fresh start.
   try { localStorage.removeItem(snapshotKey()); } catch (e) { /* ignore */ }
+  _editorDirty = false;
   hideRestoreButton();
   _sessionToken = null;
   _currentUser = null;
@@ -2404,6 +2405,9 @@ function buildData() {
 }
 
 function populateForm(data) {
+  // Loading values programmatically (draft, sample, restore) is not user
+  // editing — reset the dirty flag so a fresh load won't be re-snapshotted.
+  _editorDirty = false;
   window._currentDraftId = data.id || undefined;
   sv('feastName', data.feastName);
   // A draft-loaded name is NOT a manual override: the load-time reconcile
@@ -3643,6 +3647,7 @@ async function saveDraft() {
     const result = await res.json();
     if (!res.ok) { toast('Save failed: ' + (result.error || res.status), 'error'); return; }
     window._currentDraftId = result.id;
+    _editorDirty = false; // persisted — no longer unsaved recovery work
     toast('Draft saved', 'success');
     setStatus('Draft saved at ' + new Date().toLocaleTimeString());
   } catch(e) { toast('Save error: ' + e.message, 'error'); }
@@ -4324,8 +4329,21 @@ function snapshotKey() {
   return SNAPSHOT_PREFIX + ':' + ((_currentUser && _currentUser.id) || 'anon');
 }
 let _snapshotTimer;
+// Only snapshot once the user has actually edited something. Loading the
+// editor auto-derives a feast name + next-Sunday date and may autofill music
+// — none of which is "work" worth recovering. Without this gate, every reload
+// re-saved that pristine state, so Discard never stuck and every returning
+// user saw a spurious "Restore last session" offer. The signal is the genuine
+// user-input flag: real keystrokes/changes set event.isTrusted; the app's own
+// programmatic value-sets and dispatchEvent autofills do not.
+let _editorDirty = false;
+function markEditorDirty(e) {
+  if (!e || !e.isTrusted) return; // ignore programmatic/autofill events
+  _editorDirty = true;
+  snapshotEditor();
+}
 function snapshotEditor() {
-  if (!_currentUser) return; // never snapshot from the login screen
+  if (!_currentUser || !_editorDirty) return; // nothing the user typed yet
   clearTimeout(_snapshotTimer);
   _snapshotTimer = setTimeout(() => {
     try {
@@ -4338,10 +4356,10 @@ function snapshotEditor() {
     } catch (e) { /* quota/serialization — snapshot is best-effort */ }
   }, 1500);
 }
-document.getElementById('editor').addEventListener('input', snapshotEditor);
-document.getElementById('editor').addEventListener('change', snapshotEditor);
+document.getElementById('editor').addEventListener('input', markEditorDirty);
+document.getElementById('editor').addEventListener('change', markEditorDirty);
 window.addEventListener('beforeunload', () => {
-  if (!_currentUser) return;
+  if (!_currentUser || !_editorDirty) return; // don't snapshot a pristine form
   clearTimeout(_snapshotTimer);
   try {
     const data = buildData();
@@ -4374,6 +4392,7 @@ function restoreSnapshot() {
 // the escape hatch the user was missing — Discard wipes the recovery copy.
 function dismissSnapshot() {
   try { localStorage.removeItem(snapshotKey()); } catch (e) { /* ignore */ }
+  _editorDirty = false; // the current form is no longer "unsaved work"
   hideRestoreButton();
   toast('Cleared the saved session — starting fresh', 'success');
 }

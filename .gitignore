@@ -17,3 +17,9 @@ public/
 data/notation-hash-index/
 data/export-log/
 data/attachments/
+
+# Playwright E2E artifacts
+/test-results/
+/playwright-report/
+/blob-report/
+/e2e/.cache/
