@@ -1443,7 +1443,8 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
   <a href="/users" class="nav-link" data-page="users" id="nav-users" style="display:none;">Users</a>
   <span class="spacer"></span>
   <span class="user-info" id="user-display"></span>
-  <button class="btn btn-outline btn-sm" id="btn-restore" style="display:none;" onclick="restoreSnapshot()" title="Bring back what you were working on before the page reloaded">&#10226; Restore last session</button>
+  <button class="btn btn-outline btn-sm" id="btn-restore" style="display:none;" onclick="restoreSnapshot()" title="Bring back your unsaved work">&#10226; Restore last session</button>
+  <button class="btn btn-outline btn-sm" id="btn-restore-dismiss" style="display:none;" onclick="dismissSnapshot()" title="Discard the saved session and start fresh">Discard</button>
   <button class="btn btn-outline btn-sm" onclick="loadSample()">Load Sample</button>
   <button class="btn btn-outline btn-sm" onclick="saveDraft()">Save Draft</button>
   <select id="bookletSize" class="btn-sm" style="margin-right:6px;padding:4px 6px;font-size:11px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:3px;" title="Booklet trim size — saved per user" onchange="saveUserPrefs({ bookletSize: this.value })">
@@ -2098,6 +2099,10 @@ async function doLogin() {
 
 async function doLogout() {
   await fetch('/api/auth/logout', { method: 'POST', headers: { 'x-session-token': _sessionToken } });
+  // Clear this user's recovery snapshot BEFORE dropping _currentUser (the
+  // snapshot key is derived from it) so logging out is a genuine fresh start.
+  try { localStorage.removeItem(snapshotKey()); } catch (e) { /* ignore */ }
+  hideRestoreButton();
   _sessionToken = null;
   _currentUser = null;
   localStorage.removeItem('wa_token');
@@ -3619,6 +3624,7 @@ async function uploadCover(input) {
 
 // --- Actions ---
 async function loadSample() {
+  if (!confirm('Load the built-in sample? This replaces everything currently in the form. Your saved drafts are not affected.')) return;
   try {
     const res = await fetch('/api/sample');
     const data = await res.json();
@@ -4304,37 +4310,50 @@ document.getElementById('editor').addEventListener('input', () => {
   }, 30000);
 });
 
-// --- Session snapshot: a reload must not blow away in-progress work ---
-// Every edit (debounced) snapshots the full form to localStorage. On the
-// next load, recent work (< 24h) restores automatically; older work (up to
-// 7 days) is offered via a Restore button so a new week can start fresh.
-const SNAPSHOT_KEY = 'wa_editor_snapshot';
+// --- Session snapshot: an accidental reload must not blow away in-progress
+// work — but it must NEVER silently override a deliberate fresh start, and it
+// must never leak across users. So the snapshot is (1) keyed per user,
+// (2) only ever applied by an explicit Restore click (no auto-populate), and
+// (3) cleared on logout. ---
+const SNAPSHOT_PREFIX = 'wa_editor_snapshot';
+// Remove the legacy single global key (pre-v1.9.1): it was shared by every
+// user on the browser and auto-restored on load, which is exactly the
+// "it keeps bringing back my last session / a different user's work" bug.
+try { localStorage.removeItem(SNAPSHOT_PREFIX); } catch (e) { /* ignore */ }
+function snapshotKey() {
+  return SNAPSHOT_PREFIX + ':' + ((_currentUser && _currentUser.id) || 'anon');
+}
 let _snapshotTimer;
 function snapshotEditor() {
+  if (!_currentUser) return; // never snapshot from the login screen
   clearTimeout(_snapshotTimer);
   _snapshotTimer = setTimeout(() => {
     try {
       const data = buildData();
       if (!data.feastName && !data.liturgicalDate) return;
-      localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ savedAt: Date.now(), data }));
+      localStorage.setItem(snapshotKey(), JSON.stringify({ savedAt: Date.now(), data }));
+      // Once there's recoverable work, surface the Restore affordance.
+      const btn = document.getElementById('btn-restore');
+      if (btn && btn.style.display === 'none') showRestoreButton(readSnapshot());
     } catch (e) { /* quota/serialization — snapshot is best-effort */ }
   }, 1500);
 }
 document.getElementById('editor').addEventListener('input', snapshotEditor);
 document.getElementById('editor').addEventListener('change', snapshotEditor);
 window.addEventListener('beforeunload', () => {
+  if (!_currentUser) return;
   clearTimeout(_snapshotTimer);
   try {
     const data = buildData();
     if (data.feastName || data.liturgicalDate) {
-      localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ savedAt: Date.now(), data }));
+      localStorage.setItem(snapshotKey(), JSON.stringify({ savedAt: Date.now(), data }));
     }
   } catch (e) { /* best-effort */ }
 });
 
 function readSnapshot() {
   try {
-    const raw = localStorage.getItem(SNAPSHOT_KEY);
+    const raw = localStorage.getItem(snapshotKey());
     if (!raw) return null;
     const snap = JSON.parse(raw);
     if (!snap || !snap.data || !snap.savedAt) return null;
@@ -4347,23 +4366,42 @@ function restoreSnapshot() {
   const snap = readSnapshot();
   if (!snap) { toast('Nothing to restore', 'error'); return; }
   populateForm(snap.data);
-  const btn = document.getElementById('btn-restore');
-  if (btn) btn.style.display = 'none';
+  hideRestoreButton();
   toast('Restored your last session (' + new Date(snap.savedAt).toLocaleString() + ') — Save Draft to keep it', 'success');
 }
 
-// Called once after login: fresh work resumes automatically; older work
-// gets a Restore button in the nav.
+// Permanently drop the saved snapshot so a fresh start stays fresh. This is
+// the escape hatch the user was missing — Discard wipes the recovery copy.
+function dismissSnapshot() {
+  try { localStorage.removeItem(snapshotKey()); } catch (e) { /* ignore */ }
+  hideRestoreButton();
+  toast('Cleared the saved session — starting fresh', 'success');
+}
+
+function showRestoreButton(snap) {
+  const btn = document.getElementById('btn-restore');
+  const dis = document.getElementById('btn-restore-dismiss');
+  if (!btn || !snap) return;
+  const when = new Date(snap.savedAt).toLocaleString();
+  btn.style.display = '';
+  btn.title = 'Bring back the unsaved work from ' + when;
+  if (dis) dis.style.display = '';
+}
+function hideRestoreButton() {
+  const btn = document.getElementById('btn-restore');
+  const dis = document.getElementById('btn-restore-dismiss');
+  if (btn) btn.style.display = 'none';
+  if (dis) dis.style.display = 'none';
+}
+
+// Called once after login. We do NOT auto-populate the form from the snapshot
+// any more — that made a deliberate fresh start impossible. Recoverable work
+// is offered via the Restore button; the form otherwise loads fresh with the
+// carry-over-from-last-week defaults. Returns false so carryover always runs.
 function offerSnapshotRestore() {
   const snap = readSnapshot();
-  if (!snap) return false;
-  const ageHours = (Date.now() - snap.savedAt) / 3600000;
-  if (ageHours < 24) {
-    restoreSnapshot();
-    return true;
-  }
-  const btn = document.getElementById('btn-restore');
-  if (btn) btn.style.display = '';
+  if (!snap) { hideRestoreButton(); return false; }
+  showRestoreButton(snap);
   return false;
 }
 
