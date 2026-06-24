@@ -292,7 +292,7 @@ describe('notation images in renderers', () => {
     }
   });
 
-  it('notation images print at spec width (6in service / centered) and tall ones cap + center', async () => {
+  it('notation images print at spec width (5.5in / centered) and over-tall ones shrink to one page + center', async () => {
     const sharp = require('sharp');
     const zlib = require('zlib');
     const tall = await sharp({ create: { width: 800, height: 2400, channels: 3, background: '#222' } }).png().toBuffer();
@@ -319,17 +319,23 @@ describe('notation images in renderers', () => {
       }
     }
     assert.equal(draws.length, 2, 'both images embedded');
-    // Tabloid content area: margin 72, width 468. Service music spec
-    // width is 6in = 432pt, centered at x = 72 + (468-432)/2 = 90.
-    const wideDraw = draws.find(d => d.w > 400);
-    const tallDraw = draws.find(d => d.w < 400);
-    assert.ok(wideDraw, 'wide image prints at the 6in spec width');
-    assert.ok(Math.abs(wideDraw.w - 432) < 1, `6in spec width (got ${wideDraw.w})`);
-    assert.ok(Math.abs(wideDraw.x - 90) < 1, `centered at x=90 (got ${wideDraw.x})`);
-    assert.ok(tallDraw, 'tall image is height-capped (narrower than spec)');
+    // Tabloid content area: margin 72, width 468. All music notation prints
+    // at the 5.5in spec width = 396pt, centered at x = 72 + (468-396)/2 = 108.
+    // The wide 2000x500 image fits at full width. The 800x2400 image is
+    // taller than a whole content page even at 5.5in, so it shrinks
+    // proportionally to one page height (still centered).
+    const wideDraw = draws.find(d => d.w > 300);
+    const tallDraw = draws.find(d => d.w < 300);
+    assert.ok(wideDraw, 'wide image prints at the 5–5.5in spec width');
+    // 5.5in = 396pt; the flow engine may scale the booklet down to fit 8
+    // pages, but the director's floor is 5in = 360pt.
+    assert.ok(wideDraw.w >= 360 && wideDraw.w <= 397, `5–5.5in spec width (got ${wideDraw.w})`);
+    const wideCenterX = 72 + (468 - wideDraw.w) / 2;
+    assert.ok(Math.abs(wideDraw.x - wideCenterX) < 1, `centered (x=${wideDraw.x}, expected ~${wideCenterX})`);
+    assert.ok(tallDraw, 'over-tall image is shrunk to fit one page (narrower than spec)');
     const expectedCenterX = 72 + (468 - tallDraw.w) / 2;
     assert.ok(Math.abs(tallDraw.x - expectedCenterX) < 1,
-      `capped image must be centered (x=${tallDraw.x}, expected ~${expectedCenterX})`);
+      `shrunk image must be centered (x=${tallDraw.x}, expected ~${expectedCenterX})`);
   });
 
   it('HTML centers capped notation images and sizes ordinary images per geometry', () => {
@@ -338,8 +344,8 @@ describe('notation images in renderers', () => {
     const tab = renderBookletHtml(data, { bookletSize: 'tabloid' }).html;
     assert.match(half, /\.notation-image\s*{[^}]*object-position:\s*center top/);
     assert.match(half, /\.notation-image\s*{[^}]*margin:\s*3pt auto/);
-    assert.match(tab, /\.notation-image\.ordinary\s*{\s*width:\s*6in;\s*max-height:\s*3in/);
-    assert.match(tab, /\.notation-image\.hymn\s*{\s*width:\s*5in/);
+    assert.match(tab, /\.notation-image\.ordinary\s*{\s*width:\s*5\.5in/);
+    assert.match(tab, /\.notation-image\.hymn\s*{\s*width:\s*5\.5in/);
   });
 
   it('PDF embeds slot image buffers and stays at exactly 8 pages', async () => {

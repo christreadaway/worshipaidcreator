@@ -1,10 +1,10 @@
 # Worship Aid Generator — Product Specification
 
-**Version:** 1.7.0
-**Last Updated:** June 12, 2026
+**Version:** 1.9.0
+**Last Updated:** June 24, 2026
 **Status:** Active development — replacing Microsoft Publisher in fall 2026
 
-> **Pick-up note for next session:** see `session_notes.md` § "Session 10 (June 12, 2026)" for v1.6.2–v1.7. **Pushed** on `claude/jolly-newton-tzp0aj`: v1.6.2 (preview falls back to the paste box when a notation file is missing; warnings render as banners), v1.6.3 (notation images at full proportional width; height-capped images centered; ordinary caps raised), v1.6.4 (automatic title-header removal on notation uploads). **Uncommitted at handoff — the v1.7 batch:** feast name tracks the date, Notation Images list overhaul (hover-zoom, per-row delete, sticky "Print in", "last printed in" history), content-hash upload de-dupe, full notation-map carryover, editor session snapshot/restore, export-log-backed hymn stats, and — in progress — PDF spread bridging for music images. First job next session: finish the bridging implementation + tests, run `npm test` (~340+ expected), commit, merge.
+> **Pick-up note for next session:** v1.9 is the **director-of-liturgy proof pass** (13th Sunday in Ordinary Time proof, June 2026). **Pushed** on `claude/youthful-goldberg-0kvf8t`. Every layout/wording correction from the marked-up proof was applied to BOTH renderers (PDF `pdf-generator.js` and HTML preview `template-renderer.js`): posture directions lose the cross symbol + period and ride right-justified on the heading they govern; music pieces drop the restating label and put title+composer on the sub-heading line; scripture citations move onto the reading heading line; a Collect heading follows the Gloria; "Please be seated"/"Please stand" sit before their section titles; the intentions line, Lord's Prayer body, and Blessing & Dismissal dialogue are removed; psalm verses end with "R."; the OneLicense permission prints once at the end (not per page); all notation prints 5–5.5in wide and is pushed to the next page rather than shrunk. Full suite green (364 tests; new `src/tests/proof-fixes.test.js`). **Still open:** the auto title-crop heuristic left titles/residual marks on a few uploaded scans — stripping happens at upload, so those images need re-uploading (or share samples to tune `TITLE_CROP`).
 
 > **Decision (June 2026): no programmatic hymn-music *licensing* integration.** OneLicense has no public API. Instead each congregational hymn slot (processional, communion, thanksgiving) and each sung Mass part reserves a music area. **As of v1.6 the user can fill that area digitally**: upload the licensed notation image (TIFF straight from OneLicense works — it's converted to PNG and auto-cropped) and it prints inside the area in both the preview and the exported PDF. With no image attached, the dashed paste-guide box renders instead for hand paste-up. The OneLicense *search* buttons remain as a convenience. Controlled per-aid by `reserveHymnSpace` (default on).
 
@@ -127,10 +127,12 @@ All defaults are user-overridable.
 
 ### 4. Music Display Logic (PRD §5.4)
 
+- A piece's **title + composer ride on the same line as its sub-heading** (v1.9, director request). The old restating slot label ("Prelude —", "Processional —", "Kyrie —", "Communion —", "Setting —", "Postlude —", etc.) is dropped — the heading already says what the piece is. Mass-ordinary setting names (Gloria, Holy Holy Holy, Mystery of Faith, Lamb of God) sit inline on their headings too.
 - **Same music across all 3 Mass times:** Displayed once, no time qualifier.
-  - Format: *Title*, Composer
-- **Different music:** Grouped by unique selection with times in parentheses.
+  - Format on the heading line: *Title*, Composer
+- **Different music:** the heading stands alone and each unique selection is listed on its own line below, with the Mass-time qualifier.
   - Format: *Title A*, Composer (Sat, 5 PM & Sun, 11 AM) / *Title B*, Composer (Sun, 9 AM)
+- The **Responsorial Psalm** has no piece title: only its scripture reference rides on the heading line — no setting/composer line (v1.9).
 
 ### 5. Overflow Detection (PRD §5.2)
 
@@ -145,11 +147,11 @@ Line estimation: character count / 65 chars per line. Overflow warnings identify
 | Page | Role | Key Content |
 |---|---|---|
 | 1 | Cover | Jerusalem cross, feast name, date, Mass times, 2x2 parish info grid |
-| 2 | Introductory Rites | Organ Prelude, Processional/Antiphon **+ hymn paste area**, Confiteor (conditional), Kyrie, Gloria (conditional) |
+| 2 | Introductory Rites | Organ Prelude, Processional/Antiphon **+ hymn paste area**, Confiteor (conditional), Kyrie, Gloria (conditional), **Collect** |
 | 3 | Liturgy of the Word | First Reading, Psalm, Second Reading, Gospel Acclamation |
-| 4 | Gospel + Creed | Gospel text, Homily cue, Creed (Nicene / Apostles' / Baptismal Vows), Prayer of the Faithful |
+| 4 | Gospel + Creed | Gospel text, Homily cue, Creed (Nicene / Apostles' / Baptismal Vows), Prayer of the Faithful (heading only) |
 | 5 | Liturgy of the Eucharist | Offertory, Children's Liturgy (conditional), Invitation to Prayer, Holy Holy (English/Latin), Mystery of Faith, Great Amen |
-| 6 | Communion Rite | Lord's Prayer, Sign of Peace, Lamb of God, Communion Hymn **+ hymn paste area**, **Choral Anthem (per-Mass)** |
+| 6 | Communion Rite | Lord's Prayer (heading only), Sign of Peace, Lamb of God, Communion Hymn **+ hymn paste area**, **Choral Anthem (per-Mass)** |
 | 7 | (flow) | Determined by content height |
 | 8 | (flow) | Determined by content height; padded blank if content ends early |
 
@@ -166,10 +168,30 @@ Line estimation: character count / 65 chars per line. Overflow warnings identify
 > warning); **a block is never split** (music and its heading stay
 > together — no more sections printing between the halves of a hymn);
 > **nothing is dropped silently** (every compromise is a warning the
-> editor shows at export). The short license line prints in the footer of
-> every page that carries embedded notation; the full copyright block is
-> the final flow block. The HTML preview keeps the legacy fixed-section
-> pages and flags clipping pages with a banner pointing to the export.
+> editor shows at export). The OneLicense permission prints **once**, in
+> the full copyright block that is the final flow block — it is NOT
+> repeated in a per-page footer (v1.9, director request). The HTML preview
+> keeps the legacy fixed-section pages and flags clipping pages with a
+> banner pointing to the export.
+
+> **v1.9 heading/posture rules (director-of-liturgy proof pass):**
+> - Posture directions read "Please stand" / "Please be seated" / "Please
+>   kneel" — no cross symbol, no trailing period.
+> - A posture direction is **right-justified on the heading it governs**:
+>   Processional Hymn (stand), Gospel Acclamation (stand), Homily (be
+>   seated), the Creed (stand), Invitation to Prayer (stand).
+> - Major-section transitions place the direction **before the section
+>   title**: "Please be seated" before *The Liturgy of the Word* (after a
+>   new **Collect** heading that follows the Gloria) and before *The
+>   Liturgy of the Eucharist*; "Please stand" between *Great Amen* and
+>   *The Communion Rite*. The two kneels and the dismissal "Please stand"
+>   stay on their own lines (cleaned of symbol/period).
+> - **Scripture citations** ride on the reading heading line (First /
+>   Second Reading, Gospel, Gospel Acclamation).
+> - Texts removed as unnecessary: the Prayer of the Faithful "intentions
+>   are read…" line, the Lord's Prayer body, the Blessing & Dismissal
+>   Priest/Deacon dialogue (headings kept).
+> - **Psalm verses** each end with "R." and are separated by a blank space.
 > The table rows above describe the canonical *order* of content, not
 > fixed page assignments.
 
@@ -243,7 +265,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 - Cover persistent branding: logo (PNG/JPG upload), cover tagline
 - 4 info blurbs (Connect, Nursery, Restrooms, Prayer)
 - OneLicense number
-- Short copyright (Page 7) and full copyright (Page 8)
+- Short copyright and full copyright. As of v1.9 only the **full** copyright block is printed (once, at the end of the booklet); the short per-page license line was removed at the director's request. The `copyrightShort` field is retained in settings for back-compat but is no longer rendered.
 - Font and minimum font size preferences
 
 ### 11. USCCB Readings Auto-Fetch
@@ -280,7 +302,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 ### 14a. Responsorial Psalm Setting (v1.3)
 
 - New shared-music slot: **Responsorial Psalm Setting** (and composer).
-- Renders on Page 3 between the citation and the refrain so a published psalm setting (e.g. *Psalm 27 — Joncas*) is credited alongside the refrain text.
+- **v1.9:** the editor still captures a psalm setting + composer, but the booklet no longer prints a "Setting — composer" line. Per the director, the Responsorial Psalm has no piece title — only the scripture reference rides on the heading line, and the refrain notation (or paste box) carries the music.
 - **Auto-prefill from USCCB:** when readings are fetched, the refrain text is copied into the psalm-setting title input as a starting point — the music director can then search OneLicense for a matching setting.
 - **OneLicense search-by-refrain button** opens the OneLicense search with the refrain text as the query.
 - Persisted via the `responsorialPsalmSetting` / `responsorialPsalmSettingComposer` fields on each music block; populates from any block (Sat/Sun9/Sun11) so legacy drafts open cleanly.
@@ -298,7 +320,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 - Accepted: PNG, JPG, **TIFF** (what OneLicense supplies), BMP, GIF, WebP, SVG.
 - Every upload is normalized at the door (`normalizeNotationImage`): EXIF rotation, white-margin trim, and conversion of non-embeddable formats to PNG — so every stored notation file displays in the browser and embeds in the PDF.
 - Rejected types and oversized files return descriptive errors (the hosted site's ~4.5 MB serverless payload cap is stated in the message; the SPA also pre-checks size client-side).
-- **Automatic title-header removal (v1.6.4, default-everywhere + adaptive in v1.7.1).** Licensed notation usually arrives with a large title block (title / composer / tune) above the first staff; the booklet already prints the title line, so the header only wastes music space. `src/image-utils.js` (`detectTitleCropY` + `stripTitleHeader` + the `TITLE_CROP` constants) builds a row-darkness profile at a 480 px analysis width, treats a row with ≥35% ink as a staff line, finds the first staff system, walks up past anything hugging the staff (tempo/composer lines), and crops at the first white gap — ONLY when real header content exists above the gap and the crop removes ≤50% of the image. The separator-gap and breathing-room thresholds are **height-adaptive** (v1.7.1): `gap = clamp(H × 0.035, 5, 12)` and `pad = clamp(H × 0.02, 3, 10)` analysis rows — a fixed 12-row gap was unreachable on wide-but-short scans (a single psalm-refrain staff), which is why headers like "Psalm 100: …" used to survive. Idempotent; lyrics between staves and the bottom copyright line always survive. **Stripping is the default on every image path**: `/api/upload/notation` AND `/api/attachments` (image attachments can print in the booklet) both strip unless the request explicitly sends `stripTitle=0`; the editor checkbox `stripTitleHeaders` (default ON) is an opt-out, and a missing checkbox can no longer silently disable stripping (the client only sends `0` on an explicit uncheck). Safe for non-music images — no staff detected means no crop.
+- **Automatic title-header removal (v1.6.4, default-everywhere + adaptive in v1.7.1).** Licensed notation usually arrives with a large title block (title / composer / tune) above the first staff; the booklet already prints the title line, so the header only wastes music space. `src/image-utils.js` (`detectTitleCropY` + `stripTitleHeader` + the `TITLE_CROP` constants) builds a row-darkness profile at a 480 px analysis width, treats a row with ≥35% ink as a staff line, finds the first staff system, walks up past anything hugging the staff (tempo/composer lines), and crops at the first white gap — ONLY when real header content exists above the gap and the crop removes ≤50% of the image. The separator-gap and breathing-room thresholds are **height-adaptive** (v1.7.1): `gap = clamp(H × 0.035, 5, 12)` and `pad = clamp(H × 0.02, 3, 10)` analysis rows — a fixed 12-row gap was unreachable on wide-but-short scans (a single psalm-refrain staff), which is why headers like "Psalm 100: …" used to survive. Idempotent; lyrics between staves and the bottom copyright line always survive. **Stripping is the default on every image path**: `/api/upload/notation` AND `/api/attachments` (image attachments can print in the booklet) both strip unless the request explicitly sends `stripTitle=0`; the editor checkbox `stripTitleHeaders` (default ON) is an opt-out, and a missing checkbox can no longer silently disable stripping (the client only sends `0` on an explicit uncheck). Safe for non-music images — no staff detected means no crop. **Open item (v1.9 proof):** the director found a few scans where the title survived or left residual marks ("2 dots") above the staff. Stripping happens at **upload**, so images already stored keep their baked-in result — they must be re-uploaded to re-run the cropper. Tuning `TITLE_CROP` further needs the actual problem scans (the heuristic is deliberately conservative because over-cropping removes real notation, which is worse than a stray title).
 - **Content-hash de-dupe (v1.7).** The sha256 of the processed buffer is indexed in the `notation-hash-index` KV namespace; re-uploading identical content reuses the already-stored file (response `deduped: true`, toast "Already uploaded — reusing the existing image") instead of stacking copies in the list.
 
 #### Per-Slot Notation Images (v1.6)
@@ -307,7 +329,7 @@ Admin-editable fields stored in `data/settings/parish-settings.json`:
 
 **Missing-file fallback (v1.6.2):** `/api/preview` checks every `notationImages` reference against storage (`findMissingNotationSlots`, `src/notation-resolver.js`) and strips references whose file no longer exists, so the preview falls back to the dashed paste box exactly like the PDF — with a named warning (`The notation image attached to "<slot>" no longer exists on the server — showing the blank paste area instead. Re-upload and re-attach it.`). The editor renders preview `warnings` as visible banners above the preview, not just a status-bar count. Root cause of the original "the processional hymn has no placeholder" report: a dead `<img>` inside the sandboxed preview iframe renders as an invisible blank, so the slot looked empty while the PDF (which pre-resolves buffers) correctly showed the paste box.
 
-**Image sizing (v1.6.3):** notation images scale to the full proportional content width; an image that hits its height cap is **centered** (`object-position: center top` in HTML; centered `drawX` in the PDF's `_notationImage`) rather than left-pinned. Ordinary-part image caps raised from 1.4 in / 100 pt to 2.4 in (half-letter) / 3 in (tabloid) — `PAGE_GEOMETRY.ordinaryImageMax` — and 170 base units in the PDF. Verified against the PDF content-stream image transforms.
+**Image sizing (v1.9, director spec):** ALL music notation prints **5–5.5in wide** on the tabloid trim (`NOTATION_WIDTH_IN = 5.5`, scaled proportionally on the half-letter trim, clamped to the content width) — service music used to be 6in ("too large"). Width is the priority: an image keeps its spec width and natural height, and a block that doesn't fit the room left on the page is **pushed whole to the next page** by the flow paginator rather than shrunk to fit the scrap below (the Gloria that rendered "too small" because a height cap squeezed its width). Height is bounded only by a full content page; an image genuinely taller than one page shrinks proportionally so it stays complete. Everything is **centered** (`object-position: center top` in HTML; centered `drawX` in the PDF's `_notationImage`). When the whole booklet is scaled to honor the 8-page guarantee, notation scales with the text (floor 75%). Verified against the PDF content-stream image transforms.
 
 #### Notation Images List (v1.6.1, overhauled v1.7)
 

@@ -7,11 +7,11 @@
 const path = require('path');
 const fs = require('fs');
 const { APOSTLES_CREED, NICENE_CREED, RENEWAL_OF_BAPTISMAL_VOWS } = require('./assets/text/creeds');
-const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, LORDS_PRAYER, getHolyHolyHolyText } = require('./assets/text/mass-texts');
+const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, getHolyHolyHolyText } = require('./assets/text/mass-texts');
 const { formatMusicSlot, renderMusicLineHtml } = require('./music-formatter');
 const { applySeasonDefaults } = require('./config/seasons');
 const { detectOverflows } = require('./validator');
-const { getDefaultCopyrightFull, getDefaultCopyrightShort } = require('./assets/text/copyright');
+const { getDefaultCopyrightFull } = require('./assets/text/copyright');
 
 function escapeHtml(str) {
   if (!str) return '';
@@ -44,12 +44,32 @@ function getLogoHtml(settings) {
   return getLogoSvg();
 }
 
-function renderMusicSection(data, titleField, composerField, label) {
+// A sub-heading line. Per the director of liturgy, a piece's title/composer
+// or a reading's scripture citation sits ON the heading line, and a posture
+// direction ("Please stand") is right-justified on that same line. opts:
+//   inline      — plain text after the heading (escaped); for citations
+//   inlineHtml  — pre-built HTML after the heading (music lines)
+//   citation    — style the inline text as a scripture citation
+//   right       — posture direction, right-justified on the heading line
+function subHeadingHtml(label, opts = {}) {
+  const inline = opts.inlineHtml
+    ? `<span class="sub-inline">${opts.inlineHtml}</span>`
+    : (opts.inline ? `<span class="sub-inline${opts.citation ? ' cite' : ''}">${escapeHtml(opts.inline)}</span>` : '');
+  const right = opts.right ? `<span class="rubric-inline">${escapeHtml(opts.right)}</span>` : '';
+  return `<div class="sub-heading-row"><div class="sub-heading-left"><span class="sub-heading">${escapeHtml(label)}</span>${inline}</div>${right}</div>`;
+}
+
+// Sub-heading for a music slot: title + composer inline, redundant slot label
+// dropped (director). Different pieces per Mass time fall back to a bare
+// heading with each piece listed below.
+function musicSubHeadingHtml(data, label, titleField, composerField, opts = {}) {
   const items = formatMusicSlot(data, titleField, composerField);
-  if (items.length === 0) return '';
-  let html = `<div class="music-entry"><span class="music-label">${escapeHtml(label)} &mdash; </span>`;
-  html += items.map(i => renderMusicLineHtml(i)).join(' <span class="music-divider">/</span> ');
-  html += '</div>';
+  if (items.length <= 1) {
+    const inlineHtml = items[0] ? renderMusicLineHtml(items[0]) : '';
+    return subHeadingHtml(label, { inlineHtml, right: opts.right });
+  }
+  let html = subHeadingHtml(label, { right: opts.right });
+  html += items.map(i => `<p class="music-entry">${renderMusicLineHtml(i)}</p>`).join('');
   return html;
 }
 
@@ -156,8 +176,9 @@ function renderBookletHtml(data, options = {}) {
   const prayerBlurb = settings.prayerBlurb || 'For prayer requests, contact the parish office.';
   // Default copyright wording is shared with the PDF generator (single
   // source: DEFAULT_PARISH_SETTINGS in config/defaults.js). The text is
-  // plain — nl2br/escapeHtml escape it exactly once at render time.
-  const copyrightShort = settings.copyrightShort || getDefaultCopyrightShort(settings.onelicenseNumber);
+  // plain — nl2br/escapeHtml escape it exactly once at render time. The
+  // OneLicense permission now appears ONLY in this end-of-document block
+  // (director: it should not repeat on every page with notation).
   const copyrightFull = settings.copyrightFull || getDefaultCopyrightFull(settings.onelicenseNumber);
 
   // Mass schedule, clergy, and standing messages (cover page).  Each section
@@ -235,7 +256,30 @@ function renderBookletHtml(data, options = {}) {
     color: #6B1A1A;
     text-transform: uppercase;
     letter-spacing: 1pt;
+  }
+  /* Heading line: heading + inline title/citation on the left, posture
+     direction right-justified. */
+  .sub-heading-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8pt;
     margin: 7pt 0 2pt;
+  }
+  .sub-heading-left { display: inline; }
+  .sub-inline {
+    font-style: italic;
+    font-size: 9pt;
+    margin-left: 5pt;
+  }
+  .sub-inline.cite { font-style: normal; font-weight: 600; font-size: 9pt; color: #333; }
+  .sub-inline em { font-style: italic; }
+  .rubric-inline {
+    color: #8B0000;
+    font-style: italic;
+    font-size: 8pt;
+    white-space: nowrap;
+    flex: none;
   }
   .rubric {
     color: #8B0000;
@@ -262,7 +306,7 @@ function renderBookletHtml(data, options = {}) {
     margin: 3pt 0;
   }
   .psalm-verse {
-    margin: 2pt 0 2pt 12pt;
+    margin: 2pt 0 7pt 12pt;
     font-size: 9pt;
   }
   .prayer-text {
@@ -277,22 +321,13 @@ function renderBookletHtml(data, options = {}) {
     margin: 2pt 0;
   }
 
-  /* --- Music entries per PRD §5.4 --- */
+  /* --- Music entries (multi-Mass fallback list under a heading) --- */
   .music-entry {
     margin: 2pt 0;
     font-size: 9pt;
   }
-  .music-label {
-    font-family: 'Cinzel', serif;
-    font-size: 7.5pt;
-    font-weight: 600;
-    color: #555;
-    text-transform: uppercase;
-    letter-spacing: 0.5pt;
-  }
   .music-entry em { font-style: italic; }
   .mass-time-label { font-size: 8pt; color: #666; }
-  .music-divider { color: #999; margin: 0 2pt; }
 
   /* Reserved paste area for licensed hymn notation. */
   .hymn-music-space {
@@ -320,10 +355,9 @@ function renderBookletHtml(data, options = {}) {
     font-size: 6.5pt;
     font-style: italic;
   }
-  /* Uploaded notation images — parish spec: service music prints 6in wide,
-     hymns and the responsorial psalm refrain 5in wide, all centered.
-     (Inches are exact on the 8.5in tabloid trim; smaller trims clamp to
-     the content width.) */
+  /* Uploaded notation images — director of liturgy spec: ALL music notation
+     prints 5–5.5in wide, centered, at its natural height. (Inches are exact
+     on the 8.5in tabloid trim; smaller trims clamp to the content width.) */
   .notation-image {
     display: block;
     max-width: 100%;
@@ -331,9 +365,9 @@ function renderBookletHtml(data, options = {}) {
     object-position: center top;
     margin: 3pt auto;
   }
-  .notation-image.hymn     { width: 5in; max-height: ${geom.hymnSpace}; }
-  .notation-image.ordinary { width: 6in; max-height: ${geom.ordinaryImageMax}; }
-  .notation-image.w5       { width: 5in; }
+  .notation-image.hymn     { width: 5.5in; max-height: ${geom.hymnSpace}; }
+  .notation-image.ordinary { width: 5.5in; max-height: ${geom.hymnSpace}; }
+  .notation-image.w5       { width: 5.5in; }
   /* Two-column layout for the Creed */
   .creed-text.two-column {
     columns: 2;
@@ -408,14 +442,6 @@ function renderBookletHtml(data, options = {}) {
     text-align: center;
     margin-top: auto;
     padding-top: 12pt;
-  }
-  .copyright-short {
-    font-size: 7pt;
-    color: #888;
-    text-align: center;
-    margin-top: 6pt;
-    padding-top: 4pt;
-    border-top: 0.5pt solid #ccc;
   }
 
   /* --- Overflow error banner --- */
@@ -512,13 +538,9 @@ function renderBookletHtml(data, options = {}) {
   ${overflowPages.has(2) ? '<div class="overflow-banner">Page 2 content may overflow</div>' : ''}
   <div class="section-header">The Introductory Rites</div>
 
-  <div class="sub-heading">Organ Prelude</div>
-  ${renderMusicSection(d, 'organPrelude', 'organPreludeComposer', 'Prelude')}
+  ${musicSubHeadingHtml(d, 'Organ Prelude', 'organPrelude', 'organPreludeComposer')}
 
-  ${RP + RUBRICS.stand + "</p>"}
-
-  <div class="sub-heading">${entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon'}</div>
-  ${renderMusicSection(d, 'processionalOrEntrance', 'processionalOrEntranceComposer', entranceType === 'processional' ? 'Processional' : 'Antiphon')}
+  ${musicSubHeadingHtml(d, entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon', 'processionalOrEntrance', 'processionalOrEntranceComposer', { right: RUBRICS.stand })}
   ${processionalHymnSpaceHtml}
 
   ${showAdventWreath ? `
@@ -532,17 +554,17 @@ function renderBookletHtml(data, options = {}) {
   <div class="prayer-text" style="font-size:8.5pt;">${nl2br(CONFITEOR)}</div>
   ` : ''}
 
-  <div class="sub-heading">Lord, Have Mercy</div>
-  ${renderMusicSection(d, 'kyrieSetting', 'kyrieComposer', 'Kyrie')}
+  ${musicSubHeadingHtml(d, 'Lord, Have Mercy', 'kyrieSetting', 'kyrieComposer')}
   ${ordSpace('kyrie', 'Kyrie — music notation')}
 
   ${showGloria ? `
-  <div class="sub-heading">Gloria</div>
-  ${ss.gloriaSetting ? `<p class="music-entry"><em>${escapeHtml(ss.gloriaSetting)}</em></p>` : ''}
+  ${subHeadingHtml('Gloria', { inline: ss.gloriaSetting || '' })}
   ${slotHasMusic('gloria')
     ? ordSpace('gloria', 'Gloria — music notation')
     : '<p class="prayer-text">Glory to God in the highest, and on earth peace to people of good will.</p>'}
   ` : ''}
+
+  ${subHeadingHtml('Collect')}
 
   ${d.childrenLiturgyEnabled ? (() => {
     const times = Array.isArray(d.childrenLiturgyMassTimes) && d.childrenLiturgyMassTimes.length
@@ -566,35 +588,27 @@ function renderBookletHtml(data, options = {}) {
 <!-- PAGE 3: LITURGY OF THE WORD -->
 <div class="page${overflowPages.has(3) ? ' overflow-warning' : ''}" id="page-3">
   ${overflowPages.has(3) ? `<div class="overflow-banner">${escapeHtml(overflows.find(o => o.page === 3)?.message || 'Page 3 overflow')}</div>` : ''}
+  ${RP + RUBRICS.sit + "</p>"}
   <div class="section-header">The Liturgy of the Word</div>
 
-  ${RP + RUBRICS.sit + "</p>"}
-
-  <div class="sub-heading">First Reading</div>
-  <p class="citation">${escapeHtml(r.firstReadingCitation)}</p>
+  ${subHeadingHtml('First Reading', { inline: r.firstReadingCitation || '', citation: true })}
   <div class="reading-text">${nl2br(r.firstReadingText)}</div>
 
-  <div class="sub-heading">Responsorial Psalm</div>
-  <p class="citation">${escapeHtml(r.psalmCitation)}</p>
-  ${renderMusicSection(d, 'responsorialPsalmSetting', 'responsorialPsalmSettingComposer', 'Setting')}
+  ${subHeadingHtml('Responsorial Psalm', { inline: r.psalmCitation || '', citation: true })}
   ${slotHasMusic('psalmRefrain')
     ? ordSpace('psalmRefrain', 'Responsorial Psalm refrain — music notation')
     : (r.psalmRefrain ? `<p class="psalm-refrain">R. ${escapeHtml(r.psalmRefrain)}</p>` : '')}
-  ${r.psalmVerses ? r.psalmVerses.split('\n\n').map(v => `<p class="psalm-verse">${nl2br(v)}</p>`).join('') : ''}
+  ${r.psalmVerses ? r.psalmVerses.split('\n\n').map(v => `<p class="psalm-verse">${nl2br(v)}${/(?:^|\s)R\.?\s*$/.test(v.trim()) ? '' : ' R.'}</p>`).join('') : ''}
 
   ${!r.noSecondReading && r.secondReadingCitation ? `
-  <div class="sub-heading">Second Reading</div>
-  <p class="citation">${escapeHtml(r.secondReadingCitation)}</p>
+  ${subHeadingHtml('Second Reading', { inline: r.secondReadingCitation || '', citation: true })}
   <div class="reading-text">${nl2br(r.secondReadingText)}</div>
   ` : ''}
 
-  ${RP + RUBRICS.stand + "</p>"}
-
-  <div class="sub-heading">Gospel Acclamation</div>
+  ${subHeadingHtml('Gospel Acclamation', { inline: r.gospelAcclamationReference || '', citation: true, right: RUBRICS.stand })}
   ${slotHasMusic('gospelAcclamation')
     ? ordSpace('gospelAcclamation', 'Gospel Acclamation — music notation')
     : `<p class="psalm-refrain">${escapeHtml(acclamationText)}</p>`}
-  ${r.gospelAcclamationReference ? `<p class="citation">${escapeHtml(r.gospelAcclamationReference)}</p>` : ''}
   ${r.gospelAcclamationVerse ? `<p style="font-size:9pt;font-style:italic;margin:2pt 0;">${nl2br(r.gospelAcclamationVerse)}</p>` : ''}
 
   <div class="page-number">3</div>
@@ -604,55 +618,45 @@ function renderBookletHtml(data, options = {}) {
 <div class="page${overflowPages.has(4) ? ' overflow-warning' : ''}" id="page-4">
   ${overflowPages.has(4) ? `<div class="overflow-banner">${escapeHtml(overflows.find(o => o.page === 4)?.message || 'Page 4 overflow')}</div>` : ''}
 
-  <div class="sub-heading">Gospel</div>
-  <p class="citation">${escapeHtml(r.gospelCitation)}</p>
+  ${subHeadingHtml('Gospel', { inline: r.gospelCitation || '', citation: true })}
   <div class="reading-text">${nl2br(r.gospelText)}</div>
 
-  <div class="sub-heading">Homily</div>
-  ${RP + RUBRICS.sit + "</p>"}
+  ${subHeadingHtml('Homily', { right: RUBRICS.sit })}
 
-  ${RP + RUBRICS.stand + "</p>"}
-  <div class="sub-heading">${escapeHtml(creedTitle)}</div>
+  ${subHeadingHtml(creedTitle, { right: RUBRICS.stand })}
   <div class="creed-text${ss.twoColumnCreed && creedType !== 'baptismal_vows' ? ' two-column' : ''}">${nl2br(creedText)}</div>
 
-  <div class="sub-heading">Prayer of the Faithful</div>
-  <p class="rubric" style="font-style:italic;">The intentions are read; the assembly responds.</p>
+  ${subHeadingHtml('Prayer of the Faithful')}
 
   <div class="page-number">4</div>
 </div>
 
 <!-- PAGE 5: LITURGY OF THE EUCHARIST -->
 <div class="page" id="page-5">
+  ${RP + RUBRICS.sit + "</p>"}
   <div class="section-header">The Liturgy of the Eucharist</div>
 
-  ${RP + RUBRICS.sit + "</p>"}
-
-  <div class="sub-heading">Offertory</div>
-  ${renderMusicSection(d, 'offertoryAnthem', 'offertoryAnthemComposer', 'Offertory Anthem')}
+  ${musicSubHeadingHtml(d, 'Offertory', 'offertoryAnthem', 'offertoryAnthemComposer')}
 
   ${d.childrenLiturgyEnabled ? (() => {
     const times = Array.isArray(d.childrenLiturgyMassTimes) && d.childrenLiturgyMassTimes.length
       ? d.childrenLiturgyMassTimes
       : (d.childrenLiturgyMassTime ? [d.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
-    return `${RP}&dagger; Children return from Children&rsquo;s Liturgy of the Word (${times.map(escapeHtml).join(' &amp; ')}).</p>`;
+    return `${RP}Children return from Children&rsquo;s Liturgy of the Word (${times.map(escapeHtml).join(' &amp; ')})</p>`;
   })() : ''}
 
-  ${RP + RUBRICS.stand + "</p>"}
-
-  <div class="sub-heading">Invitation to Prayer</div>
+  ${subHeadingHtml('Invitation to Prayer', { right: RUBRICS.stand })}
   <p class="prayer-text" style="font-size:8.5pt;"><strong>Priest:</strong> ${escapeHtml(INVITATION_TO_PRAYER.priest)}</p>
   <p class="prayer-text" style="font-size:8.5pt;"><strong>All:</strong> ${escapeHtml(INVITATION_TO_PRAYER.all)}</p>
 
-  <div class="sub-heading">${escapeHtml(holyHolyHeading)}</div>
-  <p class="music-entry"><em>${escapeHtml(ss.holyHolySetting || 'Mass of St. Theresa')}</em></p>
+  ${subHeadingHtml(holyHolyHeading, { inline: ss.holyHolySetting || 'Mass of St. Theresa' })}
   ${slotHasMusic('sanctus')
     ? ordSpace('sanctus', 'Holy, Holy, Holy — music notation')
     : `<div class="prayer-text">${nl2br(holyHolyText)}</div>`}
 
   ${RP + RUBRICS.kneel + "</p>"}
 
-  <div class="sub-heading">Mystery of Faith</div>
-  <p class="music-entry"><em>${escapeHtml(ss.mysteryOfFaithSetting || 'Mass of St. Theresa')}</em></p>
+  ${subHeadingHtml('Mystery of Faith', { inline: ss.mysteryOfFaithSetting || 'Mass of St. Theresa' })}
   ${ordSpace('mysteryOfFaith', 'Mystery of Faith — music notation')}
 
   <div class="sub-heading">Great Amen</div>
@@ -662,26 +666,22 @@ function renderBookletHtml(data, options = {}) {
 
 <!-- PAGE 6: COMMUNION RITE -->
 <div class="page" id="page-6">
+  ${RP + RUBRICS.stand + "</p>"}
   <div class="section-header">The Communion Rite</div>
 
-  <div class="sub-heading">The Lord's Prayer</div>
-  ${RP + RUBRICS.stand + "</p>"}
-  <div class="prayer-text" style="font-size:8.5pt;">${nl2br(LORDS_PRAYER)}</div>
+  ${subHeadingHtml("The Lord's Prayer")}
 
   <div class="sub-heading">Sign of Peace</div>
 
-  <div class="sub-heading">Lamb of God</div>
-  <p class="music-entry"><em>${escapeHtml(ss.lambOfGodSetting || 'Mass of St. Theresa')}</em></p>
+  ${subHeadingHtml('Lamb of God', { inline: ss.lambOfGodSetting || 'Mass of St. Theresa' })}
   ${ordSpace('lambOfGod', 'Lamb of God — music notation')}
 
   ${RP + RUBRICS.kneel + "</p>"}
 
-  <div class="sub-heading">Communion Hymn</div>
-  ${renderMusicSection(d, 'communionHymn', 'communionHymnComposer', 'Communion')}
+  ${musicSubHeadingHtml(d, 'Communion Hymn', 'communionHymn', 'communionHymnComposer')}
   ${hymnSpace('communion')}
 
-  <div class="sub-heading">Choral Anthem</div>
-  ${renderMusicSection(d, 'choralAnthemConcluding', 'choralAnthemConcludingComposer', 'Anthem')}
+  ${musicSubHeadingHtml(d, 'Choral Anthem', 'choralAnthemConcluding', 'choralAnthemConcludingComposer')}
 
   <div class="page-number">6</div>
 </div>
@@ -690,8 +690,7 @@ function renderBookletHtml(data, options = {}) {
 <div class="page" id="page-7">
   <div class="section-header">The Concluding Rites</div>
 
-  <div class="sub-heading">Hymn of Thanksgiving</div>
-  ${renderMusicSection(d, 'hymnOfThanksgiving', 'hymnOfThanksgivingComposer', 'Thanksgiving')}
+  ${musicSubHeadingHtml(d, 'Hymn of Thanksgiving', 'hymnOfThanksgiving', 'hymnOfThanksgivingComposer')}
   ${hymnSpace('thanksgiving')}
 
   <div class="page-number">7</div>
@@ -702,13 +701,9 @@ function renderBookletHtml(data, options = {}) {
   ${RP + RUBRICS.stand + "</p>"}
 
   <div class="sub-heading">Blessing &amp; Dismissal</div>
-  <p class="prayer-text" style="font-size:8.5pt;"><strong>Priest:</strong> The Lord be with you. <strong>All:</strong> And with your spirit.</p>
-  <p class="prayer-text" style="font-size:8.5pt;"><strong>Priest:</strong> May almighty God bless you, the Father, and the Son, &#x2720; and the Holy Spirit. <strong>All:</strong> Amen.</p>
-  <p class="prayer-text" style="font-size:8.5pt;"><strong>Deacon:</strong> Go forth, the Mass is ended. <strong>All:</strong> Thanks be to God.</p>
 
   ${includePostlude ? `
-  <div class="sub-heading">Organ Postlude</div>
-  ${renderMusicSection(d, 'organPostlude', 'organPostludeComposer', 'Postlude')}
+  ${musicSubHeadingHtml(d, 'Organ Postlude', 'organPostlude', 'organPostludeComposer')}
   ` : ''}
 
   ${d.announcements ? `
@@ -721,7 +716,6 @@ function renderBookletHtml(data, options = {}) {
   ${closingMessage ? `<div style="margin:8pt auto 0;font-size:8pt;text-align:center;max-width:4in;">${nl2br(closingMessage)}</div>` : ''}
 
   <div class="copyright-full" style="margin:10pt auto 0;">${nl2br(copyrightFull)}</div>
-  <div class="copyright-short">${escapeHtml(copyrightShort)}</div>
 
   <div class="page-number">8</div>
 </div>

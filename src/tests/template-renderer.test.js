@@ -185,14 +185,18 @@ describe('renderBookletHtml', () => {
     assert.ok(html.includes('I confess to almighty God'));
   });
 
-  it('should include Lords Prayer', () => {
+  it('shows The Lords Prayer heading but not the full text (dropped as unnecessary)', () => {
+    // Director of liturgy: the Our Father text is unnecessary in the booklet.
     const { html } = renderBookletHtml(sampleData);
-    assert.ok(html.includes('Our Father'));
+    assert.ok(html.includes("The Lord's Prayer"));
+    assert.ok(!html.includes('Our Father'));
   });
 
-  it('should include blessing and dismissal', () => {
+  it('shows the Blessing & Dismissal heading but not the Priest/Deacon dialogue', () => {
+    // Director of liturgy: the dialogue text is unnecessary in the booklet.
     const { html } = renderBookletHtml(sampleData);
-    assert.ok(html.includes('Go forth, the Mass is ended'));
+    assert.ok(html.includes('Blessing &amp; Dismissal'));
+    assert.ok(!html.includes('Go forth, the Mass is ended'));
   });
 
   it('should render Children Liturgy when enabled', () => {
@@ -227,9 +231,13 @@ describe('renderBookletHtml', () => {
     assert.ok(html.includes('O Sacred Head'));
   });
 
-  it('should show copyright on page 7', () => {
+  it('shows the OneLicense permission only in the end-of-document block', () => {
+    // Director of liturgy: the permission appears once, at the end — not a
+    // per-page short license line.
     const { html } = renderBookletHtml(sampleData);
-    assert.ok(html.includes('copyright-short'));
+    assert.ok(!html.includes('copyright-short'));
+    const occurrences = (html.match(/Music reprinted under OneLicense/g) || []).length;
+    assert.equal(occurrences, 1);
   });
 
   it('should show full copyright on page 8', () => {
