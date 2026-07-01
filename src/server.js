@@ -94,6 +94,23 @@ if (!kv.IS_NETLIFY) {
   app.use('/uploads', express.static(UPLOADS_DIR));
 }
 
+// Vendored "classic" design fonts, served so the HTML preview renders in the
+// exact same typefaces as the classic PDF (works locally and on Netlify).
+app.get('/assets/fonts/classic/:file', (req, res) => {
+  const safe = path.basename(req.params.file || '');
+  if (!/^[A-Za-z0-9._-]+\.(otf|ttf)$/.test(safe)) return res.status(404).end();
+  const candidates = [
+    path.join(__dirname, 'assets', 'fonts', 'classic', safe),
+    path.join(process.cwd(), 'src', 'assets', 'fonts', 'classic', safe),
+    path.join(__dirname, '..', 'src', 'assets', 'fonts', 'classic', safe)
+  ];
+  const file = candidates.find(p => { try { return fs.existsSync(p); } catch (e) { return false; } });
+  if (!file) return res.status(404).end();
+  res.set('Content-Type', safe.endsWith('.ttf') ? 'font/ttf' : 'font/otf');
+  res.set('Cache-Control', 'public, max-age=604800');
+  res.sendFile(file);
+});
+
 // MIME guess for attachments served from Blobs (Netlify) or any uploaded
 // file whose extension we know.
 function guessMime(filename) {
@@ -659,9 +676,11 @@ app.post('/api/preview', async (req, res) => {
     data.notationImages = { ...data.notationImages };
     missingSlots.forEach(slot => delete data.notationImages[slot]);
   }
+  const design = req.body.design || req.query.design || 'reimagined';
   const { html, warnings, pageWidth, pageHeight } = renderBookletHtml(data, {
     parishSettings: settings,
-    bookletSize
+    bookletSize,
+    design
   });
   missingSlots.forEach(slot => warnings.push(
     `The notation image attached to "${slot}" no longer exists on the server — showing the blank paste area instead. Re-upload and re-attach it.`));
@@ -697,6 +716,7 @@ app.post('/api/generate-pdf', requireAuth, requirePermission('export_pdf'), asyn
     const result = await generatePdf(req.body, outputPath, {
       parishSettings: settings,
       bookletSize,
+      design: (req.body.design || req.query.design || 'reimagined'),
       notationImages: notation.images
     });
     if (notation.missing.length) {
@@ -1270,6 +1290,18 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
 /* Section permissions indicator */
 .section-lock { color: var(--gray); font-size: 9px; font-style: italic; margin-bottom: 6px; }
 
+/* Design switcher — two selectable cards */
+.design-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.design-opt {
+  text-align: left; background: #fff; border: 1.5px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 3px;
+  transition: border-color .12s, background .12s; font-family: inherit;
+}
+.design-opt:hover { border-color: var(--navy); }
+.design-opt.active { border-color: var(--navy); background: #f4f7fc; box-shadow: inset 0 0 0 1px var(--navy); }
+.design-opt-name { font-weight: 700; font-size: 12px; color: var(--navy); }
+.design-opt-desc { font-size: 10px; color: var(--gray); line-height: 1.25; }
+
 /* FORM */
 .form-section { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; overflow: hidden; }
 .form-section-hdr { background: var(--navy); color: var(--gold-light); padding: 7px 10px; font-family: 'Cinzel', serif; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
@@ -1464,6 +1496,23 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
 <!-- EDITOR PAGE -->
 <div class="app" id="page-editor" style="display:none;">
   <div class="editor" id="editor">
+
+    <!-- DESIGN -->
+    <div class="form-section">
+      <div class="form-section-hdr" onclick="toggle(this)">Design <span>&#9660;</span></div>
+      <div class="form-section-body">
+        <div class="design-switch" role="group" aria-label="Worship aid design">
+          <button type="button" id="design-opt-reimagined" class="design-opt active" onclick="setDesign('reimagined')">
+            <span class="design-opt-name">Reimagined</span>
+            <span class="design-opt-desc">The app&rsquo;s modern navy &amp; gold layout</span>
+          </button>
+          <button type="button" id="design-opt-classic" class="design-opt" onclick="setDesign('classic')">
+            <span class="design-opt-name">Classic Design</span>
+            <span class="design-opt-desc">The parish&rsquo;s in-house Garamond aid</span>
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- LITURGICAL DATE -->
     <div class="form-section">
@@ -2012,6 +2061,7 @@ async function showApp() {
       window._userPrefs = await ur.json();
       const sizeSel = document.getElementById('bookletSize');
       if (sizeSel && window._userPrefs.bookletSize) sizeSel.value = window._userPrefs.bookletSize;
+      if (window._userPrefs.design) setDesign(window._userPrefs.design, { skipSave: true, skipPreview: true });
     } else {
       window._userPrefs = {};
     }
@@ -2061,6 +2111,26 @@ function handle401(res) {
   localStorage.removeItem('wa_token');
   showLogin();
   return true;
+}
+
+// Output design ('reimagined' | 'classic'). Tracked in a global so the
+// preview/export request bodies and buildData() all agree.
+window._currentDesign = 'reimagined';
+function getSelectedDesign() { return window._currentDesign || 'reimagined'; }
+function setDesign(design, opts) {
+  opts = opts || {};
+  design = (design === 'classic') ? 'classic' : 'reimagined';
+  window._currentDesign = design;
+  ['reimagined', 'classic'].forEach(function(d) {
+    const el = document.getElementById('design-opt-' + d);
+    if (el) el.classList.toggle('active', d === design);
+  });
+  if (!opts.skipSave) saveUserPrefs({ design: design });
+  // Re-render the preview if one is already showing so the switch is instant.
+  if (!opts.skipPreview) {
+    const pc = document.getElementById('preview-content');
+    if (pc && pc.style.display !== 'none') generatePreview();
+  }
 }
 
 // Save the user's per-user prefs in the background.  Fire-and-forget; no UI
@@ -2353,6 +2423,7 @@ function buildData() {
     feastName: v('feastName'),
     liturgicalDate: v('liturgicalDate'),
     liturgicalSeason: v('liturgicalSeason'),
+    design: getSelectedDesign(),
     lastEditedBy: _currentUser ? _currentUser.displayName : undefined,
     seasonalSettings: {
       gloria: ch('gloria'),
@@ -2409,6 +2480,9 @@ function populateForm(data) {
   // editing — reset the dirty flag so a fresh load won't be re-snapshotted.
   _editorDirty = false;
   window._currentDraftId = data.id || undefined;
+  // A saved aid may carry its own design; otherwise keep the user's current
+  // choice. Don't re-preview here — the caller drives that.
+  if (data.design) setDesign(data.design, { skipSave: true, skipPreview: true });
   sv('feastName', data.feastName);
   // A draft-loaded name is NOT a manual override: the load-time reconcile
   // below keeps it (fill-if-empty), but a subsequent date change should
@@ -3659,6 +3733,7 @@ async function generatePreview() {
     const data = buildData();
     const sizeSel = document.getElementById('bookletSize');
     if (sizeSel) data.bookletSize = sizeSel.value;
+    data.design = getSelectedDesign();
     const res = await fetch('/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
     const result = await res.json();
     document.getElementById('preview-placeholder').style.display = 'none';
@@ -3712,6 +3787,7 @@ async function generatePdfExport() {
     const data = buildData();
     const sel = document.getElementById('bookletSize');
     if (sel) data.bookletSize = sel.value;
+    data.design = getSelectedDesign();
     const res = await fetch('/api/generate-pdf', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': _sessionToken }, body: JSON.stringify(data) });
     if (handle401(res)) { setStatus('Export blocked — signed out'); return; }
     if (!res.ok) {

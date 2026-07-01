@@ -49,6 +49,10 @@ const inputSchema = {
     // Finished booklet size for preview/export (defaults to tabloid).
     bookletSize: { type: 'string', enum: ['half-letter', 'tabloid'] },
 
+    // Output design: the app's original look, or a serif emulation of the
+    // parish's in-house aid (defaults to reimagined).
+    design: { type: 'string', enum: ['reimagined', 'classic'] },
+
     // Workflow: who last edited, assigned to
     lastEditedBy: { type: 'string' },
     assignedTo: { type: 'string' },

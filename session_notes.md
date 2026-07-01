@@ -1796,3 +1796,75 @@ Consequences:
   Prayer after Communion placement, the dropped Blessing stand, the kneel/Lamb
   of God adjacency, and a multi-strophe psalm rendering to a clean 8-page PDF.
 - All prior proof-fix assertions still green (no regression to Session 12 work).
+
+---
+
+## Session 15 — v2.1: Two output designs — "Reimagined" + "Classic"
+
+The parish shared their **in-house worship aid** (Book Antiqua / Garamond,
+monochrome, small-caps section headers) and asked to (a) fully emulate it as a
+selectable **"Classic Design"** and (b) rename the app's existing look
+**"Reimagined."** Both are now selectable in the editor's left panel; the
+choice drives the on-screen preview and the PDF export and persists as a
+per-user preference (and on the saved aid).
+
+### Architecture — one engine, two themes
+Rather than fork the 1,300-line generator, `pdf-generator.js` gained a **theme
+layer**. `THEMES.reimagined` reproduces the original fonts/colors exactly, so
+that design is byte-for-byte unchanged (verified: all prior suites green, same
+rendered output). `THEMES.classic` swaps in the serif palette. The shared
+primitives (`sectionHeader`, `subHeading`, `rubric`, `bodyText`,
+`_renderCreedTwoColumn`, `_childrenLiturgyBox`, the notation paste boxes) all
+read the theme via `_font(role)` / `_color(role)`. Classic-only work lives in
+separate methods so nothing reimagined is touched:
+- `renderPage1CoverClassic()` — Garamond small-caps title, centered cross, a
+  Bookman-italic "If you are new to <Parish>…" greeting, single-column info
+  blocks (CONNECT / NURSERY / RESTROOMS / REQUEST PRAYER).
+- `_buildContentBlocksClassic()` — the same liturgy with the parish's section
+  names (Glory to God, Lord Have Mercy, Gospel Alleluia + "Verse:", Invocation,
+  Prayer over the Offerings, Communion Antiphon, Great Amen — chant, Blessing
+  and Dismissal), em-dash sub-labels, two-column psalm & creed, and posture
+  wording ("Please sit", "Please kneel or be seated").
+- `_smallCapsTitle()` — faux small caps (enlarged initial + smaller capitals,
+  interior connectives italic lowercase) drawn on one baseline via the font's
+  ascender; `_twoColumnText()`, `_hangingLabel()`, `_classicFooterBlock()`
+  (the GIVE / JOIN / BULLETIN QR row + social handles + licensing block).
+
+### Fonts (vendored, OFL/GUST)
+`src/assets/fonts/classic/`: **TeX Gyre Pagella** (URW P052, Palatino/Book
+Antiqua metric) for body + bold/italic labels; **EB Garamond** for the
+small-caps headers and cover; **URW Bookman** light italic for the greeting.
+Registered only when `design === 'classic'`; falls back to PDFKit's built-in
+Times family if the files are ever stripped. See `FONTS-LICENSE.md`.
+
+### QR codes
+`qrcode` (new dependency) — drawn as **crisp vector modules** (synchronous
+`QRCode.create`, no async/PNG), from parish-configured `giveUrl` / `joinUrl` /
+`bulletinUrl`. Degrades silently (omits the row) if the dep or URLs are absent.
+
+### Wiring
+- `generatePdf`/`WorshipAidPdfGenerator` and `renderBookletHtml` take a
+  `design` option (option > `data.design` > `reimagined`).
+- Server `/api/preview` and `/api/generate-pdf` read `design` from the body.
+- SPA: a two-card **Design** switcher at the top of the editor; `setDesign()`
+  updates the preview live and saves the pref; `buildData()` stamps `design`
+  on the aid; `populateForm()` restores it. Schema allows the field.
+- HTML preview: a **dedicated classic body** — `renderBookletHtml` now splits
+  the shared `<head>` (`docHead`) from a per-design body, so the reimagined
+  markup is lifted verbatim into a `reimaginedBody` branch (byte-for-byte
+  unchanged) and classic gets its own `classicBody`. The classic preview
+  mirrors the classic PDF: the **exact vendored typefaces** (served via a new
+  `GET /assets/fonts/classic/:file` route + `@font-face`), small-caps section
+  headers with italic connectives, em-dash sub-labels, classic section names,
+  two-column psalm & creed, the "Verse:" line, and an inline-**SVG** QR footer
+  (Give/Join/Bulletin + socials + licensing). Verified page-by-page in headless
+  Chrome against the classic PDF; the only intentional difference is the
+  fixed-page-vs-flow pagination the HTML preview has always used.
+
+### Tests
+- **388 passing** (was 373; +15). New `classic-design.test.js`: classic renders
+  a clean 8-page booklet (via `design` option, via `data.design`, on both
+  trims), reimagined stays the default, the classic HTML body carries the
+  small-caps headers / classic section names / two-column psalm / "Verse:" /
+  QR footer while the reimagined body has none of them, and the vendored fonts
+  ship. E2E: 5 passing (the new switcher doesn't break the editor load).
