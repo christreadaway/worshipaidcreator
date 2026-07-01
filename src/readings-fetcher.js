@@ -148,6 +148,11 @@ function splitPsalm(body) {
     if (refMatch) {
       if (!refrain && !inAltRefrain) refrain = refMatch[1].trim();
       inAltRefrain = false;
+      // USCCB divides the strophes with the refrain line (not a blank line).
+      // Drop the refrain text but leave a blank-line boundary so the strophes
+      // don't collapse into a single block — the booklet then separates the
+      // verses and can print "R." at the end of each (director of liturgy).
+      if (verseLines.length && verseLines[verseLines.length - 1] !== '') verseLines.push('');
       continue;
     }
     inAltRefrain = false;

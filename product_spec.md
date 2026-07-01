@@ -6,7 +6,9 @@
 > **v1.9.1 — session-restore fix + first browser E2E layer.** The editor kept restoring the last session (mistakes and all), even as a different user and after logout, because the snapshot used one global localStorage key, auto-restored on every load, was never cleared on logout, and re-saved the pristine auto-derived form on every navigation. Fixes: per-user key (`wa_editor_snapshot:<userId>`, legacy global key purged on load), no silent auto-restore (explicit **Restore**/**Discard** buttons), cleared on logout, a dirty-flag (real `event.isTrusted` edits only) so a fresh form is never snapshotted, and a confirm on **Load Sample**. Added Playwright E2E (`npm run test:e2e`, `e2e/session-restore.spec.js`, 5 tests) — the browser-only path the Node suite can't reach, which is how this shipped green. Suites: 365 unit + 5 E2E, all passing.
 **Status:** Active development — replacing Microsoft Publisher in fall 2026
 
-> **Pick-up note for next session:** v1.9 is the **director-of-liturgy proof pass** (13th Sunday in Ordinary Time proof, June 2026). **Pushed** on `claude/youthful-goldberg-0kvf8t`. Every layout/wording correction from the marked-up proof was applied to BOTH renderers (PDF `pdf-generator.js` and HTML preview `template-renderer.js`): posture directions lose the cross symbol + period and ride right-justified on the heading they govern; music pieces drop the restating label and put title+composer on the sub-heading line; scripture citations move onto the reading heading line; a Collect heading follows the Gloria; "Please be seated"/"Please stand" sit before their section titles; the intentions line, Lord's Prayer body, and Blessing & Dismissal dialogue are removed; psalm verses end with "R."; the OneLicense permission prints once at the end (not per page); all notation prints 5–5.5in wide and is pushed to the next page rather than shrunk. Full suite green (364 tests; new `src/tests/proof-fixes.test.js`). **Still open:** the auto title-crop heuristic left titles/residual marks on a few uploaded scans — stripping happens at upload, so those images need re-uploading (or share samples to tune `TITLE_CROP`).
+> **Pick-up note for next session:** v2.0 is the **second director-of-liturgy proof pass** (13th Sunday in Ordinary Time re-proof). On `claude/liturgy-director-latest-v7mmyt`. All six code items from the re-proof were applied to BOTH renderers (`pdf-generator.js` + `template-renderer.js`) and verified by regenerating from live USCCB readings: (1) standalone posture directions are now **centered** (`rubric()`/`rubricAlign` default `left → center`; the right-justified-on-heading postures are unchanged); (2) the **Collect** heading no longer strands at a page foot — it renders in one block with "Please be seated" + *The Liturgy of the Word*; (3) **psalm strophes** are preserved when USCCB divides them with the refrain line rather than a blank line (fix in `splitPsalm`), so each strophe prints as its own "R."-capped block; (4) added a **Prayer after Communion** heading after the Choral Anthem with a centered "Please stand" above it; (5) the redundant "Please stand" before *Blessing & Dismissal* was removed (moved earlier); (6) **"Please kneel" now stays with the Lamb of God** so it can't orphan. Suite green (**373 tests**; new "Proof fixes v2" block + `splitPsalm` strophe test). **Still open (not a code bug):** the notation title-crop is an **upload-time** step — scans still showing a title / crop residue (proof pages 2, 5, 8) must be **re-uploaded** (with "Remove title headers" checked) to re-run the crop; regenerating the aid does not re-process stored images. The repo has no real notation fixtures, so `TITLE_CROP` was left untuned — share the failing scans to tune it safely.
+>
+> **Prior:** v1.9 was the first director proof pass (posture wording/right-justification, inline music title+composer, inline scripture citations, Collect heading added, unnecessary texts removed, psalm "R.", OneLicense once at end, notation 5–5.5in).
 
 > **Decision (June 2026): no programmatic hymn-music *licensing* integration.** OneLicense has no public API. Instead each congregational hymn slot (processional, communion, thanksgiving) and each sung Mass part reserves a music area. **As of v1.6 the user can fill that area digitally**: upload the licensed notation image (TIFF straight from OneLicense works — it's converted to PNG and auto-cropped) and it prints inside the area in both the preview and the exported PDF. With no image attached, the dashed paste-guide box renders instead for hand paste-up. The OneLicense *search* buttons remain as a convenience. Controlled per-aid by `reserveHymnSpace` (default on).
 
@@ -153,7 +155,7 @@ Line estimation: character count / 65 chars per line. Overflow warnings identify
 | 3 | Liturgy of the Word | First Reading, Psalm, Second Reading, Gospel Acclamation |
 | 4 | Gospel + Creed | Gospel text, Homily cue, Creed (Nicene / Apostles' / Baptismal Vows), Prayer of the Faithful (heading only) |
 | 5 | Liturgy of the Eucharist | Offertory, Children's Liturgy (conditional), Invitation to Prayer, Holy Holy (English/Latin), Mystery of Faith, Great Amen |
-| 6 | Communion Rite | Lord's Prayer (heading only), Sign of Peace, Lamb of God, Communion Hymn **+ hymn paste area**, **Choral Anthem (per-Mass)** |
+| 6 | Communion Rite | Lord's Prayer (heading only), Sign of Peace, Lamb of God, Communion Hymn **+ hymn paste area**, **Choral Anthem (per-Mass)**, **Prayer after Communion** (heading only) |
 | 7 | (flow) | Determined by content height |
 | 8 | (flow) | Determined by content height; padded blank if content ends early |
 
@@ -186,14 +188,36 @@ Line estimation: character count / 65 chars per line. Overflow warnings identify
 >   title**: "Please be seated" before *The Liturgy of the Word* (after a
 >   new **Collect** heading that follows the Gloria) and before *The
 >   Liturgy of the Eucharist*; "Please stand" between *Great Amen* and
->   *The Communion Rite*. The two kneels and the dismissal "Please stand"
->   stay on their own lines (cleaned of symbol/period).
+>   *The Communion Rite*.
 > - **Scripture citations** ride on the reading heading line (First /
 >   Second Reading, Gospel, Gospel Acclamation).
 > - Texts removed as unnecessary: the Prayer of the Faithful "intentions
 >   are read…" line, the Lord's Prayer body, the Blessing & Dismissal
 >   Priest/Deacon dialogue (headings kept).
 > - **Psalm verses** each end with "R." and are separated by a blank space.
+>
+> **v2.0 refinements (second director proof pass):**
+> - **Standalone posture directions are centered** (the kneels/stands on
+>   their own line). `rubric()` and the HTML `rubricAlign` default to
+>   `center`; a parish `rubricAlignment` setting still overrides. The
+>   right-justified-on-heading postures above are unchanged.
+> - The **Collect** heading no longer strands at a page foot: it renders in
+>   one block with the "Please be seated" direction and *The Liturgy of the
+>   Word* title (except when a Children's Liturgy dismissal must sit
+>   between them).
+> - Added a **Prayer after Communion** heading after the Choral Anthem, with
+>   a centered "Please stand" above it. The people are already standing at
+>   the Blessing, so the old "Please stand" before *Blessing & Dismissal*
+>   was removed (it effectively moved earlier).
+> - **"Please kneel" stays with the Lamb of God** (end of that block) so it
+>   can't orphan onto the next page.
+> - **Psalm strophes** are preserved even when USCCB divides them with the
+>   refrain line instead of a blank line (`splitPsalm` keeps the boundary),
+>   so each strophe prints as its own "R."-capped block. Applies to newly
+>   fetched/refreshed readings.
+> - **Notation title-crop** stays an upload-time step: images flagged with a
+>   surviving title (or crop residue) must be re-uploaded to re-run the
+>   crop; regenerating the aid does not re-process stored images.
 > The table rows above describe the canonical *order* of content, not
 > fixed page assignments.
 
