@@ -101,6 +101,10 @@ function renderBookletHtml(data, options = {}) {
   // exported PDF.  Default is tabloid (matches the editor's default).
   const bookletSize = options.bookletSize || data.bookletSize || 'tabloid';
   const geom = resolvePageGeometry(bookletSize);
+  // Output design: 'reimagined' (the app's original look) or 'classic' (a
+  // serif, monochrome re-skin of the parish's in-house aid). The preview
+  // approximates the classic style; the PDF export is the faithful artifact.
+  const design = options.design || data.design || 'reimagined';
 
   const isLenten = d.liturgicalSeason === 'lent';
   const isAdvent = d.liturgicalSeason === 'advent';
@@ -496,9 +500,46 @@ function renderBookletHtml(data, options = {}) {
     margin: 4pt 0;
     font-size: 8pt;
   }
+
+  /* ===== Classic design re-skin ===== */
+  /* Monochrome, Book-Antiqua/Garamond serif, small-caps section headers,
+     em-dash sub-labels — approximating the parish's in-house worship aid.
+     The PDF export is the pixel-faithful version. */
+  body.design-classic {
+    font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, 'EB Garamond', Georgia, serif;
+    color: #1a1a1a;
+  }
+  body.design-classic .section-header {
+    font-family: 'EB Garamond', Garamond, Georgia, serif;
+    color: #111; font-weight: 600;
+    text-transform: none;
+    font-variant: small-caps;
+    letter-spacing: 1pt;
+    font-size: calc(${geom.headerSize} * 1.3);
+    border-bottom: none; padding-bottom: 2pt; margin: 6pt 0 5pt;
+  }
+  body.design-classic .sub-heading {
+    font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+    color: #111; text-transform: none; letter-spacing: 0; font-weight: 700; font-size: 9.5pt;
+  }
+  body.design-classic .sub-inline { color: #222; margin-left: 2pt; }
+  body.design-classic .sub-heading-left .sub-inline::before {
+    content: '—'; font-style: normal; font-weight: 700; color: #111; margin: 0 2pt 0 0;
+  }
+  body.design-classic .sub-inline.cite { font-style: italic; font-weight: 400; color: #222; }
+  body.design-classic .rubric, body.design-classic .rubric-inline { color: #222; }
+  body.design-classic .cover-feast {
+    font-family: 'EB Garamond', Garamond, Georgia, serif;
+    color: #111; font-variant: small-caps; letter-spacing: 1pt; font-weight: 500;
+  }
+  body.design-classic .cover-newcomer-heading {
+    font-family: 'Palatino Linotype', 'Book Antiqua', Palatino, cursive, serif;
+    font-style: italic;
+  }
+  body.design-classic .hymnal-cite { color: #333; }
 </style>
 </head>
-<body>
+<body class="design-${escapeHtml(design)}">
 
 <!-- PAGE 1: COVER -->
 <div class="page" id="page-1">
