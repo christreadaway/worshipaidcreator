@@ -1849,16 +1849,22 @@ Times family if the files are ever stripped. See `FONTS-LICENSE.md`.
 - SPA: a two-card **Design** switcher at the top of the editor; `setDesign()`
   updates the preview live and saves the pref; `buildData()` stamps `design`
   on the aid; `populateForm()` restores it. Schema allows the field.
-- HTML preview: a **CSS re-skin** (`body.design-classic`) — serif, monochrome,
-  small-caps headers, em-dash sub-labels. It approximates the classic style
-  on-screen; the **PDF export is the pixel-faithful artifact** (the classic PDF
-  was rendered and compared page-by-page to the parish original — cover, the
-  two-column psalm with "R." markers, "Verse:", QR footer, and licensing block
-  all match).
+- HTML preview: a **dedicated classic body** — `renderBookletHtml` now splits
+  the shared `<head>` (`docHead`) from a per-design body, so the reimagined
+  markup is lifted verbatim into a `reimaginedBody` branch (byte-for-byte
+  unchanged) and classic gets its own `classicBody`. The classic preview
+  mirrors the classic PDF: the **exact vendored typefaces** (served via a new
+  `GET /assets/fonts/classic/:file` route + `@font-face`), small-caps section
+  headers with italic connectives, em-dash sub-labels, classic section names,
+  two-column psalm & creed, the "Verse:" line, and an inline-**SVG** QR footer
+  (Give/Join/Bulletin + socials + licensing). Verified page-by-page in headless
+  Chrome against the classic PDF; the only intentional difference is the
+  fixed-page-vs-flow pagination the HTML preview has always used.
 
 ### Tests
 - **388 passing** (was 373; +15). New `classic-design.test.js`: classic renders
   a clean 8-page booklet (via `design` option, via `data.design`, on both
-  trims), reimagined stays the default, the HTML carries the right
-  `design-*` body class + re-skin CSS, and the vendored font files ship.
-- E2E: 5 passing (the new switcher doesn't break the editor load).
+  trims), reimagined stays the default, the classic HTML body carries the
+  small-caps headers / classic section names / two-column psalm / "Verse:" /
+  QR footer while the reimagined body has none of them, and the vendored fonts
+  ship. E2E: 5 passing (the new switcher doesn't break the editor load).

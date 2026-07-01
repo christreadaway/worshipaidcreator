@@ -84,10 +84,26 @@ describe('Classic design — HTML preview theme', () => {
     assert.ok(!/design-classic">/.test(reimagined.html), 'reimagined never carries the classic body class');
   });
 
-  it('includes the classic re-skin CSS only structurally (always defined, applied by body class)', () => {
+  it('renders the classic body structure: small-caps headers, classic names, two-column psalm, Verse:, QR footer', () => {
     const { html } = renderBookletHtml(baseData, { design: 'classic', parishSettings });
-    assert.match(html, /body\.design-classic \.section-header/);
-    assert.match(html, /body\.design-classic \.sub-heading-left \.sub-inline::before/);
+    // Classic section headers and the parish's in-house section names.
+    assert.match(html, /class="c-section"/);
+    assert.match(html, /Glory to God/);
+    assert.match(html, /Lord Have Mercy/);
+    assert.match(html, /Gospel Alleluia/);
+    assert.match(html, /Prayer over the Offerings/);
+    assert.match(html, /Please kneel or be seated/);
+    assert.match(html, /Blessing and Dismissal/);
+    // Two-column psalm, the "Verse:" label, and the QR/social footer.
+    assert.match(html, /class="c-twocol"/);
+    assert.match(html, /class="c-verse-label">Verse:/);
+    assert.match(html, /class="c-qr"/);
+    assert.match(html, /@font-face/);
+    // The reimagined body never uses the classic markup.
+    const re = renderBookletHtml(baseData, { design: 'reimagined', parishSettings });
+    assert.ok(!/class="c-section"/.test(re.html), 'reimagined body has no classic section headers');
+    assert.ok(!/class="c-qr"/.test(re.html), 'reimagined body has no QR footer');
+    assert.match(re.html, /GLORIA|Gloria/);
   });
 
   it('defaults to reimagined when no design is given', () => {

@@ -94,6 +94,23 @@ if (!kv.IS_NETLIFY) {
   app.use('/uploads', express.static(UPLOADS_DIR));
 }
 
+// Vendored "classic" design fonts, served so the HTML preview renders in the
+// exact same typefaces as the classic PDF (works locally and on Netlify).
+app.get('/assets/fonts/classic/:file', (req, res) => {
+  const safe = path.basename(req.params.file || '');
+  if (!/^[A-Za-z0-9._-]+\.(otf|ttf)$/.test(safe)) return res.status(404).end();
+  const candidates = [
+    path.join(__dirname, 'assets', 'fonts', 'classic', safe),
+    path.join(process.cwd(), 'src', 'assets', 'fonts', 'classic', safe),
+    path.join(__dirname, '..', 'src', 'assets', 'fonts', 'classic', safe)
+  ];
+  const file = candidates.find(p => { try { return fs.existsSync(p); } catch (e) { return false; } });
+  if (!file) return res.status(404).end();
+  res.set('Content-Type', safe.endsWith('.ttf') ? 'font/ttf' : 'font/otf');
+  res.set('Cache-Control', 'public, max-age=604800');
+  res.sendFile(file);
+});
+
 // MIME guess for attachments served from Blobs (Netlify) or any uploaded
 // file whose extension we know.
 function guessMime(filename) {
