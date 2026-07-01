@@ -420,7 +420,10 @@ class WorshipAidPdfGenerator {
   }
 
   rubric(text, align) {
-    const a = align || this.ss.rubricAlignment || 'left';
+    // Standalone posture directions ("Please stand/kneel/be seated" on their
+    // own line) are centered by default per the director of liturgy. Callers
+    // may override, and a parish rubricAlignment setting still wins.
+    const a = align || this.ss.rubricAlignment || 'center';
     this.doc.fontSize(this.s(7.5)).fillColor('#8B0000').font('Sans-Italic');
     this._textBlock(text, this.MARGIN_SIDE, { width: this.CONTENT_WIDTH, align: a }, this.s(2));
     this.doc.font('Sans');
@@ -978,29 +981,31 @@ class WorshipAidPdfGenerator {
       });
     }
 
-    // The Collect (opening prayer) closes the Introductory Rites — its
-    // heading follows the Gloria. The "Please be seated" direction for the
-    // readings then sits between this heading and "The Liturgy of the Word"
-    // (handled in the Liturgy of the Word block below).
-    b(() => this.subHeading('Collect'));
-
-    // Children's Liturgy dismissal — children leave after the Opening
-    // Prayer (end of Introductory Rites) and return at the Offertory.
-    if (this.data.childrenLiturgyEnabled) {
-      b(() => this._childrenLiturgyBox());
-    }
-
-    // --- The Liturgy of the Word ---
+    // --- The Collect + The Liturgy of the Word ---
+    // The Collect (opening prayer) closes the Introductory Rites; its heading
+    // follows the Gloria, then "Please be seated" sits between it and the
+    // "The Liturgy of the Word" title (director). The Collect heading must not
+    // strand at the foot of a page away from that transition, so — except when
+    // a Children's Liturgy dismissal has to come between them — the Collect
+    // heading, the "Please be seated" direction and the section title all
+    // render as one block that moves to a fresh page together.
     {
       const paras = String(this.r.firstReadingText || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
-      b(() => {
-        // "Please be seated" sits after the Collect heading and before this
-        // section title (director).
+      const wordOpening = () => {
         this.rubric(RUBRICS.sit);
         this.sectionHeader('The Liturgy of the Word');
         this.subHeading('First Reading', { inline: this.r.firstReadingCitation || undefined, inlineFont: 'Sans-Bold', inlineColor: '#333333' });
         if (paras[0]) this.bodyText(paras[0], { size: 9 });
-      });
+      };
+      if (this.data.childrenLiturgyEnabled) {
+        // Children leave after the Opening Prayer and return at the Offertory,
+        // so the dismissal box separates the Collect from the readings.
+        b(() => this.subHeading('Collect'));
+        b(() => this._childrenLiturgyBox());
+        b(wordOpening);
+      } else {
+        b(() => { this.subHeading('Collect'); wordOpening(); });
+      }
       for (const p of paras.slice(1)) b(() => this.bodyText(p, { size: 9 }));
     }
 
@@ -1143,16 +1148,28 @@ class WorshipAidPdfGenerator {
     b(() => {
       this.subHeading('Lamb of God', { inline: this.ss.lambOfGodSetting || 'Mass of St. Theresa' });
       this.ordinaryMusicSpace('lambOfGod', 'Lamb of God — music notation');
+      // "Please kneel" belongs with the Lamb of God (the congregation kneels
+      // after the Agnus Dei); it stays in this block so it can't strand alone
+      // at the top of the next page, and it is centered (director).
+      this.rubric(RUBRICS.kneel);
     });
 
     b(() => {
-      this.rubric(RUBRICS.kneel);
       this.musicHeading('Communion Hymn', 'communionHymn', 'communionHymnComposer');
       this.hymnMusicSpace({ slot: 'communion' });
     });
 
     b(() => {
       this.musicHeading('Choral Anthem', 'choralAnthemConcluding', 'choralAnthemConcludingComposer');
+    });
+
+    // Prayer after Communion — the congregation stands for the priest's
+    // closing prayer of the Communion Rite. "Please stand" sits below the
+    // Choral Anthem and above this heading (director); it is NOT repeated at
+    // the Blessing, where the people are already standing.
+    b(() => {
+      this.rubric(RUBRICS.stand);
+      this.subHeading('Prayer after Communion');
     });
 
     // --- The Concluding Rites ---
@@ -1163,9 +1180,9 @@ class WorshipAidPdfGenerator {
     });
 
     // Blessing & Dismissal — heading only (the Priest/Deacon dialogue was
-    // dropped as unnecessary per the director).
+    // dropped as unnecessary per the director). No "Please stand" here: the
+    // people already stood for the Prayer after Communion.
     b(() => {
-      this.rubric(RUBRICS.stand);
       this.subHeading('Blessing & Dismissal');
     });
 

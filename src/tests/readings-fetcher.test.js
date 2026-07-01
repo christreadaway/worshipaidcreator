@@ -79,6 +79,29 @@ describe('parseUsccbHtml + reflow integration', () => {
     assert.ok(verses.includes('Verse 1'));
   });
 
+  it('splitPsalm keeps strophe boundaries when the refrain (not a blank line) divides them', () => {
+    // USCCB often separates strophes with the refrain line alone, no blank
+    // line. The refrain must leave a blank-line boundary so the strophes stay
+    // distinct blocks the booklet can space out and cap with "R.".
+    const body = [
+      'R. Forever I will sing the goodness of the Lord.',
+      'The promises of the LORD I will sing forever,',
+      'through all generations my mouth shall proclaim your faithfulness.',
+      'R. Forever I will sing the goodness of the Lord.',
+      'Blessed the people who know the joyful shout;',
+      'in the light of your countenance, O LORD, they walk.',
+      'R. Forever I will sing the goodness of the Lord.',
+      'You are the splendor of their strength,',
+      'and by your favor our horn is exalted.'
+    ].join('\n');
+    const { verses } = _internal.splitPsalm(body);
+    const strophes = verses.split(/\n\s*\n/);
+    assert.equal(strophes.length, 3, 'three strophes preserved');
+    assert.ok(!/\n\s*\n\s*\n/.test(verses), 'no triple blank lines');
+    assert.ok(!/^\s*$/.test(strophes[0]), 'no leading blank strophe');
+    assert.ok(!/R\./.test(verses), 'refrain text removed from the verses');
+  });
+
   it('splitGospelAcclamation strips R. lines and keeps the verse', () => {
     const body = 'R. Alleluia, alleluia.\nFrom the shining cloud the Father\'s voice is heard.\nR. Alleluia, alleluia.';
     const verse = _internal.splitGospelAcclamation(body);

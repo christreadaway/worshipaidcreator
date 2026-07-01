@@ -194,7 +194,8 @@ function renderBookletHtml(data, options = {}) {
   const coverTagline = settings.coverTagline || '';
 
   // Rubric alignment — inline style applied to all Please sit/stand/kneel lines.
-  const rubricAlign = ss.rubricAlignment || 'left';
+  // Centered by default per the director of liturgy; a parish setting wins.
+  const rubricAlign = ss.rubricAlignment || 'center';
   const RP = `<p class="rubric" style="text-align:${escapeHtml(rubricAlign)}">`;
 
   // Sanctus language: per-aid override > parish default > 'english'
@@ -683,6 +684,9 @@ function renderBookletHtml(data, options = {}) {
 
   ${musicSubHeadingHtml(d, 'Choral Anthem', 'choralAnthemConcluding', 'choralAnthemConcludingComposer')}
 
+  ${RP + RUBRICS.stand + "</p>"}
+  ${subHeadingHtml('Prayer after Communion')}
+
   <div class="page-number">6</div>
 </div>
 
@@ -698,8 +702,6 @@ function renderBookletHtml(data, options = {}) {
 
 <!-- PAGE 8: CONCLUDING RITES CONTINUED — BLESSING, DISMISSAL, POSTLUDE -->
 <div class="page" id="page-8">
-  ${RP + RUBRICS.stand + "</p>"}
-
   <div class="sub-heading">Blessing &amp; Dismissal</div>
 
   ${includePostlude ? `

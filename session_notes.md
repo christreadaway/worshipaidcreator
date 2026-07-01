@@ -1719,3 +1719,80 @@ API) but has **no browser**, so the entire snapshot/restore feature
 - Node suite: **365 passing** (added a string-level guard in `uat-fixes.test.js`
   asserting the SPA carries the four safeguards).
 - E2E: **5 passing** (`npm run test:e2e`, ~12s).
+
+---
+
+## Session 14 — v2.0: Director-of-liturgy proof pass #2 (13th Sunday in OT, re-proof)
+
+The director re-proofed the same 13th Sunday in Ordinary Time export (uploaded
+`2026.06.28__13th_Sunday_in_Ordinary_Time2.PROOFED.pdf`, 8 pages, 6 sticky-note
+annotations). Branch `claude/liturgy-director-latest-v7mmyt`. Every code item
+was applied to BOTH renderers (`pdf-generator.js` + `template-renderer.js`) and
+verified by regenerating the aid from live USCCB readings and extracting the
+rendered text per page.
+
+### Annotations → fixes
+
+1. **Posture directions centered.** The standalone transition rubrics ("Please
+   kneel" before Mystery of Faith, "Please stand" before the Communion Rite,
+   "Please kneel" for communion) were left-aligned; the director wants them
+   centered. `rubric()`'s default alignment flipped `left → center`
+   (`pdf-generator.js`); HTML `rubricAlign` default flipped `left → center`
+   (`template-renderer.js`). A parish `rubricAlignment` setting still wins, and
+   the right-justified postures that ride on an action heading (Processional,
+   Gospel Acclamation, Homily, Creed, Invitation) are unaffected — those go
+   through `subHeading({ right })`, not `rubric()`.
+2. **Collect heading no longer strands (page-break orphan).** The Collect was
+   its own block and could land at the foot of a page while "Please be seated"
+   + "The Liturgy of the Word" flowed to the next page — so the readings page
+   opened with "Please be seated" and no visible Collect heading ("the heading
+   for the Collect, which is missing"). Fix: unless a Children's Liturgy
+   dismissal must sit between them, the Collect heading + "Please be seated" +
+   the section title now render as **one atomic block** that moves to a fresh
+   page together. Children's-liturgy path keeps Collect → dismissal box →
+   readings ordering.
+3. **Psalm verses split into strophes.** Root cause was in the readings
+   fetcher, not the layout: USCCB divides the strophes with the refrain line
+   (not a blank line), and `splitPsalm` dropped those refrain lines without
+   leaving a boundary — so all 12 lines collapsed into a single block that
+   printed as one paragraph with one trailing "R." Fix: `splitPsalm` now leaves
+   a blank-line boundary wherever a refrain line divided strophes, so the
+   generator prints one strophe per block, each capped with "R." and separated
+   by a blank space (the layout logic was already correct once the data was).
+   Only affects newly fetched/refreshed readings.
+4. **Prayer after Communion added.** New heading after the Choral Anthem with a
+   centered "Please stand" above it (congregation stands for the priest's
+   closing prayer of the Communion Rite). Present in both renderers.
+5. **Redundant Blessing "Please stand" removed.** The people already stand for
+   the Prayer after Communion, so the stand that used to precede "Blessing &
+   Dismissal" was dropped (the stand effectively *moved earlier* to the Prayer
+   after Communion).
+6. **"Please kneel" kept with the Lamb of God.** The communion kneel was in the
+   Communion Hymn block and stranded at the top of the next page, separated
+   from the Lamb of God. It now lives at the end of the Lamb of God block
+   (kneeling follows the Agnus Dei) so it can't orphan, and it is centered.
+
+### Notation title removal (pages 2, 5, 8) — NOT a code regression
+
+The director again flagged that the title band survives on some notation
+images (pages 2, 5) and that a crop left "2 dots" behind (page 8). This is the
+upload-time auto-crop heuristic (`image-utils.js` `stripTitleHeader` /
+`detectTitleCropY`), which runs **once, when an image is uploaded** — the PDF
+generator embeds the already-stored (already-processed) image as-is.
+Consequences:
+- Regenerating the document does **not** re-crop existing images; the stored
+  notation keeps whatever the crop did (or didn't do) at upload time.
+- The affected images must be **re-uploaded** (with "Remove title headers"
+  checked) so the crop re-runs, or cropped by hand.
+- The heuristic was left unchanged: the repo has no real notation fixtures
+  (only a 4×4 placeholder), so tuning it blind against these specific scans
+  would risk regressing the cases it already handles. Any tuning needs the
+  actual failing images to validate against.
+
+### Tests
+- Node suite: **373 passing** (was 365; +8). New: `splitPsalm` strophe-boundary
+  test (`readings-fetcher.test.js`); a "Proof fixes v2" block in
+  `proof-fixes.test.js` covering posture centering (+ parish override),
+  Prayer after Communion placement, the dropped Blessing stand, the kneel/Lamb
+  of God adjacency, and a multi-strophe psalm rendering to a clean 8-page PDF.
+- All prior proof-fix assertions still green (no regression to Session 12 work).

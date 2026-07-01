@@ -169,3 +169,69 @@ describe('Proof fixes — PDF still renders cleanly', () => {
     fs.unlinkSync(out);
   });
 });
+
+// Second proof pass (June 28, 2026 re-proof): posture directions centered,
+// the Collect heading no longer strands away from the readings, the psalm
+// prints one strophe per block (each ending "R."), and a Prayer after
+// Communion heading is added while the redundant Blessing "Please stand" is
+// dropped.
+describe('Proof fixes v2 — posture centering', () => {
+  it('centers standalone posture directions by default', () => {
+    const { html } = renderBookletHtml(data);
+    assert.match(html, /class="rubric" style="text-align:center"/);
+    // No standalone posture line falls back to left alignment.
+    assert.ok(!/class="rubric" style="text-align:left"/.test(html));
+  });
+
+  it('honors an explicit parish rubricAlignment override', () => {
+    const { html } = renderBookletHtml({ ...data, seasonalSettings: { ...data.seasonalSettings, rubricAlignment: 'left' } });
+    assert.match(html, /class="rubric" style="text-align:left"/);
+  });
+});
+
+describe('Proof fixes v2 — Prayer after Communion and posture flow', () => {
+  it('adds a Prayer after Communion heading below the Choral Anthem', () => {
+    const { html } = renderBookletHtml(data);
+    assert.match(html, /Choral Anthem<\/span>[^]*?Please stand<\/p>\s*<div class="sub-heading-row"><div class="sub-heading-left"><span class="sub-heading">Prayer after Communion/);
+  });
+
+  it('drops the redundant "Please stand" before Blessing & Dismissal', () => {
+    const { html } = renderBookletHtml(data);
+    assert.ok(!/Please stand<\/p>\s*<div class="sub-heading">Blessing/.test(html));
+    // The stand that remains is the one above Prayer after Communion.
+    assert.match(html, /Please stand<\/p>\s*<div class="sub-heading-row"><div class="sub-heading-left"><span class="sub-heading">Prayer after Communion/);
+  });
+
+  it('keeps "Please kneel" with the Lamb of God', () => {
+    const { html } = renderBookletHtml(data);
+    assert.match(html, /Lamb of God<\/span>[^]*?Please kneel<\/p>/);
+  });
+});
+
+describe('Proof fixes v2 — psalm strophes', () => {
+  const multi = {
+    ...data,
+    readings: {
+      ...data.readings,
+      psalmVerses: 'Strophe one line A,\nstrophe one line B.\n\nStrophe two line A,\nstrophe two line B.\n\nStrophe three line A,\nstrophe three line B.'
+    }
+  };
+
+  it('prints one paragraph per strophe, each ending with R.', () => {
+    const { html } = renderBookletHtml(multi);
+    const verses = html.match(/<p class="psalm-verse">[^]*?<\/p>/g) || [];
+    assert.equal(verses.length, 3, 'three strophe paragraphs');
+    for (const v of verses) assert.match(v, /R\.<\/p>$/);
+  });
+
+  it('renders the multi-strophe psalm into a clean 8-page PDF', async () => {
+    const out = path.join(os.tmpdir(), `proof-fixes-v2-${process.pid}.pdf`);
+    const res = await generatePdf(multi, out, {
+      bookletSize: 'tabloid',
+      parishSettings: { parishName: 'St. Theresa Catholic Church', onelicenseNumber: 'A-702171' }
+    });
+    assert.equal(res.pageCount, 8);
+    assert.deepEqual(res.warnings, []);
+    fs.unlinkSync(out);
+  });
+});
