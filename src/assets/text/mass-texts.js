@@ -71,6 +71,16 @@ const RUBRICS = {
   kneel: 'Please kneel'
 };
 
+// The classic (in-house) design uses shorter wording, plus a combined
+// direction after the Sanctus. Kept beside RUBRICS so ALL posture wording
+// lives in this one module — never in a renderer function body.
+const RUBRICS_CLASSIC = {
+  stand: 'Please stand',
+  sit: 'Please sit',
+  kneel: 'Please kneel',
+  kneelOrSit: 'Please kneel or be seated'
+};
+
 module.exports = {
   CONFITEOR,
   INVITATION_TO_PRAYER,
@@ -84,5 +94,6 @@ module.exports = {
   GOSPEL_ACCLAMATION_LENTEN,
   GOSPEL_ACCLAMATION_LENTEN_ALT,
   GOSPEL_ACCLAMATION_STANDARD,
-  RUBRICS
+  RUBRICS,
+  RUBRICS_CLASSIC
 };

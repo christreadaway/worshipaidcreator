@@ -94,17 +94,25 @@ if (!kv.IS_NETLIFY) {
   app.use('/uploads', express.static(UPLOADS_DIR));
 }
 
-// Vendored "classic" design fonts, served so the HTML preview renders in the
-// exact same typefaces as the classic PDF (works locally and on Netlify).
+// Vendored "classic" design fonts, served so the local HTML preview renders
+// in the exact same typefaces as the classic PDF. (On Netlify the build
+// publishes these under public/assets/fonts/classic — see
+// scripts/extract-html.js — because only /api/* reaches this function.)
+// The deploy layout never changes at runtime: resolve each filename once.
+const _classicFontPathCache = new Map();
 app.get('/assets/fonts/classic/:file', (req, res) => {
   const safe = path.basename(req.params.file || '');
   if (!/^[A-Za-z0-9._-]+\.(otf|ttf)$/.test(safe)) return res.status(404).end();
-  const candidates = [
-    path.join(__dirname, 'assets', 'fonts', 'classic', safe),
-    path.join(process.cwd(), 'src', 'assets', 'fonts', 'classic', safe),
-    path.join(__dirname, '..', 'src', 'assets', 'fonts', 'classic', safe)
-  ];
-  const file = candidates.find(p => { try { return fs.existsSync(p); } catch (e) { return false; } });
+  let file = _classicFontPathCache.get(safe);
+  if (file === undefined) {
+    const candidates = [
+      path.join(__dirname, 'assets', 'fonts', 'classic', safe),
+      path.join(process.cwd(), 'src', 'assets', 'fonts', 'classic', safe),
+      path.join(__dirname, '..', 'src', 'assets', 'fonts', 'classic', safe)
+    ];
+    file = candidates.find(p => { try { return fs.existsSync(p); } catch (e) { return false; } }) || null;
+    _classicFontPathCache.set(safe, file);
+  }
   if (!file) return res.status(404).end();
   res.set('Content-Type', safe.endsWith('.ttf') ? 'font/ttf' : 'font/otf');
   res.set('Cache-Control', 'public, max-age=604800');
@@ -696,6 +704,7 @@ app.post('/api/generate-pdf', requireAuth, requirePermission('export_pdf'), asyn
     // Enforce pastor approval if enabled in settings. Unsaved content (no
     // id) can't have been approved, so it can't be exported either —
     // otherwise the gate could be bypassed by simply not saving.
+    const design = (req.body.design || req.query.design || 'reimagined');
     if (settings.requirePastorApproval) {
       if (!req.body.id) {
         return res.status(403).json({ error: 'Pastor approval required before export. Save the draft and submit it for approval first.' });
@@ -703,6 +712,11 @@ app.post('/api/generate-pdf', requireAuth, requirePermission('export_pdf'), asyn
       const draft = await store.loadDraft(req.body.id);
       if (!draft || draft.status !== 'approved') {
         return res.status(403).json({ error: 'Pastor approval required before export. Current status: ' + ((draft && draft.status) || 'draft') });
+      }
+      // The pastor approved a specific look — switching the design after
+      // approval would print a booklet that was never reviewed.
+      if (draft.design && draft.design !== design) {
+        return res.status(403).json({ error: `This draft was approved in the "${draft.design}" design. Re-save and re-submit it to export in "${design}".` });
       }
     }
 
@@ -716,7 +730,7 @@ app.post('/api/generate-pdf', requireAuth, requirePermission('export_pdf'), asyn
     const result = await generatePdf(req.body, outputPath, {
       parishSettings: settings,
       bookletSize,
-      design: (req.body.design || req.query.design || 'reimagined'),
+      design,
       notationImages: notation.images
     });
     if (notation.missing.length) {
@@ -732,11 +746,14 @@ app.post('/api/generate-pdf', requireAuth, requirePermission('export_pdf'), asyn
       if (draft) {
         draft.status = 'exported';
         draft.exportedAt = new Date().toISOString();
+        // Record the design that was actually PRINTED — re-exporting this
+        // FINAL from History must reproduce the same booklet.
+        draft.design = design;
         await store.saveDraft(draft);
       }
     } else {
       try {
-        const saved = await store.saveDraft({ ...req.body, status: 'exported', exportedAt: new Date().toISOString() });
+        const saved = await store.saveDraft({ ...req.body, design, status: 'exported', exportedAt: new Date().toISOString() });
         exportedDraftId = saved.id;
       } catch (e) {
         console.warn('[export] could not auto-save exported aid:', e.message);
@@ -752,6 +769,7 @@ app.post('/api/generate-pdf', requireAuth, requirePermission('export_pdf'), asyn
           liturgicalDate: req.body.liturgicalDate,
           feastName: req.body.feastName || '',
           liturgicalSeason: req.body.liturgicalSeason || '',
+          design,
           exportedAt: new Date().toISOString(),
           exportedBy: req.user.displayName,
           draftId: exportedDraftId,
@@ -1587,8 +1605,8 @@ nav .btn-outline:hover { color: var(--white); border-color: var(--gold-light); b
         <div class="fg">
           <label>Please Sit / Stand / Kneel Rubric Alignment</label>
           <select id="rubricAlignment">
+            <option value="center" selected>Center (director default)</option>
             <option value="left">Left</option>
-            <option value="center">Center</option>
             <option value="right">Right</option>
           </select>
         </div>
@@ -2438,7 +2456,7 @@ function buildData() {
       includePostlude: ch('includePostlude'),
       adventWreath: ch('adventWreath'),
       lentenAcclamation: v('lentenAcclamation'),
-      rubricAlignment: v('rubricAlignment') || 'left',
+      rubricAlignment: v('rubricAlignment') || 'center',
       twoColumnCreed: ch('twoColumnCreed')
     },
     readings: {
@@ -2504,7 +2522,9 @@ function populateForm(data) {
   sc('includePostlude', ss.includePostlude !== false);
   sc('adventWreath', !!ss.adventWreath);
   sv('lentenAcclamation', ss.lentenAcclamation || 'standard');
-  sv('rubricAlignment', ss.rubricAlignment || 'left');
+  // Centered is the director-of-liturgy default; a draft saved with an
+  // explicit alignment keeps it.
+  sv('rubricAlignment', ss.rubricAlignment || 'center');
   sc('twoColumnCreed', !!ss.twoColumnCreed);
   const r = data.readings || {};
   sv('firstReadingCitation', r.firstReadingCitation);
