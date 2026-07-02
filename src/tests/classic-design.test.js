@@ -112,6 +112,97 @@ describe('Classic design — HTML preview theme', () => {
   });
 });
 
+// Review fixes (comprehensive code review): season handling, parity with
+// reimagined content, resilience to missing fields, and the preview/export
+// contract (both classic renderers must show the same thing).
+describe('Classic design — review fixes', () => {
+  it('suppresses "Alleluia" in Lent and prints the Lenten acclamation text when no music slot', () => {
+    const lent = {
+      ...baseData,
+      liturgicalSeason: 'lent',
+      seasonalSettings: { ...baseData.seasonalSettings, gloria: false }
+    };
+    const { html } = renderBookletHtml(lent, { design: 'classic', parishSettings });
+    assert.ok(!/Gospel Alleluia/.test(html), 'no "Alleluia" heading during Lent');
+    assert.match(html, /Gospel Acclamation/);
+    assert.match(html, /Praise to you, Lord Jesus Christ, King of endless glory!/);
+  });
+
+  it('prints the standard acclamation text outside Lent when no music slot carries it', () => {
+    const { html } = renderBookletHtml(baseData, { design: 'classic', parishSettings });
+    assert.match(html, /Alleluia, alleluia!/);
+  });
+
+  it('renders the Advent wreath block in Advent', () => {
+    const advent = { ...baseData, liturgicalSeason: 'advent', seasonalSettings: { ...baseData.seasonalSettings, gloria: false, adventWreath: true } };
+    const { html } = renderBookletHtml(advent, { design: 'classic', parishSettings });
+    assert.match(html, /Lighting of the Advent Wreath/);
+  });
+
+  it('renders the parish welcomeMessage on the classic cover', () => {
+    const { html } = renderBookletHtml(baseData, { design: 'classic', parishSettings: { ...parishSettings, welcomeMessage: 'Welcome, Bishop Vásquez!' } });
+    assert.match(html, /class="c-welcome">Welcome, Bishop Vásquez!/);
+  });
+
+  it('renders the children\'s liturgy box and return line like the reimagined design', () => {
+    const cl = { ...baseData, childrenLiturgyEnabled: true, childrenLiturgyMassTimes: ['Sun 9:00 AM'] };
+    const { html } = renderBookletHtml(cl, { design: 'classic', parishSettings });
+    assert.match(html, /Children's Liturgy of the Word/);
+    assert.match(html, /Children return from Children's Liturgy of the Word \(Sun 9:00 AM\)/);
+  });
+
+  it('never prints a Communion Antiphon section (no schema field / no UI exists for it)', () => {
+    const withBoxes = { ...baseData, reserveHymnSpace: true };
+    const { html } = renderBookletHtml(withBoxes, { design: 'classic', parishSettings });
+    assert.ok(!/Communion Antiphon/.test(html));
+  });
+
+  it('survives an empty feast name in both renderers (no crash, no "undefined")', async () => {
+    const noFeast = { ...baseData, feastName: '' };
+    const { html } = renderBookletHtml(noFeast, { design: 'classic', parishSettings });
+    assert.ok(!/c-cover-title">undefined/.test(html));
+    const out = path.join(os.tmpdir(), `classic-nofeast-${process.pid}.pdf`);
+    const res = await generatePdf(noFeast, out, { bookletSize: 'tabloid', design: 'classic', parishSettings });
+    assert.equal(res.pageCount, 8);
+    fs.unlinkSync(out);
+  });
+
+  it('classic preview and classic PDF share cover fallback copy (render-shared)', () => {
+    const { classicCoverBlocks, classicGreeting } = require('../render-shared');
+    const blocks = classicCoverBlocks({});
+    assert.equal(blocks.length, 4);
+    const { html } = renderBookletHtml(baseData, { design: 'classic', parishSettings: {} });
+    for (const [, body] of blocks) {
+      assert.ok(html.includes(body.slice(0, 40)), `preview carries the shared default: ${body.slice(0, 30)}…`);
+    }
+    assert.match(classicGreeting({ parishName: 'St. Theresa Catholic Church' }), /^If you are new to St\. Theresa…$/);
+  });
+
+  it('flags overflowing pages with a banner in the classic preview too', () => {
+    const long = { ...baseData, readings: { ...baseData.readings, gospelText: 'Jesus said to his apostles: "Whoever loves father or mother more than me is not worthy of me." '.repeat(80) } };
+    const { html, warnings } = renderBookletHtml(long, { design: 'classic', parishSettings });
+    assert.ok(warnings.length > 0, 'overflow detected');
+    assert.match(html, /overflow-banner/);
+  });
+
+  it('emits the classic CSS only for the classic design', () => {
+    const cl = renderBookletHtml(baseData, { design: 'classic', parishSettings });
+    const re = renderBookletHtml(baseData, { design: 'reimagined', parishSettings });
+    assert.match(cl.html, /@font-face/);
+    assert.ok(!/@font-face/.test(re.html), 'reimagined carries no classic font rules');
+  });
+});
+
+describe('Centered rubrics reach real exports (UI defaults)', () => {
+  it('the editor SPA defaults rubric alignment to center at all three layers', () => {
+    const { getAppHtml } = require('../server');
+    const spa = getAppHtml();
+    assert.match(spa, /<option value="center" selected>/, 'select defaults to center');
+    assert.match(spa, /v\('rubricAlignment'\) \|\| 'center'/, 'buildData falls back to center');
+    assert.match(spa, /ss\.rubricAlignment \|\| 'center'/, 'populateForm falls back to center');
+  });
+});
+
 describe('Classic design — vendored fonts', () => {
   const dir = path.join(__dirname, '..', 'assets', 'fonts', 'classic');
   const files = [

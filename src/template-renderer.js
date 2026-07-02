@@ -7,7 +7,8 @@
 const path = require('path');
 const fs = require('fs');
 const { APOSTLES_CREED, NICENE_CREED, RENEWAL_OF_BAPTISMAL_VOWS } = require('./assets/text/creeds');
-const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, getHolyHolyHolyText } = require('./assets/text/mass-texts');
+const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, RUBRICS_CLASSIC, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, getHolyHolyHolyText } = require('./assets/text/mass-texts');
+const { getQRCode, SMALLCAPS_CONNECTORS, classicGreeting, classicCoverBlocks, resolveChildrenLiturgyTimes } = require('./render-shared');
 const { formatMusicSlot, renderMusicLineHtml } = require('./music-formatter');
 const { applySeasonDefaults } = require('./config/seasons');
 const { detectOverflows } = require('./validator');
@@ -73,14 +74,6 @@ function musicSubHeadingHtml(data, label, titleField, composerField, opts = {}) 
   return html;
 }
 
-// QR encoding for the classic footer — loaded lazily; the row is omitted if
-// the optional dep is unavailable.
-let _qrcode = null;
-function getQRCode() {
-  if (_qrcode === null) { try { _qrcode = require('qrcode'); } catch (e) { _qrcode = false; } }
-  return _qrcode || null;
-}
-
 // Inline SVG QR for a URL — crisp and self-contained (mirrors the PDF's
 // vector QR). Returns '' when qrcode isn't available or no URL is given.
 function qrSvgHtml(url) {
@@ -98,11 +91,12 @@ function qrSvgHtml(url) {
 
 // Small-caps title inner markup with italic-lowercase connectives
 // ("THE LITURGY of the WORD"), shared by the classic section headers and the
-// cover title.
+// cover title. The connective set is the same one the PDF generator uses,
+// so the preview and the export always agree on the word treatment.
 function classicTitleInner(text) {
-  const CONN = new Set(['of', 'the', 'in', 'and', 'to', 'for', 'a']);
+  if (!text || !String(text).trim()) return '';
   return String(text).trim().split(/\s+/).map((w, i) =>
-    (i > 0 && CONN.has(w.toLowerCase())) ? `<span class="c-conn">${escapeHtml(w)}</span>` : escapeHtml(w)
+    (i > 0 && SMALLCAPS_CONNECTORS.has(w.toLowerCase())) ? `<span class="c-conn">${escapeHtml(w)}</span>` : escapeHtml(w)
   ).join(' ');
 }
 function classicSectionHtml(text) {
@@ -123,6 +117,84 @@ const PAGE_GEOMETRY = {
 
 function resolvePageGeometry(bookletSize) {
   return PAGE_GEOMETRY[bookletSize] || PAGE_GEOMETRY['half-letter'];
+}
+
+// CSS for the classic design — emitted only when the classic body is
+// selected, so reimagined previews carry no dead rules or font requests.
+// Monochrome Book-Antiqua/Garamond serif mirroring the classic PDF: the
+// exact vendored typefaces (served from /assets/fonts/classic), small-caps
+// section headers, em-dash sub-labels, two-column psalm & creed, QR footer.
+function classicCssFor(geom) {
+  return `
+  @font-face { font-family:'ClassicSerif'; src:url('/assets/fonts/classic/Classic-Serif-Regular.otf') format('opentype'); font-weight:400; font-style:normal; font-display:swap; }
+  @font-face { font-family:'ClassicSerif'; src:url('/assets/fonts/classic/Classic-Serif-Bold.otf') format('opentype'); font-weight:700; font-style:normal; font-display:swap; }
+  @font-face { font-family:'ClassicSerif'; src:url('/assets/fonts/classic/Classic-Serif-Italic.otf') format('opentype'); font-weight:400; font-style:italic; font-display:swap; }
+  @font-face { font-family:'ClassicSerif'; src:url('/assets/fonts/classic/Classic-Serif-BoldItalic.otf') format('opentype'); font-weight:700; font-style:italic; font-display:swap; }
+  @font-face { font-family:'ClassicDisplay'; src:url('/assets/fonts/classic/Classic-Display-SemiBold.ttf') format('truetype'); font-weight:600; font-style:normal; font-display:swap; }
+  @font-face { font-family:'ClassicDisplay'; src:url('/assets/fonts/classic/Classic-Display-Regular.ttf') format('truetype'); font-weight:400; font-style:normal; font-display:swap; }
+  @font-face { font-family:'ClassicDisplay'; src:url('/assets/fonts/classic/Classic-Display-Italic.ttf') format('truetype'); font-weight:400; font-style:italic; font-display:swap; }
+  @font-face { font-family:'ClassicScript'; src:url('/assets/fonts/classic/Classic-Script-Italic.otf') format('opentype'); font-weight:400; font-style:italic; font-display:swap; }
+
+  body.design-classic {
+    font-family: 'ClassicSerif', 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+    color: #1a1a1a;
+  }
+  .c-section {
+    font-family: 'ClassicDisplay', 'EB Garamond', Garamond, Georgia, serif;
+    font-weight: 600; color: #111; text-align: center;
+    font-variant: small-caps; text-transform: lowercase;
+    letter-spacing: 0.5pt;
+    font-size: calc(${geom.headerSize} * 1.55);
+    margin: 7pt 0 5pt; line-height: 1.1;
+  }
+  .c-section .c-conn { font-variant: normal; font-style: italic; font-size: 0.72em; }
+  body.design-classic .sub-heading {
+    font-family: 'ClassicSerif', 'Book Antiqua', Palatino, Georgia, serif;
+    color: #111; text-transform: none; letter-spacing: 0; font-weight: 700;
+    font-size: 10pt;
+  }
+  body.design-classic .sub-inline { color: #222; margin-left: 2pt; font-style: italic; }
+  body.design-classic .sub-heading-left .sub-inline::before {
+    content: '\\2014'; font-style: normal; font-weight: 700; color: #111; margin: 0 2pt 0 0;
+  }
+  body.design-classic .sub-inline.cite { font-style: italic; font-weight: 400; color: #222; }
+  body.design-classic .rubric, body.design-classic .rubric-inline { color: #222; font-style: italic; }
+  body.design-classic .reading-text, body.design-classic .prayer-text { text-align: justify; }
+  body.design-classic .reading-text { margin-left: 10pt; }
+  /* Two-column psalm strophes & creed */
+  .c-twocol { column-count: 2; column-gap: 18pt; margin: 3pt 0; font-size: 0.94em; }
+  .c-twocol .c-strophe { break-inside: avoid; margin-bottom: 5pt; white-space: pre-line; }
+  .c-verse-label { font-weight: 700; }
+  /* Classic cover */
+  .c-cover { text-align: center; padding-top: 6pt; }
+  .c-cover-title {
+    font-family: 'ClassicDisplay', 'EB Garamond', Garamond, Georgia, serif;
+    font-variant: small-caps; text-transform: lowercase; color: #111;
+    font-size: calc(${geom.headerSize} * 2.1); line-height: 1.06; letter-spacing: 0.5pt; margin-bottom: 4pt;
+  }
+  .c-cover-title .c-conn { font-variant: normal; font-style: italic; font-size: 0.7em; }
+  .c-cover-date { font-family:'ClassicDisplay',Georgia,serif; font-style: italic; font-size: calc(${geom.headerSize} * 0.95); color:#111; margin-bottom: 12pt; }
+  .c-cover-cross { margin: 6pt auto 14pt; }
+  .c-cover-cross svg { width: 96px; height: 96px; }
+  .c-cover-cross svg, .c-cover-cross svg * { fill: #111 !important; }
+  .c-greeting {
+    font-family: 'ClassicScript', 'Book Antiqua', cursive, serif; font-style: italic;
+    font-size: calc(${geom.headerSize} * 1.25); text-align: left; margin: 6pt 0 6pt; color:#111;
+  }
+  .c-info { text-align: left; }
+  .c-info-block { margin-bottom: 7pt; }
+  .c-info-label { font-family:'ClassicSerif',Georgia,serif; font-weight: 700; font-variant: small-caps; letter-spacing: 0.5pt; font-size: 0.95em; }
+  .c-info-body { margin-left: 14pt; text-align: justify; }
+  .c-welcome { font-style: italic; text-align: center; margin-top: 6pt; font-size: 0.95em; }
+  /* QR footer */
+  .c-footer { text-align: center; margin-top: 14pt; }
+  .c-qr-row { display: flex; justify-content: center; align-items: flex-start; gap: 26pt; margin-bottom: 8pt; }
+  .c-qr { text-align: center; }
+  .c-qr svg { width: 74px; height: 74px; display: block; margin: 0 auto 3pt; }
+  .c-qr-label { font-family:'ClassicDisplay',Georgia,serif; font-variant: small-caps; letter-spacing: 0.5pt; font-size: 9pt; }
+  .c-social { text-align: left; font-size: 9pt; line-height: 1.5; align-self: center; }
+  .c-copyright { font-style: italic; font-size: 6.5pt; color:#333; text-align: justify; line-height: 1.35; margin-top: 8pt; }
+`;
 }
 
 function renderBookletHtml(data, options = {}) {
@@ -540,82 +612,11 @@ function renderBookletHtml(data, options = {}) {
     font-size: 8pt;
   }
 
-  /* ===== Classic design ===== */
-  /* Monochrome Book-Antiqua/Garamond serif that mirrors the classic PDF:
-     the exact vendored typefaces (served from /assets/fonts/classic),
-     small-caps section headers, em-dash sub-labels, two-column psalm &
-     creed, and a QR footer. */
-  @font-face { font-family:'ClassicSerif'; src:url('/assets/fonts/classic/Classic-Serif-Regular.otf') format('opentype'); font-weight:400; font-style:normal; font-display:swap; }
-  @font-face { font-family:'ClassicSerif'; src:url('/assets/fonts/classic/Classic-Serif-Bold.otf') format('opentype'); font-weight:700; font-style:normal; font-display:swap; }
-  @font-face { font-family:'ClassicSerif'; src:url('/assets/fonts/classic/Classic-Serif-Italic.otf') format('opentype'); font-weight:400; font-style:italic; font-display:swap; }
-  @font-face { font-family:'ClassicSerif'; src:url('/assets/fonts/classic/Classic-Serif-BoldItalic.otf') format('opentype'); font-weight:700; font-style:italic; font-display:swap; }
-  @font-face { font-family:'ClassicDisplay'; src:url('/assets/fonts/classic/Classic-Display-SemiBold.ttf') format('truetype'); font-weight:600; font-style:normal; font-display:swap; }
-  @font-face { font-family:'ClassicDisplay'; src:url('/assets/fonts/classic/Classic-Display-Regular.ttf') format('truetype'); font-weight:400; font-style:normal; font-display:swap; }
-  @font-face { font-family:'ClassicDisplay'; src:url('/assets/fonts/classic/Classic-Display-Italic.ttf') format('truetype'); font-weight:400; font-style:italic; font-display:swap; }
-  @font-face { font-family:'ClassicScript'; src:url('/assets/fonts/classic/Classic-Script-Italic.otf') format('opentype'); font-weight:400; font-style:italic; font-display:swap; }
-
-  body.design-classic {
-    font-family: 'ClassicSerif', 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
-    color: #1a1a1a;
-  }
-  .c-section {
-    font-family: 'ClassicDisplay', 'EB Garamond', Garamond, Georgia, serif;
-    font-weight: 600; color: #111; text-align: center;
-    font-variant: small-caps; text-transform: lowercase;
-    letter-spacing: 0.5pt;
-    font-size: calc(${geom.headerSize} * 1.55);
-    margin: 7pt 0 5pt; line-height: 1.1;
-  }
-  .c-section .c-conn { font-variant: normal; font-style: italic; font-size: 0.72em; }
-  body.design-classic .sub-heading {
-    font-family: 'ClassicSerif', 'Book Antiqua', Palatino, Georgia, serif;
-    color: #111; text-transform: none; letter-spacing: 0; font-weight: 700;
-    font-size: 10pt;
-  }
-  body.design-classic .sub-inline { color: #222; margin-left: 2pt; font-style: italic; }
-  body.design-classic .sub-heading-left .sub-inline::before {
-    content: '\\2014'; font-style: normal; font-weight: 700; color: #111; margin: 0 2pt 0 0;
-  }
-  body.design-classic .sub-inline.cite { font-style: italic; font-weight: 400; color: #222; }
-  body.design-classic .rubric, body.design-classic .rubric-inline { color: #222; font-style: italic; }
-  body.design-classic .reading-text, body.design-classic .prayer-text { text-align: justify; }
-  body.design-classic .reading-text { margin-left: 10pt; }
-  /* Two-column psalm strophes & creed */
-  .c-twocol { column-count: 2; column-gap: 18pt; margin: 3pt 0; font-size: 0.94em; }
-  .c-twocol .c-strophe { break-inside: avoid; margin-bottom: 5pt; white-space: pre-line; }
-  .c-verse-label { font-weight: 700; }
-  /* Classic cover */
-  .c-cover { text-align: center; padding-top: 6pt; }
-  .c-cover-title {
-    font-family: 'ClassicDisplay', 'EB Garamond', Garamond, Georgia, serif;
-    font-variant: small-caps; text-transform: lowercase; color: #111;
-    font-size: calc(${geom.headerSize} * 2.1); line-height: 1.06; letter-spacing: 0.5pt; margin-bottom: 4pt;
-  }
-  .c-cover-title .c-conn { font-variant: normal; font-style: italic; font-size: 0.7em; }
-  .c-cover-date { font-family:'ClassicDisplay',Georgia,serif; font-style: italic; font-size: calc(${geom.headerSize} * 0.95); color:#111; margin-bottom: 12pt; }
-  .c-cover-cross { margin: 6pt auto 14pt; }
-  .c-cover-cross svg { width: 96px; height: 96px; }
-  .c-cover-cross svg, .c-cover-cross svg * { fill: #111 !important; }
-  .c-greeting {
-    font-family: 'ClassicScript', 'Book Antiqua', cursive, serif; font-style: italic;
-    font-size: calc(${geom.headerSize} * 1.25); text-align: left; margin: 6pt 0 6pt; color:#111;
-  }
-  .c-info { text-align: left; }
-  .c-info-block { margin-bottom: 7pt; }
-  .c-info-label { font-family:'ClassicSerif',Georgia,serif; font-weight: 700; font-variant: small-caps; letter-spacing: 0.5pt; font-size: 0.95em; }
-  .c-info-body { margin-left: 14pt; text-align: justify; }
-  /* QR footer */
-  .c-footer { text-align: center; margin-top: 14pt; }
-  .c-qr-row { display: flex; justify-content: center; align-items: flex-start; gap: 26pt; margin-bottom: 8pt; }
-  .c-qr { text-align: center; }
-  .c-qr svg { width: 74px; height: 74px; display: block; margin: 0 auto 3pt; }
-  .c-qr-label { font-family:'ClassicDisplay',Georgia,serif; font-variant: small-caps; letter-spacing: 0.5pt; font-size: 9pt; }
-  .c-social { text-align: left; font-size: 9pt; line-height: 1.5; align-self: center; }
-  .c-copyright { font-style: italic; font-size: 6.5pt; color:#333; text-align: justify; line-height: 1.35; margin-top: 8pt; }
+  ${design === 'classic' ? classicCssFor(geom) : ''}
 </style>
 </head>`;
 
-  const reimaginedBody = `
+  const reimaginedBody = () => `
 <!-- PAGE 1: COVER -->
 <div class="page" id="page-1">
   <div class="cover-page">
@@ -840,44 +841,54 @@ function renderBookletHtml(data, options = {}) {
 `;
 
   // ===== Classic body — mirrors the classic PDF's structure and typography =====
-  const CRUB = { stand: 'Please stand', sit: 'Please sit', kneel: 'Please kneel' };
+  // Built lazily: classic-only work (QR encoding, strophe splitting) never
+  // runs for a reimagined preview, and vice versa.
+  const classicBody = () => {
+  const CRUB = RUBRICS_CLASSIC;
   const cRub = (text) => `<p class="rubric" style="text-align:${escapeHtml(rubricAlign)}">${escapeHtml(text)}</p>`;
-  const shortName = settings.parishShortName ||
-    (parishName ? parishName.replace(/\b(Catholic|Church|Parish|Roman)\b/gi, '').replace(/\s+/g, ' ').trim() : '') || 'our parish';
-  const greeting = settings.newcomerHeading || `If you are new to ${shortName}…`;
+  const titleCase = (s) => String(s).toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
   const psalmStrophes = r.psalmVerses
     ? r.psalmVerses.split(/\n\s*\n/).map(v => v.trim()).filter(Boolean)
         .map(v => `<div class="c-strophe">${nl2br(v)}${/(?:^|\s)R\.?\s*$/.test(v) ? '' : ' R.'}</div>`).join('')
     : '';
-  const qrItems = [['Give', settings.giveUrl], ['Join', settings.joinUrl], ['Bulletin', settings.bulletinUrl]]
-    .filter(([, u]) => u && qrSvgHtml(u));
+  // Encode each QR exactly once; an unavailable dep / empty URL drops out.
+  const qrCells = [['Give', settings.giveUrl], ['Join', settings.joinUrl], ['Bulletin', settings.bulletinUrl]]
+    .map(([label, u]) => ({ label, svg: qrSvgHtml(u) }))
+    .filter(c => c.svg);
   const socials = String(settings.socialHandles || '').split('\n').map(s => s.trim()).filter(Boolean);
   const hasChoral = formatMusicSlot(d, 'choralAnthemConcluding', 'choralAnthemConcludingComposer').length;
-  const hasCommunionAntiphon = !!ni['communionAntiphon'] || !!d.communionAntiphon;
+  const clTimes = resolveChildrenLiturgyTimes(d);
+  const clNotes = d.childrenLiturgyNotes ||
+    'Children are dismissed after the Opening Prayer and will rejoin during the Offertory.';
+  // The classic Gospel Alleluia is season-aware: the word "Alleluia" is
+  // suppressed throughout Lent, and the sung text prints when no notation
+  // slot carries the response.
+  const acclHeading = isLenten ? 'Gospel Acclamation' : 'Gospel Alleluia';
 
-  const classicBody = `
+  return `
 <!-- PAGE 1: COVER -->
 <div class="page" id="page-1">
   <div class="c-cover">
     <div class="c-cover-title">${classicTitleInner(d.feastName)}</div>
     <div class="c-cover-date">${escapeHtml(formatDate(d.liturgicalDate))}</div>
     <div class="c-cover-cross">${getLogoHtml(settings)}</div>
-    <div class="c-greeting">${escapeHtml(greeting)}</div>
+    <div class="c-greeting">${escapeHtml(classicGreeting(settings))}</div>
     <div class="c-info">
-      <div class="c-info-block"><div class="c-info-label">Connect</div><div class="c-info-body">${nl2br(connectBlurb)}</div></div>
-      <div class="c-info-block"><div class="c-info-label">Nursery</div><div class="c-info-body">${nl2br(nurseryBlurb)}</div></div>
-      <div class="c-info-block"><div class="c-info-label">Restrooms</div><div class="c-info-body">${nl2br(restroomsBlurb)}</div></div>
-      <div class="c-info-block"><div class="c-info-label">Request Prayer</div><div class="c-info-body">${nl2br(prayerBlurb)}</div></div>
+      ${classicCoverBlocks(settings).map(([label, body]) =>
+        `<div class="c-info-block"><div class="c-info-label">${escapeHtml(titleCase(label))}</div><div class="c-info-body">${nl2br(body)}</div></div>`).join('\n      ')}
     </div>
+    ${welcomeMessage ? `<div class="c-welcome">${nl2br(welcomeMessage)}</div>` : ''}
   </div>
 </div>
 
 <!-- PAGE 2: INTRODUCTORY RITES -->
-<div class="page" id="page-2">
+<div class="page${overflowPages.has(2) ? ' overflow-warning' : ''}" id="page-2">
+  ${overflowPages.has(2) ? `<div class="overflow-banner">${escapeHtml(overflows.find(o => o.page === 2)?.message || 'Page 2 overflow')}</div>` : ''}
   ${musicSubHeadingHtml(d, 'Organ Prelude', 'organPrelude', 'organPreludeComposer')}
   ${classicSectionHtml('The Introductory Rites')}
   ${musicSubHeadingHtml(d, entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon', 'processionalOrEntrance', 'processionalOrEntranceComposer', { right: CRUB.stand })}
   ${processionalHymnSpaceHtml}
+  ${showAdventWreath ? '<p class="prayer-text" style="text-align:center;font-weight:700;">Lighting of the Advent Wreath</p>' : ''}
   ${subHeadingHtml('Invocation')}
   ${penitentialAct === 'confiteor' ? `${subHeadingHtml('Penitential Act')}<div class="prayer-text">${nl2br(CONFITEOR)}</div>` : ''}
   ${musicSubHeadingHtml(d, 'Lord Have Mercy', 'kyrieSetting', 'kyrieComposer')}
@@ -885,12 +896,20 @@ function renderBookletHtml(data, options = {}) {
   ${showGloria ? `${subHeadingHtml('Glory to God', { inline: ss.gloriaSetting || '' })}
   ${slotHasMusic('gloria') ? ordSpace('gloria', 'Gloria — music notation') : '<p class="prayer-text">Glory to God in the highest, and on earth peace to people of good will.</p>'}` : ''}
   ${subHeadingHtml('Collect')}
+  ${d.childrenLiturgyEnabled ? `
+  <div class="children-liturgy">
+    <strong>Children's Liturgy of the Word</strong> — ${clTimes.map(escapeHtml).join(' &amp; ')}
+    ${d.childrenLiturgyLeader ? `<br>Led by ${escapeHtml(d.childrenLiturgyLeader)}` : ''}
+    ${d.childrenLiturgyMusic ? `<br><em>${escapeHtml(d.childrenLiturgyMusic)}</em>${d.childrenLiturgyMusicComposer ? ', ' + escapeHtml(d.childrenLiturgyMusicComposer) : ''}` : ''}
+    <br><span style="font-size:7.5pt;font-style:italic;">${nl2br(clNotes)}</span>
+  </div>` : ''}
   ${cRub(CRUB.sit)}
   <div class="page-number">2</div>
 </div>
 
 <!-- PAGE 3: LITURGY OF THE WORD -->
-<div class="page" id="page-3">
+<div class="page${overflowPages.has(3) ? ' overflow-warning' : ''}" id="page-3">
+  ${overflowPages.has(3) ? `<div class="overflow-banner">${escapeHtml(overflows.find(o => o.page === 3)?.message || 'Page 3 overflow')}</div>` : ''}
   ${classicSectionHtml('The Liturgy of the Word')}
   ${subHeadingHtml('First Reading', { inline: r.firstReadingCitation || '', citation: true })}
   <div class="reading-text">${nl2br(r.firstReadingText)}</div>
@@ -900,14 +919,17 @@ function renderBookletHtml(data, options = {}) {
   ${psalmStrophes ? `<div class="c-twocol">${psalmStrophes}</div>` : ''}
   ${!r.noSecondReading && r.secondReadingCitation ? `${subHeadingHtml('Second Reading', { inline: r.secondReadingCitation || '', citation: true })}
   <div class="reading-text">${nl2br(r.secondReadingText)}</div>` : ''}
-  ${subHeadingHtml('Gospel Alleluia', { inline: r.gospelAcclamationReference || '', citation: true, right: CRUB.stand })}
-  ${slotHasMusic('gospelAcclamation') ? ordSpace('gospelAcclamation', 'Gospel Acclamation — music notation') : ''}
+  ${subHeadingHtml(acclHeading, { inline: r.gospelAcclamationReference || '', citation: true, right: CRUB.stand })}
+  ${slotHasMusic('gospelAcclamation')
+    ? ordSpace('gospelAcclamation', 'Gospel Acclamation — music notation')
+    : `<p class="psalm-refrain">${escapeHtml(acclamationText)}</p>`}
   ${r.gospelAcclamationVerse ? `<p class="reading-text"><span class="c-verse-label">Verse:</span> <em>${nl2br(r.gospelAcclamationVerse)}</em></p>` : ''}
   <div class="page-number">3</div>
 </div>
 
 <!-- PAGE 4: GOSPEL + CREED -->
-<div class="page" id="page-4">
+<div class="page${overflowPages.has(4) ? ' overflow-warning' : ''}" id="page-4">
+  ${overflowPages.has(4) ? `<div class="overflow-banner">${escapeHtml(overflows.find(o => o.page === 4)?.message || 'Page 4 overflow')}</div>` : ''}
   ${subHeadingHtml('Gospel', { inline: r.gospelCitation || '', citation: true })}
   <div class="reading-text">${nl2br(r.gospelText)}</div>
   ${subHeadingHtml('Homily', { right: CRUB.sit })}
@@ -925,11 +947,12 @@ function renderBookletHtml(data, options = {}) {
   ${cRub(CRUB.sit)}
   ${classicSectionHtml('The Liturgy of the Eucharist')}
   ${musicSubHeadingHtml(d, 'Offertory Hymn', 'offertoryAnthem', 'offertoryAnthemComposer')}
+  ${d.childrenLiturgyEnabled ? `${cRub(`Children return from Children's Liturgy of the Word (${clTimes.join(' & ')})`)}` : ''}
   ${subHeadingHtml('Invitation to Prayer', { right: CRUB.stand })}
   ${subHeadingHtml('Prayer over the Offerings')}
   ${subHeadingHtml(holyHolyHeading, { inline: ss.holyHolySetting || 'Mass of St. Theresa' })}
   ${slotHasMusic('sanctus') ? ordSpace('sanctus', 'Holy, Holy, Holy — music notation') : `<div class="prayer-text">${nl2br(holyHolyText)}</div>`}
-  ${cRub('Please kneel or be seated')}
+  ${cRub(CRUB.kneelOrSit)}
   ${subHeadingHtml('Mystery of Faith', { inline: ss.mysteryOfFaithSetting || 'Mass of St. Theresa' })}
   ${ordSpace('mysteryOfFaith', 'Mystery of Faith — music notation')}
   ${subHeadingHtml('Great Amen', { inline: 'chant' })}
@@ -945,8 +968,6 @@ function renderBookletHtml(data, options = {}) {
   ${subHeadingHtml('Lamb of God', { inline: ss.lambOfGodSetting || 'Mass of St. Theresa' })}
   ${ordSpace('lambOfGod', 'Lamb of God — music notation')}
   ${cRub(CRUB.kneel)}
-  ${hasCommunionAntiphon ? `${subHeadingHtml('Communion Antiphon', { inline: d.communionAntiphonComposer || '' })}
-  ${ni['communionAntiphon'] ? ordSpace('communionAntiphon', 'Communion Antiphon — music notation') : ''}` : ''}
   ${musicSubHeadingHtml(d, 'Communion Hymn', 'communionHymn', 'communionHymnComposer')}
   ${hymnSpace('communion')}
   ${hasChoral ? musicSubHeadingHtml(d, 'Choral Anthem', 'choralAnthemConcluding', 'choralAnthemConcludingComposer') : ''}
@@ -970,8 +991,8 @@ function renderBookletHtml(data, options = {}) {
 <!-- PAGE 8: QR + LICENSING -->
 <div class="page" id="page-8">
   <div class="c-footer">
-    ${qrItems.length ? `<div class="c-qr-row">
-      ${qrItems.map(([label, url]) => `<div class="c-qr">${qrSvgHtml(url)}<div class="c-qr-label">${escapeHtml(label)}</div></div>`).join('')}
+    ${qrCells.length ? `<div class="c-qr-row">
+      ${qrCells.map(c => `<div class="c-qr">${c.svg}<div class="c-qr-label">${escapeHtml(c.label)}</div></div>`).join('')}
       ${socials.length ? `<div class="c-social">${socials.map(escapeHtml).join('<br>')}</div>` : ''}
     </div>` : ''}
     <div class="c-copyright">${nl2br(copyrightFull)}</div>
@@ -979,10 +1000,11 @@ function renderBookletHtml(data, options = {}) {
   <div class="page-number">8</div>
 </div>
 `;
+  };
 
   const html = `${docHead}
 <body class="design-${escapeHtml(design)}">
-${design === 'classic' ? classicBody : reimaginedBody}
+${design === 'classic' ? classicBody() : reimaginedBody()}
 </body>
 </html>`;
 

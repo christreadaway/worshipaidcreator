@@ -1868,3 +1868,103 @@ Times family if the files are ever stripped. See `FONTS-LICENSE.md`.
   small-caps headers / classic section names / two-column psalm / "Verse:" /
   QR footer while the reimagined body has none of them, and the vendored fonts
   ship. E2E: 5 passing (the new switcher doesn't break the editor load).
+
+---
+
+## Session 16 — v2.2: Comprehensive code review + hardening pass
+
+An 8-angle adversarial code review of everything on this branch (proof fixes
+v2 + the two-design feature), plus a layout stress-harness (both designs ×
+text-only / paste-box / notation-image / announcement scenarios × both trims,
+with orphan/strand/empty-page detection on the extracted text). 10 verified
+findings were reported and ALL were fixed, along with the review's cleanup
+recommendations.
+
+### Correctness fixes
+1. **Centered rubrics were inert in real exports** (critical): the editor UI
+   pinned `rubricAlignment` to `'left'` at three layers (select default,
+   `buildData()` fallback, `populateForm()` fallback), overriding the
+   renderers' `center` default for every UI-driven aid. All three now default
+   to center; a string-guard test locks the SPA source.
+2. **Classic fonts 404'd on Netlify**: only `/api/*` reaches the function and
+   the build published just `index.html`, so `@font-face` URLs returned HTML.
+   `scripts/extract-html.js` now publishes the classic fonts under
+   `public/assets/fonts/classic/`; the local express route stays (now with a
+   per-filename resolution cache).
+3. **Classic export crashed on an empty feast name** (`_smallCapsTitle` →
+   `widthOfString(undefined)`), and the classic HTML cover rendered the
+   literal text "undefined". Both guarded.
+4. **Phantom "Communion Antiphon"**: `_slotHasMusic()` is true whenever paste
+   boxes are on, so every classic PDF printed a Communion Antiphon heading +
+   empty box for a slot with no schema field and no UI — and the preview never
+   showed it. Removed from both renderers.
+5. **Lent**: classic printed "Gospel Alleluia" (suppressed word) and dropped
+   the sung acclamation text when no notation slot carried it. Now
+   season-aware with the same text fallback as reimagined.
+6. **Classic parity**: Advent-wreath block, cover `welcomeMessage`, children's
+   liturgy box + return line, and preview overflow banners all restored in the
+   classic renderers (they existed only in reimagined).
+7. **Design provenance**: `/api/generate-pdf` now stamps the exported design
+   onto the stored draft and the export-log record, and the pastor-approval
+   gate refuses to export an approved draft in a different design.
+
+### Layout robustness (designer-grade)
+- **keep-with-next pagination**: blocks can be flagged `keepNext`; the
+  paginator (identically in `_countPagesNeeded` and `renderContentFlow`)
+  breaks the page BEFORE a flagged block when its chain can't fit — so the
+  Collect heading, the classic Introductory-Rites title (which follows the
+  prelude line), and any future transition can never strand at a page foot.
+  This replaced the v2.0 "mega-block" approach (Collect + rubric + section
+  title + first reading paragraph welded together), which couldn't split and
+  would have forced whole-booklet shrink or clipping on a one-paragraph-long
+  reading.
+- **Classic footer anchored to page 8**: the QR/licensing block now renders at
+  the foot of the last page like a back cover (sparse aids no longer float it
+  mid-booklet with blank pages after).
+- **Footer socials column height** is measured into the row (a long handles
+  list can no longer overprint the licensing block), and the classic cover
+  greeting now wraps instead of running off the trim edge.
+
+### One engine truth (preview === export, by construction)
+New `src/render-shared.js` used by BOTH renderers: `getQRCode` (was
+duplicated), `SMALLCAPS_CONNECTORS` (two drifted copies, one with a dead
+'of the' entry), `shortParishName`/`classicGreeting`, `classicCoverBlocks`
+(classic cover fallback copy — the classic PDF had hardcoded long-form blurbs
+the preview never showed; both now resolve through `DEFAULT_PARISH_SETTINGS`),
+and `resolveChildrenLiturgyTimes` (was inlined 5×). Classic posture wording
+moved to `RUBRICS_CLASSIC` in `mass-texts.js` beside the canonical RUBRICS.
+
+### Efficiency
+- `renderBookletHtml` builds only the selected body (both were built eagerly —
+  classic QR encodes ran on every reimagined preview, and a classic throw
+  would have broken reimagined). QR codes encode once each (was twice). The
+  classic CSS/@font-face block is emitted only for classic.
+- `_drawQR` skips encoding in dry-run (was ~21 wasted encodes per classic
+  export across shrink-loop passes); `_smallCapsTitle` short-circuits dry-run
+  measurement; font-directory/classic-font-path resolution is cached at module
+  level (~12 sync stats per export → once per process).
+- `_renderCreedTwoColumn` now delegates to `_twoColumnText` (was a near-verbatim
+  copy); `subHeading`'s dead design ternaries and the THEMES `design` key were
+  removed; the rubric size is a theme knob (`theme.rubricSize`).
+
+### Known/accepted
+- The liturgy *structure* still exists in four copies (reimagined/classic ×
+  PDF/HTML). The shared-helper layer shrinks the drift surface, but a future
+  "liturgy outline" abstraction driving all four is the right long-term fix —
+  deferred as too large/risky for this pass.
+- The approval gate still trusts the request body for CONTENT (pre-existing);
+  it now at least pins the design.
+- Layout-audit flags that remain are intentional: a posture direction + its
+  section title opening a page together (director-specified order), standalone
+  cue lines (Sign of Peace, Prayer over the Offerings) at a page foot, and
+  blank interior pages on sparse half-letter aids (fixed 8-page saddle-stitch;
+  the anchored back page is printed).
+
+### Tests
+- **399 passing** (was 388; +11): Lent suppression + acclamation fallback,
+  Advent wreath, welcomeMessage, children's-liturgy parity, no phantom
+  Communion Antiphon, empty-feast resilience (both renderers), shared cover
+  copy (preview===export), classic overflow banners, classic-only CSS, and the
+  three-layer centered-rubric UI guard. E2E: 5 passing.
+- Layout stress-harness re-run clean on both designs × 6 scenarios × 2 trims
+  (remaining flags all classified intentional, above).
