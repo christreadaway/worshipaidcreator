@@ -2063,3 +2063,96 @@ regenerating the aid and comparing each page to the marked-up proof.
   page-by-page text extraction confirms the Penitential Act on page 2 with the
   hymn + Invocation and Lord Have Mercy + Glory to God + Collect together on
   page 3.
+
+---
+
+## Session 18 — v2.4: One shared liturgy outline + comprehensive review pass
+
+**Branch:** `claude/worship-aid-formatting-qpbafz`
+**Tests:** 423 unit + 5 E2E (was 418 + 5 at session start)
+
+The user asked for the "comprehensive fix" the prior sessions kept deferring —
+the real cause of the recurring proof feedback: the liturgy structure existed
+in **four copies** (reimagined/classic × PDF/HTML), so a formatting rule had
+to be applied in up to four places and the copies drifted (preview-vs-print
+and design-vs-design). This session collapses them into one source of truth,
+then hardens the result with a four-angle adversarial review.
+
+### The unification — `src/liturgy-outline.js`
+
+`buildLiturgyOutline(data, ctx)` returns an ordered list of BLOCKS, each a set
+of typed OPS (`section`, `music`, `setting`, `reading`, `rubric`, `psalm`,
+`creed`, `gospelAccl`, `penitential`, `childrenBox`, `announcements`, …). It is
+the single place that decides section order, section names, posture wording,
+which items appear (Gloria/postlude/advent-wreath/acclamation/creed), two-column
+choices, announcements placement, the QR footer, and the per-design differences
+(reimagined vs classic). Every block carries an `htmlPage` hint for the
+fixed-page HTML preview and optional pagination flags (`keepNext`, `penitential`
+fit-block, `anchorBottom`) for the PDF flow engine.
+
+Both media consume the same outline:
+- **PDF** (`pdf-generator.js`): `_buildContentBlocks` → `_blocksFromOutline` +
+  `_renderOp` map each op to the existing theme-aware primitives and each block
+  to a flow block. `_buildContentBlocksClassic` is now a one-line delegate.
+  ~250 lines of duplicated structure deleted; PDF output is byte-identical
+  (verified page-by-page for both designs, all seasons).
+- **HTML** (`template-renderer.js`): `renderOpHtml` maps each op to the existing
+  HTML helpers, grouped onto the fixed 8-page shells; the covers stay
+  per-design. ~150 lines of duplicated body markup deleted; the now-dead
+  liturgy constants/imports were pruned.
+
+Net effect: a formatting rule (composer roman, notation width, heading spacing,
+page packing, section naming) is written **once** and applies to both designs
+and both media. This structurally ends the whack-a-mole.
+
+### Comprehensive review + fixes
+
+Four parallel adversarial reviewers audited the branch. Verdicts: liturgical
+structure faithfully preserved (a 52-combo parity diff against the pre-refactor
+baseline; PDF text byte-identical), no XSS (36/36 injected payloads escaped in
+both designs), and a sound 8-page flow engine (192-config fuzz, measured ≥
+rendered). Verified findings, all fixed:
+
+- **MEDIUM — render-time title-crop could lose music.** The escape hatch added
+  for wide-short refrain scans could crop away a *narrow* real staff (incipit /
+  ossia / cantor line, under the 35%-width primary detection threshold) sitting
+  above a big white gap. Fix: the tall-crop path re-scans the region above the
+  cut at a lower width threshold (`STAFF_FRAC_NARROW`) and refuses if any staff
+  group is found there. Genuine titles/refrains still crop; two-system pieces
+  are safe. Regression-tested.
+- **LOW — local `?strip=1` route** stripped any sharp-decodable format (SVG/TIFF
+  served under the wrong MIME); now guarded to png/jpeg like the Netlify route.
+- **LOW — long feast name → 9th page.** A feast name of dozens of words could
+  wrap past the cover's bottom margin and make PDFKit auto-add a page. Both
+  covers now clamp the feast-title height (classic bounds it to ~⅓ of the page)
+  and the classic date/greeting are height-clamped — always exactly 8 pages.
+- **LOW — `_twoColumnText`** now warns on ellipsis truncation (no silent drop).
+- **LOW — classic page-8 overflow** could draw ink below the bottom margin:
+  `_twoColumnText`, `_smallCapsTitle`, `_hangingLabel` gained past-bottom guards.
+- **Parity — classic 2pt spacer** between the prelude line and the section title
+  was restored via a `spacer` op (exact pre-refactor layout).
+- Dead code removed (inert `div.sub-heading` CSS; unused liturgy imports/consts).
+
+### Director's 17th-Sunday feedback — re-verified in BOTH designs post-refactor
+
+All six items still hold, confirmed by page-by-page extraction: 5″ notation
+width; composer names roman (title still italic); ≥8pt above every heading;
+Penitential Act on the entrance-hymn page; Lord Have Mercy + Gloria + Collect
+together on one page; notation titles stripped at render time.
+
+### Accepted / documented (not bugs)
+- The HTML preview uses fixed 8-page sections while the PDF flows — so a few
+  classic transition rubrics that landed at a page foot in the old classic HTML
+  now render at the top of the next page (matching the reimagined HTML, which
+  always did). This is within the long-standing, documented preview-vs-print
+  pagination difference; the **PDF is the proofed artifact**.
+- The deliberately-impossible "tall notation image in every slot on tabloid"
+  case fires loud warnings (Penitential Act omitted, Gloria notation reduced)
+  but always holds 8 pages with no silent drop — the safety net working.
+
+### Files
+- Added: `src/liturgy-outline.js`.
+- Modified: `src/pdf-generator.js`, `src/template-renderer.js`,
+  `src/image-utils.js`, `src/notation-resolver.js`, `src/server.js`,
+  `src/schema.js`, `src/music-formatter.js`, `src/tests/proof-fixes3.test.js`
+  (+ minor test updates in `proof-fixes.test.js`, `uat-fixes.test.js`).
