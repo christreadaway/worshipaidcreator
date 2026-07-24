@@ -78,7 +78,15 @@ const TITLE_CROP = {
   PAD: 10,              // ceiling for breathing room above the music
   PAD_FLOOR: 3,         // floor for very short images
   PAD_FRAC: 0.02,       // pad = clamp(H * PAD_FRAC, floor, ceiling)
-  MAX_CROP_FRAC: 0.5    // never remove more than half the image
+  MAX_CROP_FRAC: 0.5,   // removing more pixels than this needs the shallow-
+                        // header escape hatch below
+  // A wide-short refrain scan (one staff, title at the top, big white gap)
+  // can legitimately need >50% of its PIXELS removed — most of that is
+  // white. What must stay small is the CONTENT above the cut: a title/
+  // composer header is a shallow band of inked rows. The 17th-Sunday proof
+  // showed exactly this shape ("GOSPEL ACCLAMATION" surviving the crop).
+  HEADER_ROWS_MAX_FRAC: 0.15, // inked rows above the cut / total height
+  MAX_CROP_HARD_FRAC: 0.8     // absolute ceiling, whatever the ink says
 };
 
 // Returns the full-resolution Y to crop at, or null when no confident
@@ -161,7 +169,19 @@ async function detectTitleCropY(buf) {
   if (!hasHeader) return null;
 
   const cropAnalysisY = Math.max(0, musicTop - pad);
-  if (cropAnalysisY / H > C.MAX_CROP_FRAC) return null;
+  const cropFrac = cropAnalysisY / H;
+  if (cropFrac > C.MAX_CROP_FRAC) {
+    // Removing lots of WHITE is fine — the guard that matters is how much
+    // CONTENT the crop removes. Allow a tall crop when the region above the
+    // cut is a shallow header band (few inked rows), refuse when it holds
+    // anything deeper (which could be music the staff detector missed), and
+    // never exceed the hard ceiling.
+    let contentRowsAbove = 0;
+    for (let y = 0; y < cropAnalysisY; y++) {
+      if (frac[y] >= C.CONTENT_FRAC) contentRowsAbove++;
+    }
+    if (cropFrac > C.MAX_CROP_HARD_FRAC || contentRowsAbove / H > C.HEADER_ROWS_MAX_FRAC) return null;
+  }
 
   // Map back to the full-resolution image.
   const meta = await sharp(buf).metadata();

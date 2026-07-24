@@ -80,9 +80,13 @@ describe('Proof fixes — music labels dropped, info inline', () => {
     assert.doesNotMatch(html, /Communion\s*&mdash;/);
   });
 
-  it('puts the prelude title + composer on the Organ Prelude heading line', () => {
+  it('puts the prelude title + composer on the Organ Prelude heading line, composer NOT italic', () => {
     const { html } = renderBookletHtml(data);
-    assert.match(html, /Organ Prelude<\/span><span class="sub-inline"><em>Adagio<\/em>, Crawford/);
+    // The music container span is roman (.music) so only the <em> title is
+    // italic; the composer sits in a .composer span that can never inherit
+    // italics ("Never italicize the name of a composer" — director).
+    assert.match(html, /Organ Prelude<\/span><span class="sub-inline music"><em>Adagio<\/em><span class="composer">, Crawford<\/span>/);
+    assert.match(html, /\.sub-inline\.music\s*{\s*font-style:\s*normal/);
   });
 
   it('puts ordinary-setting names inline on Holy/Mystery/Lamb headings', () => {

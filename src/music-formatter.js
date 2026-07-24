@@ -80,15 +80,32 @@ function formatHymnalCitation(item) {
 }
 
 /**
- * Renders a full music line as HTML
+ * Renders a full music line as HTML. The piece's title is italic; the
+ * composer's name is NEVER italicized (director of liturgy) — it is wrapped
+ * in a .composer span so no italic container can restyle it.
  */
 function renderMusicLineHtml(item) {
   let html = `<em>${escHtml(item.title)}</em>`;
   const cite = formatHymnalCitation(item);
   if (cite) html += ` <span class="hymnal-cite">[${escHtml(cite)}]</span>`;
-  if (item.composer) html += `, ${escHtml(item.composer)}`;
+  if (item.composer) html += `<span class="composer">, ${escHtml(item.composer)}</span>`;
   if (item.timeLabel) html += ` <span class="mass-time-label">(${escHtml(item.timeLabel)})</span>`;
   return html;
+}
+
+/**
+ * The same music line as mixed-style runs for the PDF generator:
+ * [{ text, italic }] — title italic, everything else (hymnal citation,
+ * composer, Mass-time label) roman. "Never italicize the name of a
+ * composer" — director of liturgy, 17th Sunday OT proof.
+ */
+function renderMusicLineRuns(item) {
+  const runs = [{ text: String(item.title || ''), italic: true }];
+  const cite = formatHymnalCitation(item);
+  if (cite) runs.push({ text: ` [${cite}]`, italic: false });
+  if (item.composer) runs.push({ text: `, ${item.composer}`, italic: false });
+  if (item.timeLabel) runs.push({ text: ` (${item.timeLabel})`, italic: false });
+  return runs;
 }
 
 /**
@@ -108,4 +125,4 @@ function escHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-module.exports = { formatMusicSlot, renderMusicLineHtml, renderMusicLineText, formatTimeLabel, MASS_TIMES, MASS_TIME_KEYS };
+module.exports = { formatMusicSlot, renderMusicLineHtml, renderMusicLineText, renderMusicLineRuns, formatTimeLabel, MASS_TIMES, MASS_TIME_KEYS };

@@ -277,10 +277,16 @@ describe('notation images in renderers', () => {
       notationImages: { kyrie: '/uploads/notation/k.png', communion: '/uploads/notation/c.png' }
     };
     const { html } = renderBookletHtml(data);
-    assert.ok(html.includes('src="/uploads/notation/k.png"'));
-    assert.ok(html.includes('src="/uploads/notation/c.png"'));
+    // ?strip=1 asks the server for the title-cropped variant, so the
+    // preview shows the exact image the exported PDF embeds.
+    assert.ok(html.includes('src="/uploads/notation/k.png?strip=1"'));
+    assert.ok(html.includes('src="/uploads/notation/c.png?strip=1"'));
     // Slots WITHOUT an image keep their paste boxes.
     assert.ok(html.includes('Lamb of God — music notation'));
+    // Opting out of title stripping serves the raw stored bytes.
+    const raw = renderBookletHtml({ ...data, stripNotationTitles: false }).html;
+    assert.ok(raw.includes('src="/uploads/notation/k.png"'));
+    assert.ok(!raw.includes('strip=1'));
   });
 
   it('new reserved areas exist: Gloria, psalm refrain, acclamation, Mystery of Faith', () => {
@@ -292,7 +298,7 @@ describe('notation images in renderers', () => {
     }
   });
 
-  it('notation images print at spec width (5.5in / centered) and over-tall ones shrink to one page + center', async () => {
+  it('notation images print at spec width (5in / centered) and over-tall ones shrink to one page + center', async () => {
     const sharp = require('sharp');
     const zlib = require('zlib');
     const tall = await sharp({ create: { width: 800, height: 2400, channels: 3, background: '#222' } }).png().toBuffer();
@@ -320,16 +326,15 @@ describe('notation images in renderers', () => {
     }
     assert.equal(draws.length, 2, 'both images embedded');
     // Tabloid content area: margin 72, width 468. All music notation prints
-    // at the 5.5in spec width = 396pt, centered at x = 72 + (468-396)/2 = 108.
-    // The wide 2000x500 image fits at full width. The 800x2400 image is
-    // taller than a whole content page even at 5.5in, so it shrinks
-    // proportionally to one page height (still centered).
+    // at the 5in spec width = 360pt (director, 17th Sunday OT proof),
+    // centered at x = 72 + (468-360)/2 = 126. The wide 2000x500 image fits
+    // at full width. The 800x2400 image is taller than a whole content page
+    // even at 5in, so it shrinks proportionally to one page height (still
+    // centered).
     const wideDraw = draws.find(d => d.w > 300);
     const tallDraw = draws.find(d => d.w < 300);
-    assert.ok(wideDraw, 'wide image prints at the 5–5.5in spec width');
-    // 5.5in = 396pt; the flow engine may scale the booklet down to fit 8
-    // pages, but the director's floor is 5in = 360pt.
-    assert.ok(wideDraw.w >= 360 && wideDraw.w <= 397, `5–5.5in spec width (got ${wideDraw.w})`);
+    assert.ok(wideDraw, 'wide image prints at the 5in spec width');
+    assert.ok(wideDraw.w >= 359 && wideDraw.w <= 361, `5in spec width = 360pt (got ${wideDraw.w})`);
     const wideCenterX = 72 + (468 - wideDraw.w) / 2;
     assert.ok(Math.abs(wideDraw.x - wideCenterX) < 1, `centered (x=${wideDraw.x}, expected ~${wideCenterX})`);
     assert.ok(tallDraw, 'over-tall image is shrunk to fit one page (narrower than spec)');
@@ -344,8 +349,9 @@ describe('notation images in renderers', () => {
     const tab = renderBookletHtml(data, { bookletSize: 'tabloid' }).html;
     assert.match(half, /\.notation-image\s*{[^}]*object-position:\s*center top/);
     assert.match(half, /\.notation-image\s*{[^}]*margin:\s*3pt auto/);
-    assert.match(tab, /\.notation-image\.ordinary\s*{\s*width:\s*5\.5in/);
-    assert.match(tab, /\.notation-image\.hymn\s*{\s*width:\s*5\.5in/);
+    // Director (17th Sunday OT proof): default notation width is 5in.
+    assert.match(tab, /\.notation-image\.ordinary\s*{\s*width:\s*5in/);
+    assert.match(tab, /\.notation-image\.hymn\s*{\s*width:\s*5in/);
   });
 
   it('PDF embeds slot image buffers and stays at exactly 8 pages', async () => {

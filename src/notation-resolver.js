@@ -9,7 +9,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const kv = require('./store/kv');
+const { stripTitleHeader } = require('./image-utils');
 
 const NOTATION_DIR = path.join(kv.DATA_DIR, 'uploads', 'notation');
 const ATTACHMENTS_DIR = path.join(kv.DATA_DIR, 'uploads', 'attachments');
@@ -64,6 +66,55 @@ async function resolveNotationImages(data) {
   return out;
 }
 
+// --- Render-time title stripping ------------------------------------------
+// The upload-time cropper only runs when an image is uploaded, so scans
+// stored before the cropper existed (or improved) kept their baked-in title
+// bands — the director of liturgy flagged surviving titles on three
+// consecutive proofs. Stripping now ALSO runs when the booklet is rendered:
+// every resolved buffer passes through stripTitleHeader (idempotent — an
+// already-cropped image finds no header and comes back untouched). Results
+// are cached by content hash so repeated exports/previews don't re-run
+// sharp on the same bytes.
+const _stripCache = new Map(); // sha256(original) -> { buffer, cropped }
+const STRIP_CACHE_MAX = 60;
+
+async function stripTitleFromBuffer(buf) {
+  const hash = crypto.createHash('sha256').update(buf).digest('hex');
+  const hit = _stripCache.get(hash);
+  if (hit) {
+    // LRU bump.
+    _stripCache.delete(hash);
+    _stripCache.set(hash, hit);
+    return hit;
+  }
+  const result = await stripTitleHeader(buf);
+  const entry = { buffer: result.buffer, cropped: !!result.cropped };
+  _stripCache.set(hash, entry);
+  if (_stripCache.size > STRIP_CACHE_MAX) {
+    _stripCache.delete(_stripCache.keys().next().value);
+  }
+  return entry;
+}
+
+// Strip title headers from a resolved { slot: Buffer } map. Returns
+// { images, cropped } where cropped lists the slots that actually lost a
+// header. A slot whose strip fails keeps its original buffer — the booklet
+// must never lose music over a cropper error.
+async function stripTitlesFromImages(images) {
+  const out = { images: {}, cropped: [] };
+  await Promise.all(Object.entries(images || {}).map(async ([slot, buf]) => {
+    try {
+      const r = await stripTitleFromBuffer(buf);
+      out.images[slot] = r.buffer;
+      if (r.cropped) out.cropped.push(slot);
+    } catch (e) {
+      console.warn('[notation-resolver] render-time title strip failed for %s: %s', slot, e.message);
+      out.images[slot] = buf;
+    }
+  }));
+  return out;
+}
+
 // Existence-only check (no byte loading) — which slots reference notation
 // files that no longer exist in storage. The preview route uses this to
 // fall back to the paste box exactly like the PDF does, instead of
@@ -93,4 +144,4 @@ async function findMissingNotationSlots(data) {
   return missing;
 }
 
-module.exports = { resolveNotationImages, findMissingNotationSlots, filenameFromUrl, NOTATION_DIR, ATTACHMENTS_DIR };
+module.exports = { resolveNotationImages, findMissingNotationSlots, stripTitlesFromImages, stripTitleFromBuffer, filenameFromUrl, NOTATION_DIR, ATTACHMENTS_DIR };

@@ -53,8 +53,11 @@ function getLogoHtml(settings) {
 //   citation    — style the inline text as a scripture citation
 //   right       — posture direction, right-justified on the heading line
 function subHeadingHtml(label, opts = {}) {
+  // Music lines get the .music class: the container stays roman so only the
+  // <em>-wrapped piece title is italic — a composer's name is NEVER
+  // italicized (director of liturgy).
   const inline = opts.inlineHtml
-    ? `<span class="sub-inline">${opts.inlineHtml}</span>`
+    ? `<span class="sub-inline music">${opts.inlineHtml}</span>`
     : (opts.inline ? `<span class="sub-inline${opts.citation ? ' cite' : ''}">${escapeHtml(opts.inline)}</span>` : '');
   const right = opts.right ? `<span class="rubric-inline">${escapeHtml(opts.right)}</span>` : '';
   return `<div class="sub-heading-row"><div class="sub-heading-left"><span class="sub-heading">${escapeHtml(label)}</span>${inline}</div>${right}</div>`;
@@ -145,7 +148,7 @@ function classicCssFor(geom) {
     font-variant: small-caps; text-transform: lowercase;
     letter-spacing: 0.5pt;
     font-size: calc(${geom.headerSize} * 1.55);
-    margin: 7pt 0 5pt; line-height: 1.1;
+    margin: 8pt 0 5pt; line-height: 1.1;
   }
   .c-section .c-conn { font-variant: normal; font-style: italic; font-size: 0.72em; }
   body.design-classic .sub-heading {
@@ -154,6 +157,9 @@ function classicCssFor(geom) {
     font-size: 10pt;
   }
   body.design-classic .sub-inline { color: #222; margin-left: 2pt; font-style: italic; }
+  /* Only the <em> piece title is italic on music lines — the composer's
+     name is never italicized (director of liturgy). */
+  body.design-classic .sub-inline.music { font-style: normal; }
   body.design-classic .sub-heading-left .sub-inline::before {
     content: '\\2014'; font-style: normal; font-weight: 700; color: #111; margin: 0 2pt 0 0;
   }
@@ -253,8 +259,14 @@ function renderBookletHtml(data, options = {}) {
   // with no way to do it digitally — UAT June 2026). Precedence everywhere:
   // uploaded image > reserved paste box > plain text.
   const ni = d.notationImages || {};
+  // ?strip=1 asks the server for the title-cropped variant of the stored
+  // image — the same render-time title stripping the exported PDF applies —
+  // so the preview shows exactly what will print. Off when the aid opts out.
+  const stripTitles = d.stripNotationTitles !== false;
+  const notationSrc = (url) =>
+    stripTitles ? url + (String(url).includes('?') ? '&' : '?') + 'strip=1' : url;
   const notationImg = (slot, cls) => ni[slot]
-    ? `<img class="notation-image${cls ? ' ' + cls : ''}" src="${escapeHtml(ni[slot])}" alt="${escapeHtml(slot)} notation">`
+    ? `<img class="notation-image${cls ? ' ' + cls : ''}" src="${escapeHtml(notationSrc(ni[slot]))}" alt="${escapeHtml(slot)} notation">`
     : '';
 
   // Hymn-sized music area for a slot: uploaded image first, then the dashed
@@ -374,14 +386,17 @@ function renderBookletHtml(data, options = {}) {
     letter-spacing: 1pt;
   }
   /* Heading line: heading + inline title/citation on the left, posture
-     direction right-justified. */
+     direction right-justified. At least 8pt of space separates every
+     heading from what precedes it (director of liturgy). */
   .sub-heading-row {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
     gap: 8pt;
-    margin: 7pt 0 2pt;
+    margin: 8pt 0 2pt;
   }
+  /* Bare headings (no inline row) get the same minimum space above. */
+  div.sub-heading { margin-top: 8pt; }
   .sub-heading-left { display: inline; }
   .sub-inline {
     font-style: italic;
@@ -389,7 +404,11 @@ function renderBookletHtml(data, options = {}) {
     margin-left: 5pt;
   }
   .sub-inline.cite { font-style: normal; font-weight: 600; font-size: 9pt; color: #333; }
+  /* Music lines: only the <em> piece title is italic — the composer's name
+     is never italicized (director of liturgy). */
+  .sub-inline.music { font-style: normal; }
   .sub-inline em { font-style: italic; }
+  .sub-inline .composer, .music-entry .composer { font-style: normal; }
   .rubric-inline {
     color: #8B0000;
     font-style: italic;
@@ -471,9 +490,10 @@ function renderBookletHtml(data, options = {}) {
     font-size: 6.5pt;
     font-style: italic;
   }
-  /* Uploaded notation images — director of liturgy spec: ALL music notation
-     prints 5–5.5in wide, centered, at its natural height. (Inches are exact
-     on the 8.5in tabloid trim; smaller trims clamp to the content width.) */
+  /* Uploaded notation images — director of liturgy spec (17th Sunday OT
+     proof): the default width for ALL music notation images is 5in,
+     centered, at natural height. (Inches are exact on the 8.5in tabloid
+     trim; smaller trims clamp to the content width.) */
   .notation-image {
     display: block;
     max-width: 100%;
@@ -481,9 +501,9 @@ function renderBookletHtml(data, options = {}) {
     object-position: center top;
     margin: 3pt auto;
   }
-  .notation-image.hymn     { width: 5.5in; max-height: ${geom.hymnSpace}; }
-  .notation-image.ordinary { width: 5.5in; max-height: ${geom.hymnSpace}; }
-  .notation-image.w5       { width: 5.5in; }
+  .notation-image.hymn     { width: 5in; max-height: ${geom.hymnSpace}; }
+  .notation-image.ordinary { width: 5in; max-height: ${geom.hymnSpace}; }
+  .notation-image.w5       { width: 5in; }
   /* Two-column layout for the Creed */
   .creed-text.two-column {
     columns: 2;

@@ -169,6 +169,12 @@ const inputSchema = {
     // week's draft. Unchecking in the editor exposes the per-part fields.
     serviceMusicCarryover: { type: 'boolean' },
 
+    // Remove title headers from notation images at render time (director of
+    // liturgy: "the titles should be removed from all music notation").
+    // Defaults to true when absent; the same editor checkbox that governs
+    // upload-time cropping controls it.
+    stripNotationTitles: { type: 'boolean' },
+
     // Images
     coverImagePath: { type: 'string' },
     // Per-slot notation images, keyed by slot name. Recognized slots:

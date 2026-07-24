@@ -1968,3 +1968,98 @@ moved to `RUBRICS_CLASSIC` in `mass-texts.js` beside the canonical RUBRICS.
   three-layer centered-rubric UI guard. E2E: 5 passing.
 - Layout stress-harness re-run clean on both designs × 6 scenarios × 2 trims
   (remaining flags all classified intentional, above).
+
+---
+
+## Session 17 — v2.3: Director-of-liturgy proof pass #3 (17th Sunday in OT, July 2026)
+
+The director proofed a real classic-design export (17th Sunday in Ordinary
+Time, July 26 2026) and annotated it with the recurring universal-formatting
+rules, this time marking every occurrence. Branch
+`claude/worship-aid-formatting-qpbafz`. Every item was applied to BOTH
+renderers (`pdf-generator.js` + `template-renderer.js`) and verified by
+regenerating the aid and comparing each page to the marked-up proof.
+
+### Annotations → fixes
+
+1. **Default notation width is 5 inches** (was 5.5). `NOTATION_WIDTH_IN = 5`
+   in `pdf-generator.js`; `.notation-image.{hymn,ordinary,w5}` all 5in in the
+   HTML. Still centered; still scales proportionally on non-tabloid trims.
+   The notation-width test now asserts 360pt (= 5in) exactly.
+
+2. **Composer names are NEVER italicized.** A music line's piece TITLE stays
+   italic; the composer (and "arr. X", "Palestrina/Covington", etc.) renders
+   roman. New `renderMusicLineRuns()` in `music-formatter.js` returns typed
+   `[{text, italic}]` segments (title italic, citation/composer/time-label
+   roman). The PDF `subHeading` gained an `inlineRuns` path and a `_runsLine`
+   helper that draw mixed italic/roman runs via PDFKit `continued` text; the
+   multi-Mass fallback list uses `_runsLine` too. HTML wraps the composer in a
+   `.composer` span and the music container in `.sub-inline.music`
+   (`font-style:normal`) so no italic ancestor can restyle it — both designs.
+
+3. **At least 8pt of space above every heading.** New `_padBeforeHeading()`
+   (PDF) tops up the whitespace above every `sectionHeader`/`subHeading` to a
+   minimum of 8 absolute points, tracking the trailing gap each primitive
+   leaves (`_lastGapAfter`, set by `_textBlock`, `_runsLine`, the notation/
+   paste-box helpers, `_twoColumnText`, the children's-liturgy box). Dry-run
+   measurement applies the worst-case pad so a block can never measure shorter
+   than it renders (pagination stays safe). No pad at the top of a fresh page.
+   HTML: `.sub-heading-row` and `div.sub-heading` margins bumped to 8pt;
+   classic `.c-section` to 8pt.
+
+4. **Penitential Act shares the entrance-hymn page — never spills.** The
+   Penitential Act is now a "fit block": the paginator tries variants in
+   order against the room left on the CURRENT page — full text → two-column
+   Confiteor → heading only (text omitted, with an export warning) — and only
+   omits it (loudly) if nothing fits. It never forces a page break. Reimagined
+   pairs it with the Processional Hymn; classic with the Processional Hymn +
+   Invocation. (Director: "The heading and text for the Penitential Act should
+   go on the same page as the Processional Hymn and Invocation. If the text
+   won't fit while broken up into 2 columns, it should be omitted.")
+
+5. **Lord Have Mercy + Glory to God + Collect on one page.** These three are
+   now ONE atomic block (`keepNext`-chained to the Liturgy-of-the-Word
+   opening), so the Gloria heading/notation and the Collect can't strand onto
+   the next page away from the Kyrie. (Director marked all three with
+   "…should go on the same page as the Lord Have Mercy.") A group taller than
+   a page shrinks its notation to fit rather than splitting.
+
+6. **Titles removed from ALL music notation — at render time, not just
+   upload.** The upload-time cropper only ran when an image was uploaded, so
+   scans stored before the cropper existed/improved kept their baked-in title
+   bands (flagged on three consecutive proofs). Stripping now ALSO runs when
+   the booklet renders: `notation-resolver.js` gained `stripTitlesFromImages`
+   / `stripTitleFromBuffer` (idempotent; content-hash LRU cached), wired into
+   `/api/generate-pdf` (gated by the new `stripNotationTitles` flag, default
+   ON). The HTML preview requests the cropped variant via `?strip=1` on the
+   notation `<img>` src; the local static routes and the Netlify
+   `/api/uploads/{notation,attachments}/:file` serving routes honor `strip=1`.
+   Also hardened the crop heuristic (`image-utils.js`): the old flat
+   "never remove >50% of pixels" guard blocked legitimate wide-short refrain
+   scans (mostly white); it now measures CONTENT rows above the cut
+   (`HEADER_ROWS_MAX_FRAC`) with an 80% hard pixel ceiling, so a shallow title
+   band over a big white gap crops while deeper content is still protected.
+
+### Deliberately unchanged / notes
+- Blank interior page(s) on a sparse half-letter aid remain (fixed 8-page
+  saddle stitch; the licensing block is anchored to the printed last page) —
+  the same intentional behavior as prior sessions.
+- The `stripNotationTitles` flag reuses the editor's existing
+  `stripTitleHeaders` checkbox (round-trips through drafts).
+
+### Tests
+- New `src/tests/proof-fixes3.test.js` (19 assertions across 5 groups): 5in
+  notation width, composer-never-italic (runs + both HTML designs + PDF
+  render), 8pt heading pad (mid-page/top-of-page/dry-run + both HTML designs),
+  Penitential Act fit-variant selection (all four outcomes + both designs
+  expose it + a normal aid prints the full text with no warning),
+  Kyrie/Gloria/Collect single atomic block (+ both notation images on one
+  page at 5in centered), and render-time title stripping (crop a title band,
+  wide-short refrain shape, per-slot reporting, idempotent cache).
+- Updated three prior assertions that pinned the old behavior (5.5in width;
+  italic composer HTML; raw `<img>` src without `?strip=1`).
+- Full suite green: **418 tests, 0 failures** (was 399; +19). Both designs
+  regenerate a clean 8-page 17th-Sunday aid with zero layout warnings;
+  page-by-page text extraction confirms the Penitential Act on page 2 with the
+  hymn + Invocation and Lord Have Mercy + Glory to God + Collect together on
+  page 3.

@@ -14,7 +14,7 @@ const store = require('./store/file-store');
 const userStore = require('./store/user-store');
 const { fetchReadings, TRANSLATIONS } = require('./readings-fetcher');
 const { normalizeNotationImage, CONVERTIBLE_EXTS, EMBEDDABLE_EXTS } = require('./image-utils');
-const { resolveNotationImages, findMissingNotationSlots } = require('./notation-resolver');
+const { resolveNotationImages, findMissingNotationSlots, stripTitlesFromImages, stripTitleFromBuffer } = require('./notation-resolver');
 const hymnLibrary = require('./store/hymn-library');
 const attachmentsStore = require('./store/attachments');
 const { getLiturgicalInfo } = require('./liturgical-calendar');
@@ -91,6 +91,26 @@ if (kv.IS_NETLIFY) {
 
 if (!kv.IS_NETLIFY) {
   app.use('/exports', express.static(store.getExportsDir()));
+  // ?strip=1 serves the title-cropped variant of a stored notation image —
+  // the HTML preview shows the exact image the exported PDF embeds (the
+  // render-time title stripping in notation-resolver). Anything else falls
+  // through to the plain static handler below.
+  const serveStrippedUpload = (dirName) => async (req, res, next) => {
+    if (req.query.strip !== '1') return next();
+    const filename = path.basename(String(req.params.filename || ''));
+    if (!kv.isSafeKey(filename)) return next();
+    const filePath = path.join(UPLOADS_DIR, dirName, filename);
+    if (!fs.existsSync(filePath)) return next();
+    try {
+      const { buffer } = await stripTitleFromBuffer(fs.readFileSync(filePath));
+      setUploadHeaders(res, guessMime(filename));
+      res.send(buffer);
+    } catch (e) {
+      next(); // cropper trouble — serve the original bytes instead
+    }
+  };
+  app.get('/uploads/notation/:filename', serveStrippedUpload('notation'));
+  app.get('/uploads/attachments/:filename', serveStrippedUpload('attachments'));
   app.use('/uploads', express.static(UPLOADS_DIR));
 }
 
@@ -550,16 +570,30 @@ function setUploadHeaders(res, mime) {
 app.get('/api/uploads/attachments/:filename', async (req, res) => {
   const filename = safeFilenameParam(req, res);
   if (!filename) return;
+  // ?strip=1 → title-cropped variant, matching what the exported PDF embeds
+  // when the slot points at a Library image.
+  const wantStripped = req.query.strip === '1' && /\.(png|jpe?g)$/i.test(filename);
   if (kv.IS_NETLIFY) {
     const item = await kv.get(attachmentsStore.BLOB_NS, filename);
     if (!item) return res.status(404).json({ error: 'Not found' });
-    const buf = Buffer.from(item.data, 'base64');
+    let buf = Buffer.from(item.data, 'base64');
+    if (wantStripped) {
+      try { buf = (await stripTitleFromBuffer(buf)).buffer; }
+      catch (e) { /* serve original bytes */ }
+    }
     setUploadHeaders(res, item.mime || guessMime(filename));
     return res.send(buf);
   }
   // Locally we serve via express.static('/uploads'); provide a fallback.
   const filePath = path.join(ATTACHMENTS_DIR, filename);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Not found' });
+  if (wantStripped) {
+    try {
+      const { buffer } = await stripTitleFromBuffer(fs.readFileSync(filePath));
+      setUploadHeaders(res, guessMime(filename));
+      return res.send(buffer);
+    } catch (e) { /* fall through to the original bytes */ }
+  }
   setUploadHeaders(res, guessMime(filename));
   fs.createReadStream(filePath).pipe(res);
 });
@@ -727,11 +761,21 @@ app.post('/api/generate-pdf', requireAuth, requirePermission('export_pdf'), asyn
     // Load any per-slot notation images so the PDF embeds them in the
     // reserved music areas (uploaded TIFFs were converted to PNG at upload).
     const notation = await resolveNotationImages(req.body);
+    // Render-time title stripping (director of liturgy: "the titles should
+    // be removed from all music notation" — flagged on three consecutive
+    // proofs). Upload-time cropping alone let images stored before the
+    // cropper existed/improved keep their title bands forever; stripping at
+    // export catches those too. Idempotent + content-hash cached; the
+    // aid-level stripNotationTitles flag (default ON) opts out.
+    let notationImages = notation.images;
+    if (req.body.stripNotationTitles !== false) {
+      notationImages = (await stripTitlesFromImages(notation.images)).images;
+    }
     const result = await generatePdf(req.body, outputPath, {
       parishSettings: settings,
       bookletSize,
       design,
-      notationImages: notation.images
+      notationImages
     });
     if (notation.missing.length) {
       result.warnings.push('Notation images missing for: ' + notation.missing.join(', '));
@@ -974,13 +1018,18 @@ app.delete('/api/uploads/notation/:filename', requireAuth, requirePermission('up
   res.json({ success: true });
 });
 
-// Serve uploaded images from Blobs on Netlify
+// Serve uploaded images from Blobs on Netlify. ?strip=1 serves the
+// title-cropped variant (same pipeline the exported PDF embeds).
 app.get('/api/uploads/notation/:filename', async (req, res) => {
   const filename = safeFilenameParam(req, res);
   if (!filename) return;
   const item = await kv.get('uploads-notation', filename);
   if (!item) return res.status(404).json({ error: 'Not found' });
-  const buf = Buffer.from(item.data, 'base64');
+  let buf = Buffer.from(item.data, 'base64');
+  if (req.query.strip === '1') {
+    try { buf = (await stripTitleFromBuffer(buf)).buffer; }
+    catch (e) { /* cropper trouble — serve the original bytes */ }
+  }
   setUploadHeaders(res, item.mime || guessMime(filename));
   res.send(buf);
 });
@@ -2479,6 +2528,7 @@ function buildData() {
     anthems: { offertory: offertoryRows, choral: choralRows },
     reserveHymnSpace: ch('reserveHymnSpace'),
     serviceMusicCarryover: ch('serviceMusicCarryover'),
+    stripNotationTitles: ch('stripTitleHeaders'),
     notationImages: { ...(window._notationImages || {}) },
     childrenLiturgyEnabled: ch('childrenLiturgyEnabled'),
     childrenLiturgyMassTimes: collectChildrenLiturgyTimes(),
@@ -2562,6 +2612,7 @@ function populateForm(data) {
   updateServiceMusicVisibility();
   // Default ON for drafts saved before the field existed.
   sc('reserveHymnSpace', data.reserveHymnSpace !== false);
+  sc('stripTitleHeaders', data.stripNotationTitles !== false);
   sc('childrenLiturgyEnabled', data.childrenLiturgyEnabled);
   // If the saved doc carries an explicit value, respect it; otherwise the
   // load is a no-op and auto-defaults will run on date/season change.

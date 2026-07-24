@@ -13,7 +13,7 @@ const path = require('path');
 const { APOSTLES_CREED, NICENE_CREED, RENEWAL_OF_BAPTISMAL_VOWS } = require('./assets/text/creeds');
 const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, RUBRICS_CLASSIC, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, getHolyHolyHolyText } = require('./assets/text/mass-texts');
 const { getDefaultCopyrightFull } = require('./assets/text/copyright');
-const { formatMusicSlot, renderMusicLineText } = require('./music-formatter');
+const { formatMusicSlot, renderMusicLineRuns } = require('./music-formatter');
 const { applySeasonDefaults } = require('./config/seasons');
 const { detectOverflows } = require('./validator');
 const { getImageDimensions } = require('./image-utils');
@@ -23,11 +23,12 @@ const { getQRCode, SMALLCAPS_CONNECTORS, classicGreeting, classicCoverBlocks, re
 const PT = 72;
 
 // Default printed width for uploaded music images, in inches on the
-// 8.5in-wide (tabloid) page. The director of liturgy's spec: ALL music
-// notation prints 5"–5.5" wide, centered (service music was previously 6"
-// — "rendered too large"). Other trims scale proportionally to their page
-// width and clamp to the content area.
-const NOTATION_WIDTH_IN = 5.5;
+// 8.5in-wide (tabloid) page. The director of liturgy's spec (17th Sunday
+// OT proof, July 2026): the default width for ALL music notation images
+// is 5", centered. (Earlier passes tried 6" — "too large" — then 5.5".)
+// Other trims scale proportionally to their page width and clamp to the
+// content area.
+const NOTATION_WIDTH_IN = 5;
 const NOTATION_WIDTHS_IN = {
   processional: NOTATION_WIDTH_IN, communion: NOTATION_WIDTH_IN,
   thanksgiving: NOTATION_WIDTH_IN, psalmRefrain: NOTATION_WIDTH_IN,
@@ -281,6 +282,28 @@ class WorshipAidPdfGenerator {
     this.textScale = 1;
     this._dryRun = false;
     this._clipWarnedPage = 0;
+
+    // Trailing whitespace (points) the most recent primitive left below its
+    // ink. Headings consult this to guarantee the director's minimum space
+    // above every heading (see _padBeforeHeading).
+    this._lastGapAfter = undefined;
+  }
+
+  // Director of liturgy (17th Sunday OT proof, July 2026): "There should be
+  // at least an 8 point space between each heading and what precedes it."
+  // Every heading pads itself so the whitespace above it — its own pad plus
+  // whatever trailing gap the previous primitive left — is at least 8pt.
+  // Dry-run measurement applies the same pad (worst case, using the gap the
+  // previous block's measurement left behind), so a block can only measure
+  // taller than it renders — never shorter — and pagination stays safe. At
+  // the top of a fresh page there is nothing above the heading to space
+  // away from, so no pad is added.
+  _padBeforeHeading() {
+    const MIN = 8; // absolute points on the printed page, per the director
+    const prev = this._lastGapAfter !== undefined ? this._lastGapAfter : MIN;
+    const deficit = Math.max(0, MIN - prev);
+    if (!this._dryRun && this.y <= this.MARGIN_TOP + 0.5) return;
+    this.y += deficit;
   }
 
   // Scale a base font/spacing value by the layout's scale factor.
@@ -483,6 +506,7 @@ class WorshipAidPdfGenerator {
   _textBlock(text, x, textOpts, advanceAfter) {
     text = this._normalizeText(text);
     const h = this.doc.heightOfString(text, textOpts);
+    this._lastGapAfter = advanceAfter;
     if (this._dryRun) {
       this.y += h + advanceAfter;
       return h;
@@ -505,11 +529,13 @@ class WorshipAidPdfGenerator {
   }
 
   sectionHeader(text) {
+    this._padBeforeHeading();
     // Classic: a large centered small-caps Garamond title, no rule.
     if (this.theme.smallCaps) {
       this.y += this.s(2);
       this._smallCapsTitle(text, this.s(this.theme.sectionSize));
       this.y += this.s(6);
+      this._lastGapAfter = this.s(6);
       this.doc.font(this._font('body'));
       return;
     }
@@ -533,18 +559,27 @@ class WorshipAidPdfGenerator {
   // right-justified on that same line. opts:
   //   inline      — text placed immediately after the heading (music
   //                 title/composer, or a scripture citation)
+  //   inlineRuns  — instead of `inline`, mixed-style segments
+  //                 [{ text, italic }] flowed as one wrapped line — used by
+  //                 music lines so the piece's title stays italic while the
+  //                 composer's name is NEVER italicized (director)
   //   inlineFont  — font for the inline text (default 'Sans-Italic' for
   //                 music; pass 'Sans-Bold' for citations)
   //   inlineColor — color for the inline text
   //   right       — posture direction, right-justified on the heading line
   // All parts share the heading's font size so their baselines align.
   subHeading(text, opts = {}) {
+    this._padBeforeHeading();
     const SIZE = this.s(this.theme.subSize);
     const boldFont = this._font('bold');
     const labelCS = this.theme.subUpper ? 0.8 : 0;   // reimagined letter-spaces its caps
+    const runs = (opts.inlineRuns && opts.inlineRuns.length)
+      ? opts.inlineRuns.map(r => ({ text: this._normalizeText(r.text), italic: !!r.italic }))
+      : null;
+    const hasInline = !!(opts.inline || runs);
     // Classic joins the label to its inline title with an em-dash ("Hymn—Title").
     const label = (this.theme.subUpper ? String(text).toUpperCase() : String(text))
-      + (this.theme.subDash && opts.inline ? '—' : '');
+      + (this.theme.subDash && hasInline ? '—' : '');
     // Classic callers never pass inlineFont/inlineColor (all inlines are
     // italic serif); reimagined callers pass bold for scripture citations.
     const inlineFontName = opts.inlineFont || this._font('italic');
@@ -560,7 +595,7 @@ class WorshipAidPdfGenerator {
       rightW = this.doc.widthOfString(opts.right);
     }
     const gap = this.theme.subDash ? this.s(1.5) : this.s(6);
-    const inlineX = this.MARGIN_SIDE + headingW + (opts.inline ? gap : 0);
+    const inlineX = this.MARGIN_SIDE + headingW + (hasInline ? gap : 0);
     // Inline text may wrap; it gets the room between the heading and the
     // right-justified posture direction (or the right margin).
     const rightEdge = this.PAGE_WIDTH - this.MARGIN_SIDE - (rightW ? rightW + gap : 0);
@@ -568,13 +603,24 @@ class WorshipAidPdfGenerator {
 
     // Height of the line = tallest part (inline text can wrap to 2+ lines).
     let blockH = this.doc.fontSize(SIZE).font(boldFont).currentLineHeight(true);
-    if (opts.inline) {
+    if (runs) {
+      // Mixed italic/roman runs: measure the concatenated text in both
+      // faces and keep the taller answer — their advance widths differ by
+      // a hair, and the block must never measure shorter than it draws.
+      const joined = runs.map(r => r.text).join('');
+      this.doc.fontSize(SIZE).font(this._font('italic'));
+      const hItal = this.doc.heightOfString(joined, { width: inlineW });
+      this.doc.font(this._font('body'));
+      const hRoman = this.doc.heightOfString(joined, { width: inlineW });
+      blockH = Math.max(blockH, hItal, hRoman);
+    } else if (opts.inline) {
       this.doc.fontSize(SIZE).font(inlineFontName);
       blockH = Math.max(blockH, this.doc.heightOfString(String(opts.inline), { width: inlineW }));
     }
 
     if (this._dryRun) {
       this.y = startY + blockH + this.s(2);
+      this._lastGapAfter = this.s(2);
       this.doc.font(this._font('body'));
       return;
     }
@@ -592,13 +638,22 @@ class WorshipAidPdfGenerator {
       this.doc.fontSize(SIZE).fillColor(this._color('rubric')).font(this._font('italic'))
         .text(opts.right, rightEdge, startY, { width: rightW, align: 'right', lineBreak: false });
     }
-    // Inline title/composer or scripture citation.
-    if (opts.inline) {
+    // Inline title/composer (mixed runs) or scripture citation.
+    if (runs) {
+      this.doc.fontSize(SIZE).fillColor(inlineColor);
+      runs.forEach((r, i) => {
+        this.doc.font(r.italic ? this._font('italic') : this._font('body'));
+        if (i === 0) this.doc.text(r.text, inlineX, startY, { width: inlineW, continued: runs.length > 1 });
+        else this.doc.text(r.text, { width: inlineW, continued: i < runs.length - 1 });
+      });
+      blockH = Math.max(blockH, this.doc.y - startY);
+    } else if (opts.inline) {
       this.doc.fontSize(SIZE).fillColor(inlineColor).font(inlineFontName)
         .text(String(opts.inline), inlineX, startY, { width: inlineW });
     }
 
     this.y = startY + blockH + this.s(2);
+    this._lastGapAfter = this.s(2);
     this.doc.font(this._font('body'));
     this._trackY();
   }
@@ -607,17 +662,55 @@ class WorshipAidPdfGenerator {
   // the heading line with the redundant slot label dropped (director: "don't
   // restate what it is; only provide the title and composer"). When a slot
   // carries different pieces per Mass time, the heading stands alone and each
-  // piece is listed on its own line below (still label-free).
+  // piece is listed on its own line below (still label-free). The title is
+  // italic; the composer's name is NEVER italicized (director, 17th Sunday
+  // OT proof) — so both paths draw mixed-style runs.
   musicHeading(heading, titleField, composerField, opts = {}) {
     const items = formatMusicSlot(this.data, titleField, composerField);
     if (items.length <= 1) {
-      this.subHeading(heading, { inline: items[0] ? renderMusicLineText(items[0]) : undefined, right: opts.right });
+      this.subHeading(heading, { inlineRuns: items[0] ? renderMusicLineRuns(items[0]) : undefined, right: opts.right });
     } else {
       this.subHeading(heading, { right: opts.right });
       for (const item of items) {
-        this.bodyText(renderMusicLineText(item), { italic: true, size: 8.5, gap: 1 });
+        this._runsLine(renderMusicLineRuns(item), { size: 8.5, gap: 1 });
       }
     }
+  }
+
+  // A wrapped body-size line of mixed italic/roman runs (a multi-Mass music
+  // listing: italic title, roman composer + time label). Dry-run aware.
+  _runsLine(runs, opts = {}) {
+    const size = this.s(opts.size || 9) * this.textScale;
+    const x = this.MARGIN_SIDE;
+    const width = this.CONTENT_WIDTH;
+    const gapAfter = this.s(opts.gap !== undefined ? opts.gap : 3);
+    const lineGap = this.s(1) * this.textScale;
+    const norm = runs.map(r => ({ text: this._normalizeText(r.text), italic: !!r.italic }));
+    const joined = norm.map(r => r.text).join('');
+    this.doc.fontSize(size).font(this._font('italic'));
+    const hItal = this.doc.heightOfString(joined, { width, lineGap });
+    this.doc.font(this._font('body'));
+    const hRoman = this.doc.heightOfString(joined, { width, lineGap });
+    const h = Math.max(hItal, hRoman);
+    this._lastGapAfter = gapAfter;
+    if (this._dryRun) {
+      this.y += h + gapAfter;
+      return;
+    }
+    if (this._bottom() - this.y < this.doc.currentLineHeight(true)) {
+      this._warnClipped();
+      this.doc.font(this._font('body'));
+      return;
+    }
+    this.doc.fontSize(size).fillColor(this._color('body'));
+    norm.forEach((r, i) => {
+      this.doc.font(r.italic ? this._font('italic') : this._font('body'));
+      if (i === 0) this.doc.text(r.text, x, this.y, { width, lineGap, continued: norm.length > 1 });
+      else this.doc.text(r.text, { width, lineGap, continued: i < norm.length - 1 });
+    });
+    this.y = Math.min(this.doc.y, this._bottom()) + gapAfter;
+    this.doc.font(this._font('body'));
+    this._trackY();
   }
 
   rubric(text, align) {
@@ -688,12 +781,44 @@ class WorshipAidPdfGenerator {
     return Math.min(need, pageH);
   }
 
+  // A fit block adapts to the space left on the CURRENT page instead of
+  // breaking to a new one: its variants are tried in order of preference and
+  // the first whose measured height fits the remaining room wins (the
+  // Penitential Act: full text → two columns → heading only, per the
+  // director). Measurement seeds the worst-case heading pad so a variant can
+  // never measure shorter than it later renders. Returns null when no
+  // variant fits (the caller omits the block with a warning).
+  _pickFitVariant(block, remaining) {
+    const gapBefore = this._lastGapAfter;
+    let chosen = null;
+    for (let i = 0; i < block.fit.length; i++) {
+      this._lastGapAfter = 0; // worst-case pad above the variant's heading
+      const h = this._measureBlock({ render: block.fit[i] });
+      if (h <= remaining + 1) {
+        chosen = { index: i, height: h, trailing: this._lastGapAfter, render: block.fit[i] };
+        break;
+      }
+    }
+    this._lastGapAfter = gapBefore;
+    return chosen;
+  }
+
   _countPagesNeeded(blocks) {
     const pageH = this._bottom() - this.MARGIN_TOP;
-    const heights = blocks.map(bl => Math.min(this._measureBlock(bl), pageH));
+    // Fit blocks are placement-dependent; they are resolved inside the
+    // packing loop below instead of pre-measured here.
+    const heights = blocks.map(bl => bl.fit ? 0 : Math.min(this._measureBlock(bl), pageH));
     let pages = 1;
     let y = this.MARGIN_TOP;
     for (let i = 0; i < blocks.length; i++) {
+      if (blocks[i].fit) {
+        const v = this._pickFitVariant(blocks[i], this._bottom() - y);
+        if (v) {
+          y += v.height;
+          this._lastGapAfter = v.trailing;
+        }
+        continue; // a fit block never forces a page break
+      }
       const need = this._chainNeed(blocks, heights, i, pageH);
       // Same fit tolerance as the render loop, or a block within 1pt of
       // exactly fitting would trigger a needless global shrink.
@@ -734,9 +859,27 @@ class WorshipAidPdfGenerator {
     this.newPage();
     let pageNo = 2;
     const pageH = this._bottom() - this.MARGIN_TOP;
-    const heights = blocks.map(bl => this._measureBlock(bl));
+    const heights = blocks.map(bl => bl.fit ? 0 : this._measureBlock(bl));
+    this._lastGapAfter = undefined;
     for (let i = 0; i < blocks.length; i++) {
       const block = blocks[i];
+
+      // A fit block stays on the current page no matter what, choosing the
+      // first of its variants that fits the room left (Penitential Act:
+      // full text → two columns → heading only). If nothing fits at all,
+      // the block is omitted with a loud warning — never silently.
+      if (block.fit) {
+        const v = this._pickFitVariant(block, this._bottom() - this.y);
+        if (!v) {
+          if (block.fitNoneWarning) this.warnings.push(block.fitNoneWarning);
+          continue;
+        }
+        if (block.fitWarnings && block.fitWarnings[v.index]) {
+          this.warnings.push(block.fitWarnings[v.index]);
+        }
+        v.render();
+        continue;
+      }
 
       // A bottom-anchored block (the classic QR/licensing footer) renders at
       // the foot of the FINAL page, like a back cover — padding any blank
@@ -841,6 +984,7 @@ class WorshipAidPdfGenerator {
       drawW = drawW * (available / drawH);
       drawH = available;
     }
+    this._lastGapAfter = this.s(4);
     if (this._dryRun) {
       this.y += drawH + this.s(4);
       return true;
@@ -879,6 +1023,7 @@ class WorshipAidPdfGenerator {
       if (!this._dryRun) this.warnings.push('Page is too full to reserve space for pasted hymn music.');
       return;
     }
+    this._lastGapAfter = this.s(6);
     if (this._dryRun) {
       this.y += h + this.s(6);
       return;
@@ -927,6 +1072,7 @@ class WorshipAidPdfGenerator {
       return;
     }
     const drawH = Math.min(h, available);
+    this._lastGapAfter = this.s(4);
     if (this._dryRun) { this.y += drawH + this.s(4); return; }
     this.doc.save()
       .rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, drawH)
@@ -1298,38 +1444,52 @@ class WorshipAidPdfGenerator {
     }
 
     if ((this.ss.penitentialAct || 'confiteor') === 'confiteor') {
-      b(() => {
-        this.subHeading('Penitential Act');
-        this.bodyText(CONFITEOR, { size: 8, gap: 3 });
+      // Director (17th Sunday OT proof): the Penitential Act heading and
+      // text must share the page with the entrance hymn — never spill onto
+      // the next page. If the full text doesn't fit the room left it
+      // re-flows into two columns; if even that won't fit, the text is
+      // omitted (heading only) with an export warning.
+      b(null, {
+        fit: [
+          () => { this.subHeading('Penitential Act'); this.bodyText(CONFITEOR, { size: 8, gap: 3 }); },
+          () => { this.subHeading('Penitential Act'); this._twoColumnText(CONFITEOR, { size: 8 }); },
+          () => { this.subHeading('Penitential Act'); }
+        ],
+        fitWarnings: [null, null,
+          'The Penitential Act text did not fit on the page with the entrance hymn (even in two columns) — the heading printed without the text.'],
+        fitNoneWarning: 'The Penitential Act could not fit on the page with the entrance hymn and was omitted.'
       });
     }
 
+    const showGloria = this.ss.gloria !== undefined ? this.ss.gloria :
+      (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
+
+    // Lord Have Mercy + Gloria + Collect are ONE atomic block: the director
+    // requires the Gloria heading/notation and the Collect on the same page
+    // as the Lord Have Mercy. If the group doesn't fit the room left it
+    // moves whole to a fresh page (a group taller than a full page shrinks
+    // its notation to fit, with a warning — never splits).
     b(() => {
       this.musicHeading('Lord, Have Mercy', 'kyrieSetting', 'kyrieComposer');
       this.ordinaryMusicSpace('kyrie', 'Kyrie — music notation');
-    });
-
-    const showGloria = this.ss.gloria !== undefined ? this.ss.gloria :
-      (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
-    if (showGloria) {
-      b(() => {
+      if (showGloria) {
         this.subHeading('Gloria', { inline: this.ss.gloriaSetting || undefined });
         if (this._slotHasMusic('gloria')) {
           this.ordinaryMusicSpace('gloria', 'Gloria — music notation');
         } else {
           this.bodyText('Glory to God in the highest, and on earth peace to people of good will.');
         }
-      });
-    }
+      }
+      // The Collect (opening prayer) closes the Introductory Rites on the
+      // same page (director); "Please be seated" and the "The Liturgy of
+      // the Word" title follow in the next block.
+      this.subHeading('Collect');
+    }, { keepNext: true });
 
-    // --- The Collect + The Liturgy of the Word ---
-    // The Collect (opening prayer) closes the Introductory Rites; its heading
-    // follows the Gloria, then "Please be seated" sits between it and the
-    // "The Liturgy of the Word" title (director). The Collect heading must
-    // not strand at the foot of a page away from that transition: keepNext
-    // chains it (and the Children's Liturgy dismissal, when present) to the
-    // section opening, without welding the reading's first paragraph into
-    // one giant unsplittable block.
+    // --- The Liturgy of the Word ---
+    // keepNext above chains the Collect group (and the Children's Liturgy
+    // dismissal, when present) to the section opening, without welding the
+    // reading's first paragraph into one giant unsplittable block.
     {
       const paras = String(this.r.firstReadingText || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
       const wordOpening = () => {
@@ -1338,7 +1498,6 @@ class WorshipAidPdfGenerator {
         this.subHeading('First Reading', { inline: this.r.firstReadingCitation || undefined, inlineFont: 'Sans-Bold', inlineColor: '#333333' });
         if (paras[0]) this.bodyText(paras[0], { size: 9 });
       };
-      b(() => this.subHeading('Collect'), { keepNext: true });
       if (this.data.childrenLiturgyEnabled) {
         // Children leave after the Opening Prayer and return at the Offertory,
         // so the dismissal box separates the Collect from the readings.
@@ -1601,6 +1760,7 @@ class WorshipAidPdfGenerator {
     const x2 = this.MARGIN_SIDE + colW + gap;
     const lineOpts = { lineGap: this.s(0.8) * this.textScale };
     this.doc.fontSize(this.s(size) * this.textScale).fillColor(this._color('body')).font(this._font('body'));
+    this._lastGapAfter = this.s(3);
     if (this._dryRun) {
       const lh = this.doc.heightOfString(leftText, { ...lineOpts, width: colW });
       const rh = this.doc.heightOfString(rightText, { ...lineOpts, width: colW });
@@ -1716,33 +1876,48 @@ class WorshipAidPdfGenerator {
     b(() => this.subHeading('Invocation'));
 
     if ((this.ss.penitentialAct || 'confiteor') === 'confiteor') {
-      b(() => {
-        this.subHeading('Penitential Act');
-        this.bodyText(CONFITEOR, { size: 9, gap: 3 });
+      // Director (17th Sunday OT proof): the Penitential Act heading and
+      // text must share the page with the Processional Hymn and Invocation
+      // — never spill onto the next page. If the full text doesn't fit the
+      // room left it re-flows into two columns; if even that won't fit, the
+      // text is omitted (heading only) with an export warning.
+      b(null, {
+        fit: [
+          () => { this.subHeading('Penitential Act'); this.bodyText(CONFITEOR, { size: 9, gap: 3 }); },
+          () => { this.subHeading('Penitential Act'); this._twoColumnText(CONFITEOR, { size: 9 }); },
+          () => { this.subHeading('Penitential Act'); }
+        ],
+        fitWarnings: [null, null,
+          'The Penitential Act text did not fit on the page with the Processional Hymn (even in two columns) — the heading printed without the text.'],
+        fitNoneWarning: 'The Penitential Act could not fit on the page with the Processional Hymn and was omitted.'
       });
     }
-
-    b(() => {
-      this.musicHeading('Lord Have Mercy', 'kyrieSetting', 'kyrieComposer');
-      this.ordinaryMusicSpace('kyrie', 'Kyrie — music notation');
-    });
 
     const showGloria = this.ss.gloria !== undefined ? this.ss.gloria :
       (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
-    if (showGloria) {
-      b(() => {
+
+    // Lord Have Mercy + Glory to God + Collect are ONE atomic block: the
+    // director requires the Glory to God heading/notation and the Collect
+    // heading (with its "Please sit") on the same page as the Lord Have
+    // Mercy. If the group doesn't fit the room left it moves whole to a
+    // fresh page (a group taller than a full page shrinks its notation to
+    // fit, with a warning — never splits).
+    b(() => {
+      this.musicHeading('Lord Have Mercy', 'kyrieSetting', 'kyrieComposer');
+      this.ordinaryMusicSpace('kyrie', 'Kyrie — music notation');
+      if (showGloria) {
         this.subHeading('Glory to God', { inline: this.ss.gloriaSetting || undefined });
         if (this._slotHasMusic('gloria')) this.ordinaryMusicSpace('gloria', 'Gloria — music notation');
         else this.bodyText('Glory to God in the highest, and on earth peace to people of good will.');
-      });
-    }
+      }
+      this.subHeading('Collect');
+    }, { keepNext: true });
 
-    // Collect + "Please sit" + The Liturgy of the Word: the Collect heading
-    // must never strand at a page foot away from the transition it leads
-    // into. keepNext chains it to the section opening WITHOUT welding the
-    // first reading's opening paragraph into one giant unsplittable block —
-    // if the chain can't fit a page, the paginator degrades gracefully
-    // instead of clipping.
+    // "Please sit" + The Liturgy of the Word: keepNext above chains the
+    // Collect group (and the Children's Liturgy dismissal, when present) to
+    // the section opening WITHOUT welding the first reading's opening
+    // paragraph into one giant unsplittable block — if the chain can't fit
+    // a page, the paginator degrades gracefully instead of clipping.
     {
       const paras = String(this.r.firstReadingText || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
       const wordOpening = () => {
@@ -1751,7 +1926,6 @@ class WorshipAidPdfGenerator {
         this.subHeading('First Reading', { inline: this.r.firstReadingCitation || undefined });
         if (paras[0]) this.bodyText(paras[0], { size: 9 });
       };
-      b(() => this.subHeading('Collect'), { keepNext: true });
       if (this.data.childrenLiturgyEnabled) {
         b(() => this._childrenLiturgyBox(), { keepNext: true });
       }
@@ -1930,6 +2104,7 @@ class WorshipAidPdfGenerator {
       this.doc.font(font).fontSize(this.s(size) * this.textScale);
       contentH += this.doc.heightOfString(text, { width: innerW });
     }
+    this._lastGapAfter = this.s(4);
     if (this._dryRun) {
       this.y += contentH + this.s(12);
       this.doc.font(this._font('body'));
