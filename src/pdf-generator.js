@@ -14,6 +14,7 @@ const { APOSTLES_CREED, NICENE_CREED, RENEWAL_OF_BAPTISMAL_VOWS } = require('./a
 const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, RUBRICS_CLASSIC, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, getHolyHolyHolyText } = require('./assets/text/mass-texts');
 const { getDefaultCopyrightFull } = require('./assets/text/copyright');
 const { formatMusicSlot, renderMusicLineRuns } = require('./music-formatter');
+const { buildLiturgyOutline } = require('./liturgy-outline');
 const { applySeasonDefaults } = require('./config/seasons');
 const { detectOverflows } = require('./validator');
 const { getImageDimensions } = require('./image-utils');
@@ -1382,352 +1383,228 @@ class WorshipAidPdfGenerator {
         { width: boxSize + this.s(12), align: 'center', characterSpacing: 0.5, lineBreak: false });
   }
 
-  // The ordered liturgy as atomic blocks for the flow paginator. Each
-  // block renders at this.y with the shared helpers (all dry-run aware).
-  // Granularity rules:
-  //   * a heading travels with the first piece of its content;
-  //   * a hymn line and its notation image/paste box are ONE block;
-  //   * long prose (readings, gospel) splits into per-paragraph blocks so
-  //     it can flow across pages without orphaning its heading.
+  // The ordered liturgy as atomic flow blocks, built from the shared
+  // liturgy outline (src/liturgy-outline.js) so the PDF and the HTML preview
+  // — and the two designs — can never drift apart. Each op is drawn through
+  // the theme-aware primitives; each outline block becomes one flow block,
+  // except readings (split into per-paragraph blocks so prose can flow
+  // without orphaning its heading) and the Penitential Act (a fit block).
   _buildContentBlocks() {
+    const outline = buildLiturgyOutline(this.data, {
+      design: this.design, seasonalSettings: this.ss, readings: this.r,
+      parishSettings: this.parishSettings
+    });
+    return this._blocksFromOutline(outline.blocks);
+  }
+
+  // Classic uses the same outline (design: 'classic'); the outline resolves
+  // every naming/ordering difference, so there is no separate builder.
+  _buildContentBlocksClassic() { return this._buildContentBlocks(); }
+
+  // Translate outline blocks into flow blocks for renderContentFlow.
+  _blocksFromOutline(oblocks) {
     const blocks = [];
-    // opts.keepNext: this block must not be the last thing on its page —
-    // the paginator keeps it with the following block (see renderContentFlow).
-    const b = (fn, opts) => blocks.push({ render: fn, ...(opts || {}) });
-
-    // Heading (with the scripture citation inline on the same line) + first
-    // paragraph stay together; the remaining paragraphs flow as their own
-    // blocks. opts.right places a posture direction on the heading line.
-    const reading = (heading, citation, text, opts = {}) => {
-      const paras = String(text || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
-      b(() => {
-        this.subHeading(heading, { inline: citation || undefined, inlineFont: 'Sans-Bold', inlineColor: '#333333', right: opts.right });
-        if (paras[0]) this.bodyText(paras[0], opts);
-      });
-      for (const p of paras.slice(1)) b(() => this.bodyText(p, opts));
-    };
-
-    // --- The Introductory Rites ---
-    b(() => {
-      this.sectionHeader('The Introductory Rites');
-      this.musicHeading('Organ Prelude', 'organPrelude', 'organPreludeComposer');
-    });
-
-    const entranceType = this.ss.entranceType || 'processional';
-    b(() => {
-      // "Please stand" rides on the entrance heading line, right-justified
-      // (director: same line as the heading and the hymn title).
-      this.musicHeading(
-        entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon',
-        'processionalOrEntrance', 'processionalOrEntranceComposer',
-        { right: RUBRICS.stand });
-      if (entranceType === 'processional') {
-        this.hymnMusicSpace({ slot: 'processional' });
+    for (const ob of oblocks) {
+      const ops = ob.ops || [];
+      // The Penitential Act adapts to the room left on the page instead of
+      // breaking (director): full text -> two columns -> heading only, then
+      // omitted with a warning if nothing fits.
+      if (ob.penitential) {
+        const pen = ops.find(o => o.op === 'penitential');
+        const size = pen ? pen.size : 8;
+        const text = pen ? pen.text : '';
+        blocks.push({
+          fit: [
+            () => { this.subHeading('Penitential Act'); this.bodyText(text, { size, gap: 3 }); },
+            () => { this.subHeading('Penitential Act'); this._twoColumnText(text, { size }); },
+            () => { this.subHeading('Penitential Act'); }
+          ],
+          fitWarnings: [null, null,
+            `The Penitential Act text did not fit on the page with the ${this.design === 'classic' ? 'Processional Hymn' : 'entrance hymn'} (even in two columns) — the heading printed without the text.`],
+          fitNoneWarning: `The Penitential Act could not fit on the page with the ${this.design === 'classic' ? 'Processional Hymn' : 'entrance hymn'} and was omitted.`
+        });
+        continue;
       }
-    });
-
-    if (this.showAdventWreath) {
-      b(() => {
-        this.y += this.s(3);
-        const boxH = this.s(18);
-        if (!this._dryRun) {
-          this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, boxH)
-            .fillColor('#f0eaf5').fill().restore();
-          this.doc.fontSize(this.s(9)).fillColor(COLORS.purple).font('Sans-Bold')
-            .text('Lighting of the Advent Wreath', this.MARGIN_SIDE, this.y + this.s(4),
-              { width: this.CONTENT_WIDTH, align: 'center', lineBreak: false });
-          this.doc.font('Sans');
-        }
-        this.y += boxH + this.s(4);
-        this._trackY();
+      // A reading is the last op in its block: heading + first paragraph stay
+      // with whatever precedes them (a rubric + section opening); the rest of
+      // the paragraphs flow as their own blocks.
+      const last = ops[ops.length - 1];
+      if (last && last.op === 'reading') {
+        const head = ops.slice(0, -1);
+        const paras = String(last.text || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+        blocks.push({
+          render: () => { for (const o of head) this._renderOp(o); this._renderReadingHead(last, paras[0]); },
+          keepNext: ob.keepNext, anchorBottom: ob.anchorBottom
+        });
+        for (const para of paras.slice(1)) blocks.push({ render: () => this.bodyText(para, { size: last.size }) });
+        continue;
+      }
+      blocks.push({
+        render: () => { for (const o of ops) this._renderOp(o); },
+        keepNext: ob.keepNext, anchorBottom: ob.anchorBottom
       });
     }
-
-    if ((this.ss.penitentialAct || 'confiteor') === 'confiteor') {
-      // Director (17th Sunday OT proof): the Penitential Act heading and
-      // text must share the page with the entrance hymn — never spill onto
-      // the next page. If the full text doesn't fit the room left it
-      // re-flows into two columns; if even that won't fit, the text is
-      // omitted (heading only) with an export warning.
-      b(null, {
-        fit: [
-          () => { this.subHeading('Penitential Act'); this.bodyText(CONFITEOR, { size: 8, gap: 3 }); },
-          () => { this.subHeading('Penitential Act'); this._twoColumnText(CONFITEOR, { size: 8 }); },
-          () => { this.subHeading('Penitential Act'); }
-        ],
-        fitWarnings: [null, null,
-          'The Penitential Act text did not fit on the page with the entrance hymn (even in two columns) — the heading printed without the text.'],
-        fitNoneWarning: 'The Penitential Act could not fit on the page with the entrance hymn and was omitted.'
-      });
-    }
-
-    const showGloria = this.ss.gloria !== undefined ? this.ss.gloria :
-      (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
-
-    // Lord Have Mercy + Gloria + Collect are ONE atomic block: the director
-    // requires the Gloria heading/notation and the Collect on the same page
-    // as the Lord Have Mercy. If the group doesn't fit the room left it
-    // moves whole to a fresh page (a group taller than a full page shrinks
-    // its notation to fit, with a warning — never splits).
-    b(() => {
-      this.musicHeading('Lord, Have Mercy', 'kyrieSetting', 'kyrieComposer');
-      this.ordinaryMusicSpace('kyrie', 'Kyrie — music notation');
-      if (showGloria) {
-        this.subHeading('Gloria', { inline: this.ss.gloriaSetting || undefined });
-        if (this._slotHasMusic('gloria')) {
-          this.ordinaryMusicSpace('gloria', 'Gloria — music notation');
-        } else {
-          this.bodyText('Glory to God in the highest, and on earth peace to people of good will.');
-        }
-      }
-      // The Collect (opening prayer) closes the Introductory Rites on the
-      // same page (director); "Please be seated" and the "The Liturgy of
-      // the Word" title follow in the next block.
-      this.subHeading('Collect');
-    }, { keepNext: true });
-
-    // --- The Liturgy of the Word ---
-    // keepNext above chains the Collect group (and the Children's Liturgy
-    // dismissal, when present) to the section opening, without welding the
-    // reading's first paragraph into one giant unsplittable block.
-    {
-      const paras = String(this.r.firstReadingText || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
-      const wordOpening = () => {
-        this.rubric(RUBRICS.sit);
-        this.sectionHeader('The Liturgy of the Word');
-        this.subHeading('First Reading', { inline: this.r.firstReadingCitation || undefined, inlineFont: 'Sans-Bold', inlineColor: '#333333' });
-        if (paras[0]) this.bodyText(paras[0], { size: 9 });
-      };
-      if (this.data.childrenLiturgyEnabled) {
-        // Children leave after the Opening Prayer and return at the Offertory,
-        // so the dismissal box separates the Collect from the readings.
-        b(() => this._childrenLiturgyBox(), { keepNext: true });
-      }
-      b(wordOpening);
-      for (const p of paras.slice(1)) b(() => this.bodyText(p, { size: 9 }));
-    }
-
-    b(() => {
-      // Responsorial Psalm has no piece "title" — only the scripture
-      // reference goes on the heading line (director). The setting/composer
-      // line is dropped; the notation itself carries the music.
-      this.subHeading('Responsorial Psalm', { inline: this.r.psalmCitation || undefined, inlineFont: 'Sans-Bold', inlineColor: '#333333' });
-      // Music (uploaded refrain notation or a paste area) replaces the
-      // text refrain — the notation carries the words.
-      if (this._slotHasMusic('psalmRefrain')) {
-        this.ordinaryMusicSpace('psalmRefrain', 'Responsorial Psalm refrain — music notation');
-      } else if (this.r.psalmRefrain) {
-        this.bodyText(`R. ${this.r.psalmRefrain}`, { bold: true, size: 9 });
-      }
-    });
-    if (this.r.psalmVerses) {
-      // Each verse ends with "R." to cue the people back to the response,
-      // and a blank space separates the verses (director). The trailing "R."
-      // is only added when the verse doesn't already carry one.
-      for (const v of String(this.r.psalmVerses).split(/\n\s*\n/).map(p => p.trim()).filter(Boolean)) {
-        const verse = /(?:^|\s)R\.?\s*$/.test(v) ? v : `${v} R.`;
-        b(() => this.bodyText(verse, { size: 8.5, x: this.MARGIN_SIDE + this.s(10), width: this.CONTENT_WIDTH - this.s(10), gap: 7 }));
-      }
-    }
-
-    if (!this.r.noSecondReading && this.r.secondReadingCitation) {
-      reading('Second Reading', this.r.secondReadingCitation, this.r.secondReadingText, { size: 9 });
-    }
-
-    b(() => {
-      // Stand for the Gospel Acclamation — direction right-justified on the
-      // heading line, with the acclamation's reference inline (director).
-      this.subHeading('Gospel Acclamation', { inline: this.r.gospelAcclamationReference || undefined, inlineFont: 'Sans-Bold', inlineColor: '#333333', right: RUBRICS.stand });
-      const isLenten = this.data.liturgicalSeason === 'lent';
-      let acclamationText;
-      if (isLenten) {
-        acclamationText = (this.ss.lentenAcclamation === 'alternate') ? GOSPEL_ACCLAMATION_LENTEN_ALT : GOSPEL_ACCLAMATION_LENTEN;
-      } else {
-        acclamationText = GOSPEL_ACCLAMATION_STANDARD;
-      }
-      // Music (uploaded notation or a paste area) replaces the sung
-      // acclamation text; the cantor's verse keeps printing below.
-      if (this._slotHasMusic('gospelAcclamation')) {
-        this.ordinaryMusicSpace('gospelAcclamation', 'Gospel Acclamation — music notation');
-      } else {
-        this.bodyText(acclamationText, { bold: true, size: 9 });
-      }
-      if (this.r.gospelAcclamationVerse) this.bodyText(this.r.gospelAcclamationVerse, { italic: true, size: 8.5 });
-    });
-
-    // --- Gospel, Homily, Creed --- (already standing for the Gospel)
-    reading('Gospel', this.r.gospelCitation, this.r.gospelText, { size: 9.5 });
-
-    // Homily: "Please be seated" right-justified on the heading line. The
-    // congregation then stands for the Creed (direction on the Creed line).
-    b(() => this.subHeading('Homily', { right: RUBRICS.sit }));
-
-    {
-      const creedType = this.ss.creedType || 'nicene';
-      const creedHeading = {
-        apostles:       "The Apostles' Creed",
-        baptismal_vows: 'Renewal of Baptismal Vows',
-        nicene:         'The Nicene Creed'
-      }[creedType] || 'The Nicene Creed';
-      const creedText = {
-        apostles:       APOSTLES_CREED,
-        baptismal_vows: RENEWAL_OF_BAPTISMAL_VOWS,
-        nicene:         NICENE_CREED
-      }[creedType] || NICENE_CREED;
-      b(() => {
-        this.subHeading(creedHeading, { right: RUBRICS.stand });
-        if (this.ss.twoColumnCreed && creedType !== 'baptismal_vows') {
-          this._renderCreedTwoColumn(creedText);
-        } else {
-          this.bodyText(creedText);
-        }
-      });
-    }
-
-    // Prayer of the Faithful — heading only (the "The intentions are read…"
-    // line was dropped as unnecessary per the director).
-    b(() => this.subHeading('Prayer of the Faithful'));
-
-    // --- The Liturgy of the Eucharist ---
-    b(() => {
-      // "Please be seated" sits before this section title (director).
-      this.rubric(RUBRICS.sit);
-      this.sectionHeader('The Liturgy of the Eucharist');
-      this.musicHeading('Offertory', 'offertoryAnthem', 'offertoryAnthemComposer');
-      if (this.data.childrenLiturgyEnabled) {
-        this.rubric(`Children return from Children's Liturgy of the Word (${resolveChildrenLiturgyTimes(this.data).join(' & ')})`);
-      }
-    });
-
-    b(() => {
-      // Stand for the Invitation to Prayer — direction right-justified on the
-      // heading line (director).
-      this.subHeading('Invitation to Prayer', { right: RUBRICS.stand });
-      this.bodyText(`Priest: ${INVITATION_TO_PRAYER.priest}`);
-      this.bodyText(`All: ${INVITATION_TO_PRAYER.all}`, { bold: true });
-    });
-
-    b(() => {
-      // Sanctus language: per-aid override > parish default > English. The
-      // setting name rides inline on the heading.
-      const holyHolyLanguage = this.ss.holyHolyLanguage || this.parishSettings.defaultSanctusLanguage || 'english';
-      this.subHeading(holyHolyLanguage === 'latin' ? 'Sanctus' : 'Holy, Holy, Holy',
-        { inline: this.ss.holyHolySetting || 'Mass of St. Theresa' });
-      if (this._slotHasMusic('sanctus')) {
-        this.ordinaryMusicSpace('sanctus', 'Holy, Holy, Holy — music notation');
-      } else {
-        this.bodyText(getHolyHolyHolyText(holyHolyLanguage));
-      }
-    });
-
-    b(() => {
-      this.rubric(RUBRICS.kneel);
-      this.subHeading('Mystery of Faith', { inline: this.ss.mysteryOfFaithSetting || 'Mass of St. Theresa' });
-      this.ordinaryMusicSpace('mysteryOfFaith', 'Mystery of Faith — music notation');
-    });
-
-    // Great Amen, then "Please stand" between it and the Communion Rite title.
-    b(() => this.subHeading('Great Amen'));
-
-    // --- The Communion Rite ---
-    b(() => {
-      // "Please stand" appears below "Great Amen" and above this section
-      // title (director). The Lord's Prayer text is dropped (unnecessary).
-      this.rubric(RUBRICS.stand);
-      this.sectionHeader('The Communion Rite');
-      this.subHeading("The Lord's Prayer");
-    });
-
-    b(() => this.subHeading('Sign of Peace'));
-
-    b(() => {
-      this.subHeading('Lamb of God', { inline: this.ss.lambOfGodSetting || 'Mass of St. Theresa' });
-      this.ordinaryMusicSpace('lambOfGod', 'Lamb of God — music notation');
-      // "Please kneel" belongs with the Lamb of God (the congregation kneels
-      // after the Agnus Dei); it stays in this block so it can't strand alone
-      // at the top of the next page, and it is centered (director).
-      this.rubric(RUBRICS.kneel);
-    });
-
-    b(() => {
-      this.musicHeading('Communion Hymn', 'communionHymn', 'communionHymnComposer');
-      this.hymnMusicSpace({ slot: 'communion' });
-    });
-
-    b(() => {
-      this.musicHeading('Choral Anthem', 'choralAnthemConcluding', 'choralAnthemConcludingComposer');
-    });
-
-    // Prayer after Communion — the congregation stands for the priest's
-    // closing prayer of the Communion Rite. "Please stand" sits below the
-    // Choral Anthem and above this heading (director); it is NOT repeated at
-    // the Blessing, where the people are already standing.
-    b(() => {
-      this.rubric(RUBRICS.stand);
-      this.subHeading('Prayer after Communion');
-    });
-
-    // --- The Concluding Rites ---
-    b(() => {
-      this.sectionHeader('The Concluding Rites');
-      this.musicHeading('Hymn of Thanksgiving', 'hymnOfThanksgiving', 'hymnOfThanksgivingComposer');
-      this.hymnMusicSpace({ slot: 'thanksgiving' });
-    });
-
-    // Blessing & Dismissal — heading only (the Priest/Deacon dialogue was
-    // dropped as unnecessary per the director). No "Please stand" here: the
-    // people already stood for the Prayer after Communion.
-    b(() => {
-      this.subHeading('Blessing & Dismissal');
-    });
-
-    if (this.includePostlude) {
-      b(() => {
-        this.musicHeading('Organ Postlude', 'organPostlude', 'organPostludeComposer');
-      });
-    }
-
-    if (this.data.announcements) {
-      b(() => {
-        this.y += this.s(4);
-        if (!this._dryRun) {
-          this.doc.save()
-            .moveTo(this.MARGIN_SIDE, this.y)
-            .lineTo(this.PAGE_WIDTH - this.MARGIN_SIDE, this.y)
-            .lineWidth(0.5).strokeColor(COLORS.gold).stroke().restore();
-        }
-        this.y += this.s(4);
-        this.subHeading('Announcements');
-        this.bodyText(this.data.announcements, { size: 7.5 });
-      });
-    }
-
-    // Special notes and the parish's standing closing message (formerly
-    // the back cover), then the full copyright block.
-    if (this.data.specialNotes) {
-      b(() => {
-        this.y += this.s(4);
-        this.bodyText(this.data.specialNotes, { italic: true, size: 8.5, align: 'center', color: COLORS.muted });
-      });
-    }
-    if (this.parishSettings.closingMessage) {
-      b(() => {
-        this.y += this.s(2);
-        this.bodyText(this.parishSettings.closingMessage, { size: 8, align: 'center', color: COLORS.muted });
-      });
-    }
-
-    b(() => {
-      const copyrightFull = this.parishSettings.copyrightFull ||
-        getDefaultCopyrightFull(this.parishSettings.onelicenseNumber);
-      this.y += this.s(8);
-      this.doc.fontSize(this.s(6.5) * this.textScale).fillColor(COLORS.light).font('Sans');
-      this._textBlock(copyrightFull, this.MARGIN_SIDE + this.s(10), {
-        width: this.CONTENT_WIDTH - this.s(20), align: 'center', lineGap: this.s(1.5) * this.textScale
-      }, 0);
-    });
-
     return blocks;
+  }
+
+  // Inline-style opts for a scripture citation on a heading line: bold dark
+  // text in the reimagined design, plain italic in the classic serif.
+  _citationInline(citation) {
+    if (citation === undefined || citation === null || citation === '') return {};
+    return this.design === 'classic'
+      ? { inline: citation }
+      : { inline: citation, inlineFont: 'Sans-Bold', inlineColor: '#333333' };
+  }
+
+  // Draw a reading's heading (with its citation inline) + its first paragraph.
+  _renderReadingHead(op, firstPara) {
+    this.subHeading(op.heading, { ...this._citationInline(op.citation), right: op.right });
+    if (firstPara) this.bodyText(firstPara, { size: op.size });
+  }
+
+  // Draw one outline op through the theme-aware primitives.
+  _renderOp(op) {
+    switch (op.op) {
+      case 'section':
+        this.sectionHeader(op.title); break;
+      case 'music':
+        this.musicHeading(op.heading, op.titleField, op.composerField, { right: op.right }); break;
+      case 'hymnSpace':
+        this.hymnMusicSpace({ slot: op.slot }); break;
+      case 'ordinarySpace':
+        this.ordinaryMusicSpace(op.slot, op.label); break;
+      case 'setting': {
+        this.subHeading(op.heading, { inline: op.setting || undefined, right: op.right });
+        if (op.mode === 'musicOnly') {
+          this.ordinaryMusicSpace(op.slot, op.label);
+        } else if (this._slotHasMusic(op.slot)) {
+          this.ordinaryMusicSpace(op.slot, op.label);
+        } else if (op.text) {
+          this.bodyText(op.text);
+        }
+        break;
+      }
+      case 'subheading':
+        this.subHeading(op.heading, {
+          ...(op.citation ? this._citationInline(op.inline) : (op.inline ? { inline: op.inline } : {})),
+          right: op.right
+        });
+        break;
+      case 'reading':
+        // Non-splitting fallback (readings are normally expanded by
+        // _blocksFromOutline); render heading + full text.
+        this._renderReadingHead(op, String(op.text || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean).join('\n\n'));
+        break;
+      case 'rubric':
+        this.rubric(op.text); break;
+      case 'psalm': {
+        this.subHeading('Responsorial Psalm', this._citationInline(op.citation));
+        if (this._slotHasMusic(op.slot)) {
+          this.ordinaryMusicSpace(op.slot, 'Responsorial Psalm refrain — music notation');
+        } else if (op.refrain) {
+          this.bodyText(`R. ${op.refrain}`, { bold: true, size: 9 });
+        }
+        if (op.twoColumn && op.strophes && op.strophes.length) {
+          this._twoColumnText(op.strophes.join('\n'), { size: 8.5 });
+        }
+        break;
+      }
+      case 'psalmVerse':
+        this.bodyText(op.text, { size: 8.5, x: this.MARGIN_SIDE + this.s(10), width: this.CONTENT_WIDTH - this.s(10), gap: 7 });
+        break;
+      case 'creed':
+        this.subHeading(op.heading, { right: op.right });
+        if (op.twoColumn) this._renderCreedTwoColumn(op.text);
+        else this.bodyText(op.text);
+        break;
+      case 'gospelAccl':
+        this.subHeading(op.heading, { ...this._citationInline(op.reference), right: op.right });
+        if (this._slotHasMusic(op.slot)) {
+          this.ordinaryMusicSpace(op.slot, 'Gospel Acclamation — music notation');
+        } else {
+          this.bodyText(op.text, { bold: true, size: 9 });
+        }
+        if (op.verse) {
+          if (op.verseStyle === 'hanging') this._hangingLabel('Verse:', op.verse, { size: 9 });
+          else this.bodyText(op.verse, { italic: true, size: 8.5 });
+        }
+        break;
+      case 'invitationText':
+        this.bodyText(`Priest: ${op.priest}`);
+        this.bodyText(`All: ${op.all}`, { bold: true });
+        break;
+      case 'childrenBox':
+        this._childrenLiturgyBox(); break;
+      case 'childrenReturn':
+        this.rubric(op.text); break;
+      case 'adventWreath':
+        this._renderAdventWreath(); break;
+      case 'announcements':
+        this._renderAnnouncements(op); break;
+      case 'notes':
+        this.y += this.s(4);
+        this.bodyText(op.text, { italic: true, size: 8.5, align: 'center', color: this._color('muted') });
+        break;
+      case 'closing':
+        this.y += this.s(2);
+        this.bodyText(op.text, { size: 8, align: 'center', color: this._color('muted') });
+        break;
+      case 'copyright':
+        this._renderCopyrightBlock(); break;
+      case 'classicFooter':
+        this._classicFooterBlock(); break;
+      default:
+        break;
+    }
+  }
+
+  // Advent-wreath marker: a tinted box (reimagined) or bold centered line
+  // (classic), matching each design's in-house look.
+  _renderAdventWreath() {
+    if (this.design === 'classic') {
+      this.bodyText('Lighting of the Advent Wreath', { bold: true, align: 'center', size: 9.5, gap: 4 });
+      return;
+    }
+    this.y += this.s(3);
+    const boxH = this.s(18);
+    if (!this._dryRun) {
+      this.doc.save().rect(this.MARGIN_SIDE, this.y, this.CONTENT_WIDTH, boxH)
+        .fillColor('#f0eaf5').fill().restore();
+      this.doc.fontSize(this.s(9)).fillColor(COLORS.purple).font('Sans-Bold')
+        .text('Lighting of the Advent Wreath', this.MARGIN_SIDE, this.y + this.s(4),
+          { width: this.CONTENT_WIDTH, align: 'center', lineBreak: false });
+      this.doc.font('Sans');
+    }
+    this.y += boxH + this.s(4);
+    this._lastGapAfter = this.s(4);
+    this._trackY();
+  }
+
+  // Announcements. Reimagined: a gold rule + heading + small body. Classic:
+  // heading (with a "Please sit" on the line) + body, no rule.
+  _renderAnnouncements(op) {
+    if (op.rule) {
+      this.y += this.s(4);
+      if (!this._dryRun) {
+        this.doc.save().moveTo(this.MARGIN_SIDE, this.y)
+          .lineTo(this.PAGE_WIDTH - this.MARGIN_SIDE, this.y)
+          .lineWidth(0.5).strokeColor(COLORS.gold).stroke().restore();
+      }
+      this.y += this.s(4);
+    }
+    this.subHeading('Announcements', op.right ? { right: op.right } : {});
+    this.bodyText(op.text, { size: op.size || 7.5 });
+  }
+
+  // The reimagined end-of-document copyright block.
+  _renderCopyrightBlock() {
+    const copyrightFull = this.parishSettings.copyrightFull ||
+      getDefaultCopyrightFull(this.parishSettings.onelicenseNumber);
+    this.y += this.s(8);
+    this.doc.fontSize(this.s(6.5) * this.textScale).fillColor(COLORS.light).font('Sans');
+    this._textBlock(copyrightFull, this.MARGIN_SIDE + this.s(10), {
+      width: this.CONTENT_WIDTH - this.s(20), align: 'center', lineGap: this.s(1.5) * this.textScale
+    }, 0);
   }
 
   // A bold hanging label ("Verse:", "R.") followed by wrapped body text —
@@ -1827,260 +1704,6 @@ class WorshipAidPdfGenerator {
     }, 0);
   }
 
-  // Classic design: the same liturgy as the reimagined flow, but with the
-  // parish's in-house section names, an Invocation / Prayer over the
-  // Offerings / Communion Antiphon, two-column psalm & creed, and a QR
-  // footer — all drawn through the shared theme-aware primitives.
-  _buildContentBlocksClassic() {
-    const blocks = [];
-    // opts.keepNext: this block must not be the last thing on its page —
-    // the paginator keeps it with the following block (see renderContentFlow).
-    // opts.anchorBottom: render at the foot of the final page.
-    const b = (fn, opts) => blocks.push({ render: fn, ...(opts || {}) });
-    // Classic posture wording lives beside RUBRICS in mass-texts.js.
-    const RUB = RUBRICS_CLASSIC;
-
-    const reading = (heading, citation, text, opts = {}) => {
-      const paras = String(text || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
-      b(() => {
-        this.subHeading(heading, { inline: citation || undefined, right: opts.right });
-        if (paras[0]) this.bodyText(paras[0], opts);
-      });
-      for (const p of paras.slice(1)) b(() => this.bodyText(p, opts));
-    };
-
-    // --- The Introductory Rites ---
-    // The in-house layout puts the prelude line ABOVE the section title, so
-    // the title ends this block; keepNext guarantees it can never strand at
-    // a page bottom away from the Processional Hymn it introduces.
-    b(() => {
-      this.musicHeading('Organ Prelude', 'organPrelude', 'organPreludeComposer');
-      this.y += this.s(2);
-      this.sectionHeader('The Introductory Rites');
-    }, { keepNext: true });
-
-    const entranceType = this.ss.entranceType || 'processional';
-    b(() => {
-      this.musicHeading(
-        entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon',
-        'processionalOrEntrance', 'processionalOrEntranceComposer', { right: RUB.stand });
-      if (entranceType === 'processional') this.hymnMusicSpace({ slot: 'processional' });
-    });
-
-    if (this.showAdventWreath) {
-      b(() => {
-        this.bodyText('Lighting of the Advent Wreath', { bold: true, align: 'center', size: 9.5, gap: 4 });
-      });
-    }
-
-    b(() => this.subHeading('Invocation'));
-
-    if ((this.ss.penitentialAct || 'confiteor') === 'confiteor') {
-      // Director (17th Sunday OT proof): the Penitential Act heading and
-      // text must share the page with the Processional Hymn and Invocation
-      // — never spill onto the next page. If the full text doesn't fit the
-      // room left it re-flows into two columns; if even that won't fit, the
-      // text is omitted (heading only) with an export warning.
-      b(null, {
-        fit: [
-          () => { this.subHeading('Penitential Act'); this.bodyText(CONFITEOR, { size: 9, gap: 3 }); },
-          () => { this.subHeading('Penitential Act'); this._twoColumnText(CONFITEOR, { size: 9 }); },
-          () => { this.subHeading('Penitential Act'); }
-        ],
-        fitWarnings: [null, null,
-          'The Penitential Act text did not fit on the page with the Processional Hymn (even in two columns) — the heading printed without the text.'],
-        fitNoneWarning: 'The Penitential Act could not fit on the page with the Processional Hymn and was omitted.'
-      });
-    }
-
-    const showGloria = this.ss.gloria !== undefined ? this.ss.gloria :
-      (this.data.liturgicalSeason !== 'lent' && this.data.liturgicalSeason !== 'advent');
-
-    // Lord Have Mercy + Glory to God + Collect are ONE atomic block: the
-    // director requires the Glory to God heading/notation and the Collect
-    // heading (with its "Please sit") on the same page as the Lord Have
-    // Mercy. If the group doesn't fit the room left it moves whole to a
-    // fresh page (a group taller than a full page shrinks its notation to
-    // fit, with a warning — never splits).
-    b(() => {
-      this.musicHeading('Lord Have Mercy', 'kyrieSetting', 'kyrieComposer');
-      this.ordinaryMusicSpace('kyrie', 'Kyrie — music notation');
-      if (showGloria) {
-        this.subHeading('Glory to God', { inline: this.ss.gloriaSetting || undefined });
-        if (this._slotHasMusic('gloria')) this.ordinaryMusicSpace('gloria', 'Gloria — music notation');
-        else this.bodyText('Glory to God in the highest, and on earth peace to people of good will.');
-      }
-      this.subHeading('Collect');
-    }, { keepNext: true });
-
-    // "Please sit" + The Liturgy of the Word: keepNext above chains the
-    // Collect group (and the Children's Liturgy dismissal, when present) to
-    // the section opening WITHOUT welding the first reading's opening
-    // paragraph into one giant unsplittable block — if the chain can't fit
-    // a page, the paginator degrades gracefully instead of clipping.
-    {
-      const paras = String(this.r.firstReadingText || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
-      const wordOpening = () => {
-        this.rubric(RUB.sit);
-        this.sectionHeader('The Liturgy of the Word');
-        this.subHeading('First Reading', { inline: this.r.firstReadingCitation || undefined });
-        if (paras[0]) this.bodyText(paras[0], { size: 9 });
-      };
-      if (this.data.childrenLiturgyEnabled) {
-        b(() => this._childrenLiturgyBox(), { keepNext: true });
-      }
-      b(wordOpening);
-      for (const p of paras.slice(1)) b(() => this.bodyText(p, { size: 9 }));
-    }
-
-    // Responsorial Psalm — refrain (notation) + two-column strophes, each R.-capped.
-    b(() => {
-      this.subHeading('Responsorial Psalm', { inline: this.r.psalmCitation || undefined });
-      if (this._slotHasMusic('psalmRefrain')) {
-        this.ordinaryMusicSpace('psalmRefrain', 'Responsorial Psalm refrain — music notation');
-      } else if (this.r.psalmRefrain) {
-        this.bodyText(`R. ${this.r.psalmRefrain}`, { bold: true, size: 9 });
-      }
-      if (this.r.psalmVerses) {
-        const strophes = String(this.r.psalmVerses).split(/\n\s*\n/).map(p => p.trim()).filter(Boolean)
-          .map(v => (/(?:^|\s)R\.?\s*$/.test(v) ? v : `${v} R.`));
-        this._twoColumnText(strophes.join('\n'), { size: 8.5 });
-      }
-    });
-
-    if (!this.r.noSecondReading && this.r.secondReadingCitation) {
-      reading('Second Reading', this.r.secondReadingCitation, this.r.secondReadingText, { size: 9 });
-    }
-
-    // Gospel Alleluia — citation on the heading, then a "Verse:" line. The
-    // word "Alleluia" is suppressed throughout Lent, and when no notation
-    // carries the sung response the acclamation TEXT must still print.
-    b(() => {
-      const isLenten = this.data.liturgicalSeason === 'lent';
-      this.subHeading(isLenten ? 'Gospel Acclamation' : 'Gospel Alleluia',
-        { inline: this.r.gospelAcclamationReference || undefined, right: RUB.stand });
-      if (this._slotHasMusic('gospelAcclamation')) {
-        this.ordinaryMusicSpace('gospelAcclamation', 'Gospel Acclamation — music notation');
-      } else {
-        const acclamationText = isLenten
-          ? (this.ss.lentenAcclamation === 'alternate' ? GOSPEL_ACCLAMATION_LENTEN_ALT : GOSPEL_ACCLAMATION_LENTEN)
-          : GOSPEL_ACCLAMATION_STANDARD;
-        this.bodyText(acclamationText, { bold: true, size: 9 });
-      }
-      if (this.r.gospelAcclamationVerse) this._hangingLabel('Verse:', this.r.gospelAcclamationVerse, { size: 9 });
-    });
-
-    reading('Gospel', this.r.gospelCitation, this.r.gospelText, { size: 9 });
-
-    b(() => this.subHeading('Homily', { right: RUB.sit }));
-
-    {
-      const creedType = this.ss.creedType || 'nicene';
-      const creedHeading = { apostles: "The Apostles' Creed", baptismal_vows: 'Renewal of Baptismal Vows', nicene: 'The Nicene Creed' }[creedType] || 'The Nicene Creed';
-      const creedText = { apostles: APOSTLES_CREED, baptismal_vows: RENEWAL_OF_BAPTISMAL_VOWS, nicene: NICENE_CREED }[creedType] || NICENE_CREED;
-      b(() => {
-        this.subHeading(creedHeading, { right: RUB.stand });
-        if (creedType !== 'baptismal_vows') this._renderCreedTwoColumn(creedText);
-        else this.bodyText(creedText);
-      });
-    }
-
-    b(() => this.subHeading('Prayer of the Faithful'));
-
-    if (this.data.announcements) {
-      b(() => {
-        this.subHeading('Announcements', { right: RUB.sit });
-        this.bodyText(this.data.announcements, { size: 8.5 });
-      });
-    }
-
-    // --- The Liturgy of the Eucharist ---
-    b(() => {
-      this.rubric(RUB.sit);
-      this.sectionHeader('The Liturgy of the Eucharist');
-      this.musicHeading('Offertory Hymn', 'offertoryAnthem', 'offertoryAnthemComposer');
-      if (this.data.childrenLiturgyEnabled) {
-        this.rubric(`Children return from Children's Liturgy of the Word (${resolveChildrenLiturgyTimes(this.data).join(' & ')})`);
-      }
-    });
-
-    b(() => this.subHeading('Invitation to Prayer', { right: RUB.stand }));
-    b(() => this.subHeading('Prayer over the Offerings'));
-
-    b(() => {
-      const holyHolyLanguage = this.ss.holyHolyLanguage || this.parishSettings.defaultSanctusLanguage || 'english';
-      this.subHeading(holyHolyLanguage === 'latin' ? 'Sanctus' : 'Holy, Holy, Holy',
-        { inline: this.ss.holyHolySetting || 'Mass of St. Theresa' });
-      if (this._slotHasMusic('sanctus')) this.ordinaryMusicSpace('sanctus', 'Holy, Holy, Holy — music notation');
-      else this.bodyText(getHolyHolyHolyText(holyHolyLanguage));
-      this.rubric(RUB.kneelOrSit);
-    });
-
-    b(() => {
-      this.subHeading('Mystery of Faith', { inline: this.ss.mysteryOfFaithSetting || 'Mass of St. Theresa' });
-      this.ordinaryMusicSpace('mysteryOfFaith', 'Mystery of Faith — music notation');
-    });
-
-    b(() => this.subHeading('Great Amen', { inline: 'chant' }));
-
-    // --- The Communion Rite ---
-    b(() => {
-      this.rubric(RUB.stand);
-      this.sectionHeader('The Communion Rite');
-      this.subHeading("The Lord's Prayer");
-    });
-
-    b(() => this.subHeading('Sign of Peace'));
-
-    b(() => {
-      this.subHeading('Lamb of God', { inline: this.ss.lambOfGodSetting || 'Mass of St. Theresa' });
-      this.ordinaryMusicSpace('lambOfGod', 'Lamb of God — music notation');
-      this.rubric(RUB.kneel);
-    });
-
-    b(() => {
-      this.musicHeading('Communion Hymn', 'communionHymn', 'communionHymnComposer');
-      this.hymnMusicSpace({ slot: 'communion' });
-    });
-
-    // Choral Anthem only prints when a piece is actually scheduled — the
-    // classic aid omits the empty heading.
-    if (formatMusicSlot(this.data, 'choralAnthemConcluding', 'choralAnthemConcludingComposer').length) {
-      b(() => this.musicHeading('Choral Anthem', 'choralAnthemConcluding', 'choralAnthemConcludingComposer'));
-    }
-
-    b(() => {
-      this.rubric(RUB.stand);
-      this.subHeading('Prayer after Communion');
-    });
-
-    // --- The Concluding Rites ---
-    b(() => {
-      this.sectionHeader('The Concluding Rites');
-      this.musicHeading('Hymn of Thanksgiving', 'hymnOfThanksgiving', 'hymnOfThanksgivingComposer');
-      this.hymnMusicSpace({ slot: 'thanksgiving' });
-    });
-
-    b(() => this.subHeading('Blessing and Dismissal'));
-
-    if (this.includePostlude) {
-      b(() => this.musicHeading('Organ Postlude', 'organPostlude', 'organPostludeComposer'));
-    }
-
-    if (this.data.specialNotes) {
-      b(() => { this.y += this.s(4); this.bodyText(this.data.specialNotes, { italic: true, size: 8.5, align: 'center', color: this._color('muted') }); });
-    }
-    if (this.parishSettings.closingMessage) {
-      b(() => { this.y += this.s(2); this.bodyText(this.parishSettings.closingMessage, { size: 8, align: 'center', color: this._color('muted') }); });
-    }
-
-    // The QR/licensing footer is anchored to the foot of the final page,
-    // like the parish's in-house aid — not floated mid-booklet after the
-    // last content block.
-    b(() => this._classicFooterBlock(), { anchorBottom: true });
-
-    return blocks;
-  }
 
   // Tinted info box for the Children's Liturgy dismissal. Dry-run aware.
   _childrenLiturgyBox() {

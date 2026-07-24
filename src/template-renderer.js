@@ -10,6 +10,7 @@ const { APOSTLES_CREED, NICENE_CREED, RENEWAL_OF_BAPTISMAL_VOWS } = require('./a
 const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, RUBRICS_CLASSIC, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, getHolyHolyHolyText } = require('./assets/text/mass-texts');
 const { getQRCode, SMALLCAPS_CONNECTORS, classicGreeting, classicCoverBlocks, resolveChildrenLiturgyTimes } = require('./render-shared');
 const { formatMusicSlot, renderMusicLineHtml } = require('./music-formatter');
+const { buildLiturgyOutline } = require('./liturgy-outline');
 const { applySeasonDefaults } = require('./config/seasons');
 const { detectOverflows } = require('./validator');
 const { getDefaultCopyrightFull } = require('./assets/text/copyright');
@@ -636,8 +637,141 @@ function renderBookletHtml(data, options = {}) {
 </style>
 </head>`;
 
-  const reimaginedBody = () => `
-<!-- PAGE 1: COVER -->
+  // ===== Shared outline drives the liturgy body (pages 2-8) =====
+  // The same buildLiturgyOutline the PDF generator consumes, so the preview
+  // and the export — and the two designs — can never drift apart. Each op is
+  // mapped to the existing HTML helpers; the cover (page 1) stays per-design.
+  const outline = buildLiturgyOutline(d, { design, seasonalSettings: ss, readings: r, parishSettings: settings });
+
+  const rubricHtml = (text) => `<p class="rubric" style="text-align:${escapeHtml(rubricAlign)}">${escapeHtml(text)}</p>`;
+  const settingTextHtml = (text) => `<div class="prayer-text">${nl2br(text)}</div>`;
+
+  // Children's Liturgy dismissal box — identical markup in both designs.
+  const childrenBoxHtml = () => {
+    const times = resolveChildrenLiturgyTimes(d);
+    const notes = d.childrenLiturgyNotes ||
+      'Children are dismissed after the Opening Prayer and will rejoin during the Offertory.';
+    return `<div class="children-liturgy">
+    <strong>Children's Liturgy of the Word</strong> — ${times.map(escapeHtml).join(' &amp; ')}
+    ${d.childrenLiturgyLeader ? `<br>Led by ${escapeHtml(d.childrenLiturgyLeader)}` : ''}
+    ${d.childrenLiturgyMusic ? `<br><em>${escapeHtml(d.childrenLiturgyMusic)}</em>${d.childrenLiturgyMusicComposer ? ', ' + escapeHtml(d.childrenLiturgyMusicComposer) : ''}` : ''}
+    <br><span style="font-size:7.5pt;font-style:italic;">${nl2br(notes)}</span>
+  </div>`;
+  };
+
+  // Classic QR + licensing footer (page 8). Each QR encodes once.
+  const classicFooterHtml = () => {
+    const qrCells = [['Give', settings.giveUrl], ['Join', settings.joinUrl], ['Bulletin', settings.bulletinUrl]]
+      .map(([label, u]) => ({ label, svg: qrSvgHtml(u) })).filter(c => c.svg);
+    const socials = String(settings.socialHandles || '').split('\n').map(s => s.trim()).filter(Boolean);
+    return `<div class="c-footer">
+    ${qrCells.length ? `<div class="c-qr-row">
+      ${qrCells.map(c => `<div class="c-qr">${c.svg}<div class="c-qr-label">${escapeHtml(c.label)}</div></div>`).join('')}
+      ${socials.length ? `<div class="c-social">${socials.map(escapeHtml).join('<br>')}</div>` : ''}
+    </div>` : ''}
+    <div class="c-copyright">${nl2br(copyrightFull)}</div>
+  </div>`;
+  };
+
+  // Map one outline op to HTML via the existing per-medium helpers.
+  const renderOpHtml = (op) => {
+    switch (op.op) {
+      case 'section':
+        return design === 'classic' ? classicSectionHtml(op.title) : `<div class="section-header">${escapeHtml(op.title)}</div>`;
+      case 'music':
+        return musicSubHeadingHtml(d, op.heading, op.titleField, op.composerField, { right: op.right });
+      case 'hymnSpace':
+        return hymnSpace(op.slot);
+      case 'ordinarySpace':
+        return ordSpace(op.slot, op.label);
+      case 'setting': {
+        let out = subHeadingHtml(op.heading, { inline: op.setting || '' });
+        if (op.mode === 'musicOnly' || slotHasMusic(op.slot)) out += '\n  ' + ordSpace(op.slot, op.label);
+        else if (op.text) out += '\n  ' + settingTextHtml(op.text);
+        return out;
+      }
+      case 'penitential':
+        // HTML has no page-flow constraint (the PDF turns this into a fit
+        // block); the preview always shows the full text. Reimagined sets it
+        // slightly smaller (8.5pt); classic uses the body size.
+        return subHeadingHtml('Penitential Act') +
+          `\n  <div class="prayer-text"${design === 'classic' ? '' : ' style="font-size:8.5pt;"'}>${nl2br(op.text)}</div>`;
+      case 'subheading':
+        return subHeadingHtml(op.heading, { inline: op.inline || '', citation: op.citation, right: op.right });
+      case 'reading':
+        return subHeadingHtml(op.heading, { inline: op.citation || '', citation: true }) +
+          `\n  <div class="reading-text">${nl2br(op.text)}</div>`;
+      case 'rubric':
+        return rubricHtml(op.text);
+      case 'psalm': {
+        let out = subHeadingHtml('Responsorial Psalm', { inline: op.citation || '', citation: true });
+        out += '\n  ' + (slotHasMusic(op.slot)
+          ? ordSpace(op.slot, 'Responsorial Psalm refrain — music notation')
+          : (op.refrain ? `<p class="psalm-refrain">R. ${escapeHtml(op.refrain)}</p>` : ''));
+        if (op.twoColumn && op.strophes && op.strophes.length) {
+          out += `\n  <div class="c-twocol">${op.strophes.map(s => `<div class="c-strophe">${nl2br(s)}</div>`).join('')}</div>`;
+        }
+        return out;
+      }
+      case 'psalmVerse':
+        return `<p class="psalm-verse">${nl2br(op.text)}</p>`;
+      case 'creed': {
+        const head = subHeadingHtml(op.heading, { right: op.right });
+        let body;
+        if (design === 'classic') {
+          body = op.twoColumn
+            ? `<div class="c-twocol" style="white-space:pre-line">${escapeHtml(op.text)}</div>`
+            : `<div class="creed-text">${nl2br(op.text)}</div>`;
+        } else {
+          body = `<div class="creed-text${op.twoColumn ? ' two-column' : ''}">${nl2br(op.text)}</div>`;
+        }
+        return head + '\n  ' + body;
+      }
+      case 'gospelAccl': {
+        let out = subHeadingHtml(op.heading, { inline: op.reference || '', citation: true, right: op.right });
+        out += '\n  ' + (slotHasMusic(op.slot)
+          ? ordSpace(op.slot, 'Gospel Acclamation — music notation')
+          : `<p class="psalm-refrain">${escapeHtml(op.text)}</p>`);
+        if (op.verse) {
+          out += '\n  ' + (op.verseStyle === 'hanging'
+            ? `<p class="reading-text"><span class="c-verse-label">Verse:</span> <em>${nl2br(op.verse)}</em></p>`
+            : `<p style="font-size:9pt;font-style:italic;margin:2pt 0;">${nl2br(op.verse)}</p>`);
+        }
+        return out;
+      }
+      case 'invitationText':
+        return `<p class="prayer-text" style="font-size:8.5pt;"><strong>Priest:</strong> ${escapeHtml(op.priest)}</p>\n  <p class="prayer-text" style="font-size:8.5pt;"><strong>All:</strong> ${escapeHtml(op.all)}</p>`;
+      case 'childrenBox':
+        return childrenBoxHtml();
+      case 'childrenReturn':
+        return rubricHtml(op.text);
+      case 'adventWreath':
+        return design === 'classic'
+          ? '<p class="prayer-text" style="text-align:center;font-weight:700;">Lighting of the Advent Wreath</p>'
+          : '<div class="advent-wreath"><strong>Lighting of the Advent Wreath</strong></div>';
+      case 'announcements':
+        return design === 'classic'
+          ? subHeadingHtml('Announcements', { right: op.right }) + `\n  <div class="prayer-text">${nl2br(op.text)}</div>`
+          : `<hr class="divider-rule">\n  ${subHeadingHtml('Announcements')}\n  <div class="announcement-block">${nl2br(op.text)}</div>`;
+      case 'notes':
+        return design === 'classic'
+          ? `<p class="prayer-text" style="text-align:center;font-style:italic;">${nl2br(op.text)}</p>`
+          : `<div style="margin:8pt auto 0;font-size:8pt;font-style:italic;text-align:center;max-width:4in;">${nl2br(op.text)}</div>`;
+      case 'closing':
+        return design === 'classic'
+          ? `<p class="prayer-text" style="text-align:center;">${nl2br(op.text)}</p>`
+          : `<div style="margin:8pt auto 0;font-size:8pt;text-align:center;max-width:4in;">${nl2br(op.text)}</div>`;
+      case 'copyright':
+        return `<div class="copyright-full" style="margin:10pt auto 0;">${nl2br(copyrightFull)}</div>`;
+      case 'classicFooter':
+        return classicFooterHtml();
+      default:
+        return '';
+    }
+  };
+
+  // Page 1 covers — genuinely different layouts, kept per-design.
+  const reimaginedCover = () => `<!-- PAGE 1: COVER -->
 <div class="page" id="page-1">
   <div class="cover-page">
     <div class="cover-top">
@@ -669,224 +803,11 @@ function renderBookletHtml(data, options = {}) {
     </div>
     ${welcomeMessage ? `<div style="margin-top:6pt;padding:5pt 8pt;border:0.5pt solid #B8922A;border-radius:2pt;font-size:8pt;font-style:italic;text-align:center;">${nl2br(welcomeMessage)}</div>` : ''}
   </div>
-</div>
+</div>`;
 
-<!-- PAGE 2: INTRODUCTORY RITES -->
-<div class="page${overflowPages.has(2) ? ' overflow-warning' : ''}" id="page-2">
-  ${overflowPages.has(2) ? '<div class="overflow-banner">Page 2 content may overflow</div>' : ''}
-  <div class="section-header">The Introductory Rites</div>
-
-  ${musicSubHeadingHtml(d, 'Organ Prelude', 'organPrelude', 'organPreludeComposer')}
-
-  ${musicSubHeadingHtml(d, entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon', 'processionalOrEntrance', 'processionalOrEntranceComposer', { right: RUBRICS.stand })}
-  ${processionalHymnSpaceHtml}
-
-  ${showAdventWreath ? `
-  <div class="advent-wreath">
-    <strong>Lighting of the Advent Wreath</strong>
-  </div>
-  ` : ''}
-
-  ${penitentialAct === 'confiteor' ? `
-  <div class="sub-heading">Penitential Act</div>
-  <div class="prayer-text" style="font-size:8.5pt;">${nl2br(CONFITEOR)}</div>
-  ` : ''}
-
-  ${musicSubHeadingHtml(d, 'Lord, Have Mercy', 'kyrieSetting', 'kyrieComposer')}
-  ${ordSpace('kyrie', 'Kyrie — music notation')}
-
-  ${showGloria ? `
-  ${subHeadingHtml('Gloria', { inline: ss.gloriaSetting || '' })}
-  ${slotHasMusic('gloria')
-    ? ordSpace('gloria', 'Gloria — music notation')
-    : '<p class="prayer-text">Glory to God in the highest, and on earth peace to people of good will.</p>'}
-  ` : ''}
-
-  ${subHeadingHtml('Collect')}
-
-  ${d.childrenLiturgyEnabled ? (() => {
-    const times = Array.isArray(d.childrenLiturgyMassTimes) && d.childrenLiturgyMassTimes.length
-      ? d.childrenLiturgyMassTimes
-      : (d.childrenLiturgyMassTime ? [d.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
-    const notes = d.childrenLiturgyNotes ||
-      'Children are dismissed after the Opening Prayer and will rejoin during the Offertory.';
-    return `
-  <div class="children-liturgy">
-    <strong>Children's Liturgy of the Word</strong> — ${times.map(escapeHtml).join(' &amp; ')}
-    ${d.childrenLiturgyLeader ? `<br>Led by ${escapeHtml(d.childrenLiturgyLeader)}` : ''}
-    ${d.childrenLiturgyMusic ? `<br><em>${escapeHtml(d.childrenLiturgyMusic)}</em>${d.childrenLiturgyMusicComposer ? ', ' + escapeHtml(d.childrenLiturgyMusicComposer) : ''}` : ''}
-    <br><span style="font-size:7.5pt;font-style:italic;">${nl2br(notes)}</span>
-  </div>
-  `;
-  })() : ''}
-
-  <div class="page-number">2</div>
-</div>
-
-<!-- PAGE 3: LITURGY OF THE WORD -->
-<div class="page${overflowPages.has(3) ? ' overflow-warning' : ''}" id="page-3">
-  ${overflowPages.has(3) ? `<div class="overflow-banner">${escapeHtml(overflows.find(o => o.page === 3)?.message || 'Page 3 overflow')}</div>` : ''}
-  ${RP + RUBRICS.sit + "</p>"}
-  <div class="section-header">The Liturgy of the Word</div>
-
-  ${subHeadingHtml('First Reading', { inline: r.firstReadingCitation || '', citation: true })}
-  <div class="reading-text">${nl2br(r.firstReadingText)}</div>
-
-  ${subHeadingHtml('Responsorial Psalm', { inline: r.psalmCitation || '', citation: true })}
-  ${slotHasMusic('psalmRefrain')
-    ? ordSpace('psalmRefrain', 'Responsorial Psalm refrain — music notation')
-    : (r.psalmRefrain ? `<p class="psalm-refrain">R. ${escapeHtml(r.psalmRefrain)}</p>` : '')}
-  ${r.psalmVerses ? r.psalmVerses.split('\n\n').map(v => `<p class="psalm-verse">${nl2br(v)}${/(?:^|\s)R\.?\s*$/.test(v.trim()) ? '' : ' R.'}</p>`).join('') : ''}
-
-  ${!r.noSecondReading && r.secondReadingCitation ? `
-  ${subHeadingHtml('Second Reading', { inline: r.secondReadingCitation || '', citation: true })}
-  <div class="reading-text">${nl2br(r.secondReadingText)}</div>
-  ` : ''}
-
-  ${subHeadingHtml('Gospel Acclamation', { inline: r.gospelAcclamationReference || '', citation: true, right: RUBRICS.stand })}
-  ${slotHasMusic('gospelAcclamation')
-    ? ordSpace('gospelAcclamation', 'Gospel Acclamation — music notation')
-    : `<p class="psalm-refrain">${escapeHtml(acclamationText)}</p>`}
-  ${r.gospelAcclamationVerse ? `<p style="font-size:9pt;font-style:italic;margin:2pt 0;">${nl2br(r.gospelAcclamationVerse)}</p>` : ''}
-
-  <div class="page-number">3</div>
-</div>
-
-<!-- PAGE 4: GOSPEL + CREED -->
-<div class="page${overflowPages.has(4) ? ' overflow-warning' : ''}" id="page-4">
-  ${overflowPages.has(4) ? `<div class="overflow-banner">${escapeHtml(overflows.find(o => o.page === 4)?.message || 'Page 4 overflow')}</div>` : ''}
-
-  ${subHeadingHtml('Gospel', { inline: r.gospelCitation || '', citation: true })}
-  <div class="reading-text">${nl2br(r.gospelText)}</div>
-
-  ${subHeadingHtml('Homily', { right: RUBRICS.sit })}
-
-  ${subHeadingHtml(creedTitle, { right: RUBRICS.stand })}
-  <div class="creed-text${ss.twoColumnCreed && creedType !== 'baptismal_vows' ? ' two-column' : ''}">${nl2br(creedText)}</div>
-
-  ${subHeadingHtml('Prayer of the Faithful')}
-
-  <div class="page-number">4</div>
-</div>
-
-<!-- PAGE 5: LITURGY OF THE EUCHARIST -->
-<div class="page" id="page-5">
-  ${RP + RUBRICS.sit + "</p>"}
-  <div class="section-header">The Liturgy of the Eucharist</div>
-
-  ${musicSubHeadingHtml(d, 'Offertory', 'offertoryAnthem', 'offertoryAnthemComposer')}
-
-  ${d.childrenLiturgyEnabled ? (() => {
-    const times = Array.isArray(d.childrenLiturgyMassTimes) && d.childrenLiturgyMassTimes.length
-      ? d.childrenLiturgyMassTimes
-      : (d.childrenLiturgyMassTime ? [d.childrenLiturgyMassTime] : ['Sun 9:00 AM']);
-    return `${RP}Children return from Children&rsquo;s Liturgy of the Word (${times.map(escapeHtml).join(' &amp; ')})</p>`;
-  })() : ''}
-
-  ${subHeadingHtml('Invitation to Prayer', { right: RUBRICS.stand })}
-  <p class="prayer-text" style="font-size:8.5pt;"><strong>Priest:</strong> ${escapeHtml(INVITATION_TO_PRAYER.priest)}</p>
-  <p class="prayer-text" style="font-size:8.5pt;"><strong>All:</strong> ${escapeHtml(INVITATION_TO_PRAYER.all)}</p>
-
-  ${subHeadingHtml(holyHolyHeading, { inline: ss.holyHolySetting || 'Mass of St. Theresa' })}
-  ${slotHasMusic('sanctus')
-    ? ordSpace('sanctus', 'Holy, Holy, Holy — music notation')
-    : `<div class="prayer-text">${nl2br(holyHolyText)}</div>`}
-
-  ${RP + RUBRICS.kneel + "</p>"}
-
-  ${subHeadingHtml('Mystery of Faith', { inline: ss.mysteryOfFaithSetting || 'Mass of St. Theresa' })}
-  ${ordSpace('mysteryOfFaith', 'Mystery of Faith — music notation')}
-
-  <div class="sub-heading">Great Amen</div>
-
-  <div class="page-number">5</div>
-</div>
-
-<!-- PAGE 6: COMMUNION RITE -->
-<div class="page" id="page-6">
-  ${RP + RUBRICS.stand + "</p>"}
-  <div class="section-header">The Communion Rite</div>
-
-  ${subHeadingHtml("The Lord's Prayer")}
-
-  <div class="sub-heading">Sign of Peace</div>
-
-  ${subHeadingHtml('Lamb of God', { inline: ss.lambOfGodSetting || 'Mass of St. Theresa' })}
-  ${ordSpace('lambOfGod', 'Lamb of God — music notation')}
-
-  ${RP + RUBRICS.kneel + "</p>"}
-
-  ${musicSubHeadingHtml(d, 'Communion Hymn', 'communionHymn', 'communionHymnComposer')}
-  ${hymnSpace('communion')}
-
-  ${musicSubHeadingHtml(d, 'Choral Anthem', 'choralAnthemConcluding', 'choralAnthemConcludingComposer')}
-
-  ${RP + RUBRICS.stand + "</p>"}
-  ${subHeadingHtml('Prayer after Communion')}
-
-  <div class="page-number">6</div>
-</div>
-
-<!-- PAGE 7: CONCLUDING RITES — HYMN OF THANKSGIVING -->
-<div class="page" id="page-7">
-  <div class="section-header">The Concluding Rites</div>
-
-  ${musicSubHeadingHtml(d, 'Hymn of Thanksgiving', 'hymnOfThanksgiving', 'hymnOfThanksgivingComposer')}
-  ${hymnSpace('thanksgiving')}
-
-  <div class="page-number">7</div>
-</div>
-
-<!-- PAGE 8: CONCLUDING RITES CONTINUED — BLESSING, DISMISSAL, POSTLUDE -->
-<div class="page" id="page-8">
-  <div class="sub-heading">Blessing &amp; Dismissal</div>
-
-  ${includePostlude ? `
-  ${musicSubHeadingHtml(d, 'Organ Postlude', 'organPostlude', 'organPostludeComposer')}
-  ` : ''}
-
-  ${d.announcements ? `
-  <hr class="divider-rule">
-  <div class="sub-heading">Announcements</div>
-  <div class="announcement-block">${nl2br(d.announcements)}</div>
-  ` : ''}
-
-  ${d.specialNotes ? `<div style="margin:8pt auto 0;font-size:8pt;font-style:italic;text-align:center;max-width:4in;">${nl2br(d.specialNotes)}</div>` : ''}
-  ${closingMessage ? `<div style="margin:8pt auto 0;font-size:8pt;text-align:center;max-width:4in;">${nl2br(closingMessage)}</div>` : ''}
-
-  <div class="copyright-full" style="margin:10pt auto 0;">${nl2br(copyrightFull)}</div>
-
-  <div class="page-number">8</div>
-</div>
-`;
-
-  // ===== Classic body — mirrors the classic PDF's structure and typography =====
-  // Built lazily: classic-only work (QR encoding, strophe splitting) never
-  // runs for a reimagined preview, and vice versa.
-  const classicBody = () => {
-  const CRUB = RUBRICS_CLASSIC;
-  const cRub = (text) => `<p class="rubric" style="text-align:${escapeHtml(rubricAlign)}">${escapeHtml(text)}</p>`;
-  const titleCase = (s) => String(s).toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
-  const psalmStrophes = r.psalmVerses
-    ? r.psalmVerses.split(/\n\s*\n/).map(v => v.trim()).filter(Boolean)
-        .map(v => `<div class="c-strophe">${nl2br(v)}${/(?:^|\s)R\.?\s*$/.test(v) ? '' : ' R.'}</div>`).join('')
-    : '';
-  // Encode each QR exactly once; an unavailable dep / empty URL drops out.
-  const qrCells = [['Give', settings.giveUrl], ['Join', settings.joinUrl], ['Bulletin', settings.bulletinUrl]]
-    .map(([label, u]) => ({ label, svg: qrSvgHtml(u) }))
-    .filter(c => c.svg);
-  const socials = String(settings.socialHandles || '').split('\n').map(s => s.trim()).filter(Boolean);
-  const hasChoral = formatMusicSlot(d, 'choralAnthemConcluding', 'choralAnthemConcludingComposer').length;
-  const clTimes = resolveChildrenLiturgyTimes(d);
-  const clNotes = d.childrenLiturgyNotes ||
-    'Children are dismissed after the Opening Prayer and will rejoin during the Offertory.';
-  // The classic Gospel Alleluia is season-aware: the word "Alleluia" is
-  // suppressed throughout Lent, and the sung text prints when no notation
-  // slot carries the response.
-  const acclHeading = isLenten ? 'Gospel Acclamation' : 'Gospel Alleluia';
-
-  return `
-<!-- PAGE 1: COVER -->
+  const classicCover = () => {
+    const titleCase = (s) => String(s).toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+    return `<!-- PAGE 1: COVER -->
 <div class="page" id="page-1">
   <div class="c-cover">
     <div class="c-cover-title">${classicTitleInner(d.feastName)}</div>
@@ -899,132 +820,32 @@ function renderBookletHtml(data, options = {}) {
     </div>
     ${welcomeMessage ? `<div class="c-welcome">${nl2br(welcomeMessage)}</div>` : ''}
   </div>
-</div>
-
-<!-- PAGE 2: INTRODUCTORY RITES -->
-<div class="page${overflowPages.has(2) ? ' overflow-warning' : ''}" id="page-2">
-  ${overflowPages.has(2) ? `<div class="overflow-banner">${escapeHtml(overflows.find(o => o.page === 2)?.message || 'Page 2 overflow')}</div>` : ''}
-  ${musicSubHeadingHtml(d, 'Organ Prelude', 'organPrelude', 'organPreludeComposer')}
-  ${classicSectionHtml('The Introductory Rites')}
-  ${musicSubHeadingHtml(d, entranceType === 'processional' ? 'Processional Hymn' : 'Entrance Antiphon', 'processionalOrEntrance', 'processionalOrEntranceComposer', { right: CRUB.stand })}
-  ${processionalHymnSpaceHtml}
-  ${showAdventWreath ? '<p class="prayer-text" style="text-align:center;font-weight:700;">Lighting of the Advent Wreath</p>' : ''}
-  ${subHeadingHtml('Invocation')}
-  ${penitentialAct === 'confiteor' ? `${subHeadingHtml('Penitential Act')}<div class="prayer-text">${nl2br(CONFITEOR)}</div>` : ''}
-  ${musicSubHeadingHtml(d, 'Lord Have Mercy', 'kyrieSetting', 'kyrieComposer')}
-  ${ordSpace('kyrie', 'Kyrie — music notation')}
-  ${showGloria ? `${subHeadingHtml('Glory to God', { inline: ss.gloriaSetting || '' })}
-  ${slotHasMusic('gloria') ? ordSpace('gloria', 'Gloria — music notation') : '<p class="prayer-text">Glory to God in the highest, and on earth peace to people of good will.</p>'}` : ''}
-  ${subHeadingHtml('Collect')}
-  ${d.childrenLiturgyEnabled ? `
-  <div class="children-liturgy">
-    <strong>Children's Liturgy of the Word</strong> — ${clTimes.map(escapeHtml).join(' &amp; ')}
-    ${d.childrenLiturgyLeader ? `<br>Led by ${escapeHtml(d.childrenLiturgyLeader)}` : ''}
-    ${d.childrenLiturgyMusic ? `<br><em>${escapeHtml(d.childrenLiturgyMusic)}</em>${d.childrenLiturgyMusicComposer ? ', ' + escapeHtml(d.childrenLiturgyMusicComposer) : ''}` : ''}
-    <br><span style="font-size:7.5pt;font-style:italic;">${nl2br(clNotes)}</span>
-  </div>` : ''}
-  ${cRub(CRUB.sit)}
-  <div class="page-number">2</div>
-</div>
-
-<!-- PAGE 3: LITURGY OF THE WORD -->
-<div class="page${overflowPages.has(3) ? ' overflow-warning' : ''}" id="page-3">
-  ${overflowPages.has(3) ? `<div class="overflow-banner">${escapeHtml(overflows.find(o => o.page === 3)?.message || 'Page 3 overflow')}</div>` : ''}
-  ${classicSectionHtml('The Liturgy of the Word')}
-  ${subHeadingHtml('First Reading', { inline: r.firstReadingCitation || '', citation: true })}
-  <div class="reading-text">${nl2br(r.firstReadingText)}</div>
-  ${subHeadingHtml('Responsorial Psalm', { inline: r.psalmCitation || '', citation: true })}
-  ${slotHasMusic('psalmRefrain') ? ordSpace('psalmRefrain', 'Responsorial Psalm refrain — music notation')
-    : (r.psalmRefrain ? `<p class="psalm-refrain">R. ${escapeHtml(r.psalmRefrain)}</p>` : '')}
-  ${psalmStrophes ? `<div class="c-twocol">${psalmStrophes}</div>` : ''}
-  ${!r.noSecondReading && r.secondReadingCitation ? `${subHeadingHtml('Second Reading', { inline: r.secondReadingCitation || '', citation: true })}
-  <div class="reading-text">${nl2br(r.secondReadingText)}</div>` : ''}
-  ${subHeadingHtml(acclHeading, { inline: r.gospelAcclamationReference || '', citation: true, right: CRUB.stand })}
-  ${slotHasMusic('gospelAcclamation')
-    ? ordSpace('gospelAcclamation', 'Gospel Acclamation — music notation')
-    : `<p class="psalm-refrain">${escapeHtml(acclamationText)}</p>`}
-  ${r.gospelAcclamationVerse ? `<p class="reading-text"><span class="c-verse-label">Verse:</span> <em>${nl2br(r.gospelAcclamationVerse)}</em></p>` : ''}
-  <div class="page-number">3</div>
-</div>
-
-<!-- PAGE 4: GOSPEL + CREED -->
-<div class="page${overflowPages.has(4) ? ' overflow-warning' : ''}" id="page-4">
-  ${overflowPages.has(4) ? `<div class="overflow-banner">${escapeHtml(overflows.find(o => o.page === 4)?.message || 'Page 4 overflow')}</div>` : ''}
-  ${subHeadingHtml('Gospel', { inline: r.gospelCitation || '', citation: true })}
-  <div class="reading-text">${nl2br(r.gospelText)}</div>
-  ${subHeadingHtml('Homily', { right: CRUB.sit })}
-  ${subHeadingHtml(creedTitle, { right: CRUB.stand })}
-  ${creedType !== 'baptismal_vows'
-    ? `<div class="c-twocol" style="white-space:pre-line">${escapeHtml(creedText)}</div>`
-    : `<div class="creed-text">${nl2br(creedText)}</div>`}
-  ${subHeadingHtml('Prayer of the Faithful')}
-  ${d.announcements ? `${subHeadingHtml('Announcements', { right: CRUB.sit })}<div class="prayer-text">${nl2br(d.announcements)}</div>` : ''}
-  <div class="page-number">4</div>
-</div>
-
-<!-- PAGE 5: LITURGY OF THE EUCHARIST -->
-<div class="page" id="page-5">
-  ${cRub(CRUB.sit)}
-  ${classicSectionHtml('The Liturgy of the Eucharist')}
-  ${musicSubHeadingHtml(d, 'Offertory Hymn', 'offertoryAnthem', 'offertoryAnthemComposer')}
-  ${d.childrenLiturgyEnabled ? `${cRub(`Children return from Children's Liturgy of the Word (${clTimes.join(' & ')})`)}` : ''}
-  ${subHeadingHtml('Invitation to Prayer', { right: CRUB.stand })}
-  ${subHeadingHtml('Prayer over the Offerings')}
-  ${subHeadingHtml(holyHolyHeading, { inline: ss.holyHolySetting || 'Mass of St. Theresa' })}
-  ${slotHasMusic('sanctus') ? ordSpace('sanctus', 'Holy, Holy, Holy — music notation') : `<div class="prayer-text">${nl2br(holyHolyText)}</div>`}
-  ${cRub(CRUB.kneelOrSit)}
-  ${subHeadingHtml('Mystery of Faith', { inline: ss.mysteryOfFaithSetting || 'Mass of St. Theresa' })}
-  ${ordSpace('mysteryOfFaith', 'Mystery of Faith — music notation')}
-  ${subHeadingHtml('Great Amen', { inline: 'chant' })}
-  ${cRub(CRUB.stand)}
-  <div class="page-number">5</div>
-</div>
-
-<!-- PAGE 6: COMMUNION RITE -->
-<div class="page" id="page-6">
-  ${classicSectionHtml('The Communion Rite')}
-  ${subHeadingHtml("The Lord's Prayer")}
-  ${subHeadingHtml('Sign of Peace')}
-  ${subHeadingHtml('Lamb of God', { inline: ss.lambOfGodSetting || 'Mass of St. Theresa' })}
-  ${ordSpace('lambOfGod', 'Lamb of God — music notation')}
-  ${cRub(CRUB.kneel)}
-  ${musicSubHeadingHtml(d, 'Communion Hymn', 'communionHymn', 'communionHymnComposer')}
-  ${hymnSpace('communion')}
-  ${hasChoral ? musicSubHeadingHtml(d, 'Choral Anthem', 'choralAnthemConcluding', 'choralAnthemConcludingComposer') : ''}
-  ${cRub(CRUB.stand)}
-  ${subHeadingHtml('Prayer after Communion')}
-  <div class="page-number">6</div>
-</div>
-
-<!-- PAGE 7: CONCLUDING RITES -->
-<div class="page" id="page-7">
-  ${classicSectionHtml('The Concluding Rites')}
-  ${musicSubHeadingHtml(d, 'Hymn of Thanksgiving', 'hymnOfThanksgiving', 'hymnOfThanksgivingComposer')}
-  ${hymnSpace('thanksgiving')}
-  ${subHeadingHtml('Blessing and Dismissal')}
-  ${includePostlude ? musicSubHeadingHtml(d, 'Organ Postlude', 'organPostlude', 'organPostludeComposer') : ''}
-  ${d.specialNotes ? `<p class="prayer-text" style="text-align:center;font-style:italic;">${nl2br(d.specialNotes)}</p>` : ''}
-  ${closingMessage ? `<p class="prayer-text" style="text-align:center;">${nl2br(closingMessage)}</p>` : ''}
-  <div class="page-number">7</div>
-</div>
-
-<!-- PAGE 8: QR + LICENSING -->
-<div class="page" id="page-8">
-  <div class="c-footer">
-    ${qrCells.length ? `<div class="c-qr-row">
-      ${qrCells.map(c => `<div class="c-qr">${c.svg}<div class="c-qr-label">${escapeHtml(c.label)}</div></div>`).join('')}
-      ${socials.length ? `<div class="c-social">${socials.map(escapeHtml).join('<br>')}</div>` : ''}
-    </div>` : ''}
-    <div class="c-copyright">${nl2br(copyrightFull)}</div>
-  </div>
-  <div class="page-number">8</div>
-</div>
-`;
+</div>`;
   };
+
+  // Group outline ops onto their fixed HTML pages, then wrap each page shell.
+  const contentByPage = {};
+  for (const block of outline.blocks) {
+    const rendered = block.ops.map(renderOpHtml).filter(s => s !== '' && s != null).join('\n  ');
+    if (!rendered.trim()) continue;
+    contentByPage[block.htmlPage] = (contentByPage[block.htmlPage] ? contentByPage[block.htmlPage] + '\n\n  ' : '') + rendered;
+  }
+  const banner = (n) => overflowPages.has(n)
+    ? `<div class="overflow-banner">${escapeHtml((overflows.find(o => o.page === n) || {}).message || ('Page ' + n + ' content may overflow'))}</div>`
+    : '';
+  const pageShell = (n) => `<!-- PAGE ${n} -->
+<div class="page${overflowPages.has(n) ? ' overflow-warning' : ''}" id="page-${n}">
+  ${banner(n)}
+  ${contentByPage[n] || ''}
+  <div class="page-number">${n}</div>
+</div>`;
+
+  const coverHtml = design === 'classic' ? classicCover() : reimaginedCover();
+  const bodyHtml = coverHtml + '\n\n' + [2, 3, 4, 5, 6, 7, 8].map(pageShell).join('\n\n');
 
   const html = `${docHead}
 <body class="design-${escapeHtml(design)}">
-${design === 'classic' ? classicBody() : reimaginedBody()}
+${bodyHtml}
 </body>
 </html>`;
 
