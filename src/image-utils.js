@@ -63,6 +63,8 @@ const TITLE_CROP = {
   DARK: 160,            // gray value below this counts as "ink"
   CONTENT_FRAC: 0.01,   // row is "content" when >=1% of pixels are ink
   STAFF_FRAC: 0.35,     // row is a staff-line candidate when >=35% is ink
+  STAFF_FRAC_NARROW: 0.18, // lower threshold used ONLY by the over-crop guard
+                        // to catch narrow real staves the primary pass misses
   LINE_MAX_ROWS: 4,     // a staff LINE is thin — at most this many rows;
                         // a thicker dark band (bold display title, banner)
                         // is not a staff line
@@ -116,34 +118,39 @@ async function detectTitleCropY(buf) {
     frac[y] = dark / W;
   }
 
-  // First staff SYSTEM. A staff is a group of thin near-full-width dark
-  // lines with small gaps — a single wide dark band (a bold display title,
-  // a banner) must NOT qualify, so candidates are grouped into runs and
-  // only thin runs count as lines.
-  const runs = [];
-  let runStart = null;
-  for (let y = 0; y <= H; y++) {
-    const isCandidate = y < H && frac[y] >= C.STAFF_FRAC;
-    if (isCandidate && runStart === null) runStart = y;
-    else if (!isCandidate && runStart !== null) {
-      runs.push({ start: runStart, len: y - runStart });
-      runStart = null;
+  // First staff SYSTEM among rows [0, endRow): a group of thin near-full-width
+  // dark lines with small gaps. A single wide dark band (a bold display title,
+  // a banner) must NOT qualify, so candidates are grouped into runs and only
+  // thin runs count as lines. `staffFrac` is the width threshold for a line —
+  // the primary pass uses STAFF_FRAC; the over-crop guard below re-scans at a
+  // lower threshold to catch NARROW real staves the primary pass misses.
+  const findStaffRow = (endRow, staffFrac) => {
+    const runs = [];
+    let runStart = null;
+    for (let y = 0; y <= endRow; y++) {
+      const isCandidate = y < endRow && frac[y] >= staffFrac;
+      if (isCandidate && runStart === null) runStart = y;
+      else if (!isCandidate && runStart !== null) {
+        runs.push({ start: runStart, len: y - runStart });
+        runStart = null;
+      }
     }
-  }
-  let firstStaffRow = -1;
-  for (let i = 0; i < runs.length && firstStaffRow < 0; i++) {
-    if (runs[i].len > C.LINE_MAX_ROWS) continue;
-    let count = 1;
-    let prevEnd = runs[i].start + runs[i].len;
-    for (let j = i + 1; j < runs.length && count < C.LINES_REQUIRED; j++) {
-      if (runs[j].len > C.LINE_MAX_ROWS) break;
-      const gap = runs[j].start - prevEnd;
-      if (gap < 1 || gap > C.LINE_GAP_MAX) break;
-      count++;
-      prevEnd = runs[j].start + runs[j].len;
+    for (let i = 0; i < runs.length; i++) {
+      if (runs[i].len > C.LINE_MAX_ROWS) continue;
+      let count = 1;
+      let prevEnd = runs[i].start + runs[i].len;
+      for (let j = i + 1; j < runs.length && count < C.LINES_REQUIRED; j++) {
+        if (runs[j].len > C.LINE_MAX_ROWS) break;
+        const gap = runs[j].start - prevEnd;
+        if (gap < 1 || gap > C.LINE_GAP_MAX) break;
+        count++;
+        prevEnd = runs[j].start + runs[j].len;
+      }
+      if (count >= C.LINES_REQUIRED) return runs[i].start;
     }
-    if (count >= C.LINES_REQUIRED) firstStaffRow = runs[i].start;
-  }
+    return -1;
+  };
+  const firstStaffRow = findStaffRow(H, C.STAFF_FRAC);
   if (firstStaffRow <= 0) return null;
 
   // Walk up from the staff to the white band above the music block. Content
@@ -171,11 +178,18 @@ async function detectTitleCropY(buf) {
   const cropAnalysisY = Math.max(0, musicTop - pad);
   const cropFrac = cropAnalysisY / H;
   if (cropFrac > C.MAX_CROP_FRAC) {
-    // Removing lots of WHITE is fine — the guard that matters is how much
-    // CONTENT the crop removes. Allow a tall crop when the region above the
-    // cut is a shallow header band (few inked rows), refuse when it holds
-    // anything deeper (which could be music the staff detector missed), and
-    // never exceed the hard ceiling.
+    // A tall crop removes lots of WHITE, which is fine — but it must NEVER
+    // remove real music. The primary staff pass only recognizes staves at
+    // least STAFF_FRAC wide, so a NARROW real staff above the cut (an
+    // incipit, an ossia, a cantor intonation line, a right-aligned pickup)
+    // can be mistaken for header content and cropped away. Re-scan the
+    // region above the cut at a lower width threshold; if any staff group
+    // is found up there, refuse the crop — music is never lost.
+    if (findStaffRow(cropAnalysisY, C.STAFF_FRAC_NARROW) >= 0) return null;
+    // Otherwise the guard that matters is how much CONTENT the crop removes:
+    // allow a tall crop when the region above is a shallow header band (few
+    // inked rows), refuse when it holds anything deeper, and never exceed the
+    // hard ceiling.
     let contentRowsAbove = 0;
     for (let y = 0; y < cropAnalysisY; y++) {
       if (frac[y] >= C.CONTENT_FRAC) contentRowsAbove++;

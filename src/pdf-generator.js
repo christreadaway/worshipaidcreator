@@ -342,6 +342,11 @@ class WorshipAidPdfGenerator {
       this.y += blockH;
       return blockH;
     }
+    // Past-bottom guard: when the paginator has exhausted the 8-page budget
+    // and a later block piles onto page 8, refuse to draw a title below the
+    // bottom margin (matches _textBlock's clamp). On the cover this.y is near
+    // the top, so this never fires there.
+    if (this.y >= this._bottom()) { this._warnClipped(); return 0; }
     const words = String(text).trim().split(/\s+/);
     // Build the run list: each run is {str, size, font, italic}.
     const runs = [];
@@ -1163,10 +1168,14 @@ class WorshipAidPdfGenerator {
       nameY += this.s(4);
     }
 
-    // Feast name
+    // Feast name. Clamp its height to the room left on the cover so an
+    // absurdly long feast name can't wrap past the bottom margin and make
+    // PDFKit auto-add a 9th page (breaking the fixed 8-page booklet). Reserve
+    // room for the date/times/rule/info that follow.
     this.y = nameY;
+    const feastRoom = Math.max(this.s(24), this._bottom() - this.y - this.s(120));
     this.doc.fontSize(this.s(20)).fillColor(COLORS.navy).font('Sans-Bold')
-      .text(this.data.feastName, this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center' });
+      .text(this.data.feastName, this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'center', height: feastRoom, ellipsis: true });
     this.y = this.doc.y + this.s(6);
 
     this.doc.fontSize(this.s(11)).fillColor(COLORS.muted).font('Sans')
@@ -1274,10 +1283,11 @@ class WorshipAidPdfGenerator {
     // Feast title — large small-caps Garamond, wraps across lines as needed.
     this._coverTitleClassic(this.data.feastName, this.s(25));
     this.y += this.s(4);
-    // Date — centered italic.
+    // Date — centered italic. Height-clamped so it can't auto-page if a long
+    // title pushed y down.
     this.doc.fontSize(this.s(13)).fillColor(this._color('feast')).font('Display-Italic')
       .text(formatDate(this.data.liturgicalDate), this.MARGIN_SIDE, this.y,
-        { width: this.CONTENT_WIDTH, align: 'center' });
+        { width: this.CONTENT_WIDTH, align: 'center', height: Math.max(this.s(16), this._bottom() - this.y), ellipsis: true });
     this.y = this.doc.y + this.s(14);
 
     // Cross / parish logo, centered in the upper-middle of the page.
@@ -1300,7 +1310,7 @@ class WorshipAidPdfGenerator {
     // must never run past the trim edge.
     const ps = this.parishSettings;
     this.doc.fontSize(this.s(17)).fillColor(this._color('feast')).font('Script-Italic')
-      .text(classicGreeting(ps), this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'left' });
+      .text(classicGreeting(ps), this.MARGIN_SIDE, this.y, { width: this.CONTENT_WIDTH, align: 'left', height: Math.max(this.s(20), this._bottom() - this.y), ellipsis: true });
     this.y = this.doc.y + this.s(7);
 
     // Single-column info blocks: bold small-caps label, indented body. The
@@ -1354,7 +1364,16 @@ class WorshipAidPdfGenerator {
       }
     }
     if (line.length) lines.push(line);
-    for (const ln of lines) this._smallCapsTitle(ln.join(' '), size);
+    // Bound the title to ~a third of the page so an absurdly long feast name
+    // (dozens of words) can't consume the whole cover and push the cross /
+    // greeting / info blocks past the bottom margin (which would make PDFKit
+    // auto-add a 9th page). Real feast names are a few words / 1-2 lines.
+    const startY = this.y;
+    const maxTitleH = this.PAGE_HEIGHT * 0.34;
+    for (const ln of lines) {
+      if (this.y - startY > maxTitleH) { this._warnClipped(); break; }
+      this._smallCapsTitle(ln.join(' '), size);
+    }
   }
 
   // Draw a QR code as crisp vector modules for a URL, with a caption label
@@ -1465,6 +1484,8 @@ class WorshipAidPdfGenerator {
   // Draw one outline op through the theme-aware primitives.
   _renderOp(op) {
     switch (op.op) {
+      case 'spacer':
+        this.y += this.s(op.size || 2); break;
       case 'section':
         this.sectionHeader(op.title); break;
       case 'music':
@@ -1612,6 +1633,9 @@ class WorshipAidPdfGenerator {
   _hangingLabel(label, text, opts = {}) {
     const size = opts.size || 9;
     const startY = this.y;
+    // Past-bottom guard (page-8 overflow): never draw the label below the
+    // bottom margin. bodyText already clamps; the raw label draw did not.
+    if (!this._dryRun && startY >= this._bottom()) { this._warnClipped(); return; }
     this.doc.fontSize(this.s(size) * this.textScale).font(this._font('bold'));
     const labelW = this.doc.widthOfString(label);
     const indent = Math.max(labelW + this.s(8), this.s(46));
@@ -1645,9 +1669,16 @@ class WorshipAidPdfGenerator {
       return;
     }
     const startY = this.y;
+    // Past-bottom guard (page-8 overflow): don't draw columns below the
+    // bottom margin.
+    if (startY >= this._bottom()) { this._warnClipped(); return; }
     const lh = this.doc.heightOfString(leftText, { ...lineOpts, width: colW });
     const rh = this.doc.heightOfString(rightText, { ...lineOpts, width: colW });
-    const maxH = Math.min(Math.max(lh, rh), this._bottom() - startY);
+    const natural = Math.max(lh, rh);
+    const maxH = Math.min(natural, this._bottom() - startY);
+    // If the columns don't fully fit, PDFKit ellipsis-truncates — warn so the
+    // drop is never silent (matches every other text primitive).
+    if (natural > maxH + 1) this._warnClipped();
     if (leftText.trim()) this.doc.text(leftText, this.MARGIN_SIDE, startY, { ...lineOpts, width: colW, height: maxH, ellipsis: true });
     if (rightText.trim()) this.doc.text(rightText, x2, startY, { ...lineOpts, width: colW, height: maxH, ellipsis: true });
     this.y = startY + maxH + this.s(3);

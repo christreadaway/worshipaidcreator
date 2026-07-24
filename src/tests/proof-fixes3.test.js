@@ -156,10 +156,11 @@ describe('Proof fixes v3 — at least 8pt above every heading', () => {
     assert.equal(gen.y, gen.MARGIN_TOP + 8, 'dry-run applies the full worst-case pad');
   });
 
-  it('HTML: heading rows and bare headings carry the 8pt minimum, both designs', () => {
+  it('HTML: every heading row carries the 8pt minimum, both designs', () => {
     const html = renderBookletHtml(data).html;
+    // All subheadings render as .sub-heading-row (the old bare
+    // <div class="sub-heading"> form is gone), so one rule governs the space.
     assert.match(html, /\.sub-heading-row\s*{[^}]*margin:\s*8pt 0 2pt/);
-    assert.match(html, /div\.sub-heading\s*{\s*margin-top:\s*8pt/);
     const classic = renderBookletHtml({ ...data, design: 'classic' }).html;
     assert.match(classic, /\.c-section\s*{[^}]*margin:\s*8pt 0 5pt/);
   });
@@ -331,6 +332,36 @@ describe('Proof fixes v3 — notation titles stripped at render time', () => {
     assert.ok(meta.height < 300 - 48, `title removed from the refrain scan (height now ${meta.height})`);
   });
 
+  // Regression: a NARROW real staff (incipit / ossia / cantor line, below the
+  // 35%-width primary detection threshold) above a big white gap, with a wide
+  // staff below, must NEVER be cropped away as if it were a header band.
+  it('never over-crops a narrow real staff above a big gap (music-loss guard)', async () => {
+    const W = 480, H = 1200;
+    const img = Buffer.alloc(W * H, 255);
+    const band = (x0, x1, y0, y1) => { for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) img[y * W + x] = 20; };
+    const staff = (x0, x1, top) => { for (const sy of [top, top + 12, top + 24, top + 36, top + 48]) band(x0, x1, sy, sy + 2); };
+    staff(20, 164, 40);   // narrow incipit (x 20..164 = 30% width) near the top
+    staff(20, 460, 760);  // full-width system far below, after a big gap
+    const png = await sharp(img, { raw: { width: W, height: H, channels: 1 } }).png().toBuffer();
+    const { cropped, buffer } = await stripTitleFromBuffer(png);
+    assert.equal(cropped, false, 'narrow staff must not be treated as a header');
+    const meta = await sharp(buffer).metadata();
+    assert.equal(meta.height, 1200, 'full image preserved — no music lost');
+  });
+
+  // A genuine two-system piece (both full width) with a gap between systems
+  // must not be cropped into.
+  it('never crops between two full-width staff systems', async () => {
+    const W = 480, H = 1000;
+    const img = Buffer.alloc(W * H, 255);
+    const band = (x0, x1, y0, y1) => { for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) img[y * W + x] = 20; };
+    const staff = (top) => { for (const sy of [top, top + 12, top + 24, top + 36, top + 48]) band(20, 460, sy, sy + 2); };
+    staff(120); staff(600);
+    const png = await sharp(img, { raw: { width: W, height: H, channels: 1 } }).png().toBuffer();
+    const { cropped } = await stripTitleFromBuffer(png);
+    assert.equal(cropped, false);
+  });
+
   it('stripTitlesFromImages crops only slots that carry a title and reports them', async () => {
     const titled = await buildScan({ withTitle: true });
     const clean = await buildScan({ withTitle: false });
@@ -348,5 +379,44 @@ describe('Proof fixes v3 — notation titles stripped at render time', () => {
     assert.ok(first.buffer.equals(second.buffer));
     const again = await stripTitleFromBuffer(first.buffer); // already cropped
     assert.equal(again.cropped, false);
+  });
+});
+
+describe('Proof fixes v3 — robustness (review-pass fixes)', () => {
+  it('an absurdly long feast name never pushes the cover to a 9th page', async () => {
+    const longName = 'The Solemnity of ' + 'the Most Holy and Glorious '.repeat(20) + 'Name';
+    for (const design of ['classic', 'reimagined']) {
+      for (const bookletSize of ['half-letter', 'tabloid']) {
+        const out = path.join(outputDir, `long-${design}-${bookletSize}.pdf`);
+        const result = await generatePdf({ ...data, feastName: longName }, out, { design, bookletSize });
+        assert.equal(result.pageCount, 8, `${design}/${bookletSize}: still 8 pages`);
+      }
+    }
+  });
+
+  it('classic keeps the 2pt spacer between the prelude line and the section title', async () => {
+    // The classic intro block carries a spacer op between the Organ Prelude
+    // music line and "The Introductory Rites".
+    const { buildLiturgyOutline } = require('../liturgy-outline');
+    const outline = buildLiturgyOutline(data, { design: 'classic', seasonalSettings: data.seasonalSettings, readings: data.readings, parishSettings: {} });
+    const introBlock = outline.blocks.find(b => b.ops.some(o => o.op === 'section' && o.title === 'The Introductory Rites'));
+    assert.ok(introBlock, 'classic intro block exists');
+    const ops = introBlock.ops.map(o => o.op);
+    assert.deepEqual(ops, ['music', 'spacer', 'section'], 'prelude, 2pt spacer, then the section title');
+    // Reimagined does NOT carry the spacer (title first, then prelude).
+    const rOutline = buildLiturgyOutline(data, { design: 'reimagined', seasonalSettings: data.seasonalSettings, readings: data.readings, parishSettings: {} });
+    const rIntro = rOutline.blocks.find(b => b.ops.some(o => o.op === 'section' && o.title === 'The Introductory Rites'));
+    assert.ok(!rIntro.ops.some(o => o.op === 'spacer'), 'reimagined has no intro spacer');
+  });
+
+  it('a two-column block that overruns the page records a truncation warning (no silent drop)', async () => {
+    // 60 psalm strophes force the classic two-column psalm past a full page.
+    const strophes = Array.from({ length: 60 }, (_, i) => `Strophe number ${i + 1} of a very long psalm that keeps going and going across the whole page. R.`).join('\n\n');
+    const bigPsalm = { ...data, design: 'classic', readings: { ...data.readings, psalmVerses: strophes } };
+    const out = path.join(outputDir, 'bigpsalm.pdf');
+    const result = await generatePdf(bigPsalm, out, { design: 'classic', bookletSize: 'half-letter' });
+    assert.equal(result.pageCount, 8);
+    assert.ok(result.warnings.some(w => /truncated|scaled/i.test(w)),
+      `oversized content must warn, got: ${result.warnings.join(' | ')}`);
   });
 });

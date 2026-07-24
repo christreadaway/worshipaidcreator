@@ -6,8 +6,8 @@
 
 const path = require('path');
 const fs = require('fs');
-const { APOSTLES_CREED, NICENE_CREED, RENEWAL_OF_BAPTISMAL_VOWS } = require('./assets/text/creeds');
-const { CONFITEOR, INVITATION_TO_PRAYER, RUBRICS, RUBRICS_CLASSIC, GOSPEL_ACCLAMATION_LENTEN, GOSPEL_ACCLAMATION_LENTEN_ALT, GOSPEL_ACCLAMATION_STANDARD, getHolyHolyHolyText } = require('./assets/text/mass-texts');
+// Liturgy text (creeds, Confiteor, acclamations, postures, Sanctus) is owned
+// by the shared liturgy outline now; this renderer only lays out the ops.
 const { getQRCode, SMALLCAPS_CONNECTORS, classicGreeting, classicCoverBlocks, resolveChildrenLiturgyTimes } = require('./render-shared');
 const { formatMusicSlot, renderMusicLineHtml } = require('./music-formatter');
 const { buildLiturgyOutline } = require('./liturgy-outline');
@@ -224,36 +224,10 @@ function renderBookletHtml(data, options = {}) {
   // preview has always used.
   const design = options.design || data.design || 'reimagined';
 
-  const isLenten = d.liturgicalSeason === 'lent';
-  const isAdvent = d.liturgicalSeason === 'advent';
-  const showGloria = ss.gloria !== undefined ? ss.gloria : (d.liturgicalSeason !== 'lent' && d.liturgicalSeason !== 'advent');
-  const creedType = ss.creedType || 'nicene';
-  const creedText = {
-    apostles:       APOSTLES_CREED,
-    baptismal_vows: RENEWAL_OF_BAPTISMAL_VOWS,
-    nicene:         NICENE_CREED
-  }[creedType] || NICENE_CREED;
-  const creedTitle = {
-    apostles:       "The Apostles' Creed",
-    baptismal_vows: 'Renewal of Baptismal Vows',
-    nicene:         'The Nicene Creed'
-  }[creedType] || 'The Nicene Creed';
-  const entranceType = ss.entranceType || 'processional';
-  const penitentialAct = ss.penitentialAct || 'confiteor';
-
-  // Lenten acclamation: support alternate choice from worksheet
-  let acclamationText;
-  if (isLenten) {
-    acclamationText = (ss.lentenAcclamation === 'alternate') ? GOSPEL_ACCLAMATION_LENTEN_ALT : GOSPEL_ACCLAMATION_LENTEN;
-  } else {
-    acclamationText = GOSPEL_ACCLAMATION_STANDARD;
-  }
-
-  // Postlude: suppressed during Lent per worksheet
-  const includePostlude = ss.includePostlude !== undefined ? ss.includePostlude : !isLenten;
-
-  // Advent Wreath: shown during Advent per worksheet
-  const showAdventWreath = ss.adventWreath !== undefined ? ss.adventWreath : isAdvent;
+  // Liturgical structure — section names, ordering, posture wording, which
+  // items appear (Gloria/postlude/advent-wreath/acclamation text/creed), and
+  // the two-column choices — all come from the shared outline below, so those
+  // per-season/per-design decisions live in exactly one place.
 
   // Per-slot uploaded notation images. When a slot has an image it renders
   // INSIDE the reserved music area (no more "paste licensed notation here"
@@ -278,9 +252,6 @@ function renderBookletHtml(data, options = {}) {
       ? '<div class="hymn-music-space">Reserved for hymn music &mdash; paste licensed notation here</div>'
       : '';
   };
-  // Processional hymn area — only when a processional hymn is sung,
-  // not when the antiphon is chanted (antiphon has no separate music sheet).
-  const processionalHymnSpaceHtml = entranceType === 'processional' ? hymnSpace('processional') : '';
 
   // Smaller music area for Mass ordinary parts / sung responses.
   const ordSpace = (slot, label) => {
@@ -324,12 +295,6 @@ function renderBookletHtml(data, options = {}) {
   // Rubric alignment — inline style applied to all Please sit/stand/kneel lines.
   // Centered by default per the director of liturgy; a parish setting wins.
   const rubricAlign = ss.rubricAlignment || 'center';
-  const RP = `<p class="rubric" style="text-align:${escapeHtml(rubricAlign)}">`;
-
-  // Sanctus language: per-aid override > parish default > 'english'
-  const holyHolyLanguage = ss.holyHolyLanguage || settings.defaultSanctusLanguage || 'english';
-  const holyHolyText = getHolyHolyHolyText(holyHolyLanguage);
-  const holyHolyHeading = holyHolyLanguage === 'latin' ? 'Sanctus' : 'Holy, Holy, Holy';
 
   const docHead = `<!DOCTYPE html>
 <html lang="en">
@@ -396,8 +361,6 @@ function renderBookletHtml(data, options = {}) {
     gap: 8pt;
     margin: 8pt 0 2pt;
   }
-  /* Bare headings (no inline row) get the same minimum space above. */
-  div.sub-heading { margin-top: 8pt; }
   .sub-heading-left { display: inline; }
   .sub-inline {
     font-style: italic;
@@ -676,6 +639,9 @@ function renderBookletHtml(data, options = {}) {
   // Map one outline op to HTML via the existing per-medium helpers.
   const renderOpHtml = (op) => {
     switch (op.op) {
+      case 'spacer':
+        // PDF-only micro-spacing; the HTML uses CSS margins for separation.
+        return '';
       case 'section':
         return design === 'classic' ? classicSectionHtml(op.title) : `<div class="section-header">${escapeHtml(op.title)}</div>`;
       case 'music':

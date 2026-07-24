@@ -78,6 +78,11 @@ async function resolveNotationImages(data) {
 const _stripCache = new Map(); // sha256(original) -> { buffer, cropped }
 const STRIP_CACHE_MAX = 60;
 
+// NOTE: for an image with no title header, stripTitleHeader returns the SAME
+// buffer object it was given, and that object is what gets cached/returned
+// here. Every current consumer (PDFKit doc.image, res.send, getImageDimensions)
+// treats the buffer as read-only, so sharing is safe. A future consumer that
+// MUTATES a returned notation buffer must copy it first.
 async function stripTitleFromBuffer(buf) {
   const hash = crypto.createHash('sha256').update(buf).digest('hex');
   const hit = _stripCache.get(hash);

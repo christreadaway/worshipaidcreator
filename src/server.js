@@ -99,6 +99,10 @@ if (!kv.IS_NETLIFY) {
     if (req.query.strip !== '1') return next();
     const filename = path.basename(String(req.params.filename || ''));
     if (!kv.isSafeKey(filename)) return next();
+    // Only PNG/JPEG can be stripped and re-served under the same MIME; other
+    // formats (SVG, TIFF, GIF) would be re-encoded by sharp to PNG and served
+    // under the wrong content type. Match the Netlify serving route's guard.
+    if (!/\.(png|jpe?g)$/i.test(filename)) return next();
     const filePath = path.join(UPLOADS_DIR, dirName, filename);
     if (!fs.existsSync(filePath)) return next();
     try {

@@ -92,8 +92,9 @@ function buildLiturgyOutline(data, ctx = {}) {
   // ---- The Introductory Rites (page 2) ----
   if (classic) {
     // In-house layout: the prelude line sits ABOVE the section title, which
-    // must not strand at a page foot away from the hymn it introduces.
-    B(2, [music('Organ Prelude', 'organPrelude', 'organPreludeComposer'), section('The Introductory Rites')], { keepNext: true });
+    // must not strand at a page foot away from the hymn it introduces. A 2pt
+    // spacer separates the prelude line from the title (PDF only).
+    B(2, [music('Organ Prelude', 'organPrelude', 'organPreludeComposer'), { op: 'spacer', size: 2 }, section('The Introductory Rites')], { keepNext: true });
   } else {
     B(2, [section('The Introductory Rites'), music('Organ Prelude', 'organPrelude', 'organPreludeComposer')]);
   }
